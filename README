@@ -1,0 +1,8 @@
+# 后端
+cd backend && uvicorn app.main:app --host 0.0.0.0 --port 8020
+
+# 前端 (Web)
+cd frontend && npm run dev
+
+# 前端 (Electron)
+cd frontend && npm run dev:electron
