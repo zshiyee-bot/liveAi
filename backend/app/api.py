@@ -162,6 +162,7 @@ _settings = load_settings()
 
 
 def _get_llm_service():
+    """获取 LLM service（启动时已初始化，永远非空）"""
     from app.main import app
     return app.state.llm_service
 
@@ -187,6 +188,14 @@ async def create_document(data: KnowledgeCreate, db: AsyncSession = Depends(get_
     db.add(doc)
     await db.commit()
     await db.refresh(doc)
+
+    # 增量同步到向量库
+    llm = _get_llm_service()
+    if llm and llm._knowledge_base:
+        n = await llm._knowledge_base.add_document(doc.id, doc.title, doc.content)
+        doc.chunk_count = n
+        await db.commit()
+
     return KnowledgeResponse(
         id=doc.id, title=doc.title,
         content_preview=doc.content[:200] + "..." if len(doc.content) > 200 else doc.content,
@@ -216,7 +225,15 @@ async def upload_document(
     db.add(doc)
     await db.commit()
     await db.refresh(doc)
-    return {"code": 0, "id": doc.id, "file_path": filepath}
+
+    # 增量同步到向量库
+    llm = _get_llm_service()
+    if llm and llm._knowledge_base:
+        n = await llm._knowledge_base.add_document(doc.id, doc.title, doc.content)
+        doc.chunk_count = n
+        await db.commit()
+
+    return {"code": 0, "id": doc.id, "file_path": filepath, "chunk_count": doc.chunk_count}
 
 
 @router.delete("/api/knowledge/documents/{doc_id}", tags=["knowledge"])
@@ -227,6 +244,12 @@ async def delete_document(doc_id: int, db: AsyncSession = Depends(get_db)):
         raise HTTPException(status_code=404, detail="Document not found")
     if doc.file_path and os.path.exists(doc.file_path):
         os.remove(doc.file_path)
+
+    # 先从向量库删除
+    llm = _get_llm_service()
+    if llm and llm._knowledge_base:
+        await llm._knowledge_base.delete_document(doc_id)
+
     await db.delete(doc)
     await db.commit()
     return {"code": 0, "msg": "ok"}
@@ -234,10 +257,7 @@ async def delete_document(doc_id: int, db: AsyncSession = Depends(get_db)):
 
 @router.post("/api/knowledge/rebuild", tags=["knowledge"])
 async def rebuild_index():
-    llm_service = _get_llm_service()
-    if llm_service is None:
-        raise HTTPException(status_code=400, detail="LLM service not initialized")
-    await llm_service.rebuild_knowledge_base()
+    await _get_llm_service().rebuild_knowledge_base()
     return {"code": 0, "msg": "ok"}
 
 
@@ -249,12 +269,7 @@ async def rebuild_index():
 async def get_livetalking_sessions():
     """获取 LiveTalking 活跃 session 列表（供前端选择）"""
     from app.main import app
-    lt_client = app.state.lt_client
-    if lt_client is None:
-        # 如果还没初始化，临时创建一个只用于查询
-        from app.services.livetalking_client import LiveTalkingClient
-        lt_client = LiveTalkingClient(base_url=_settings.livetalking_base_url)
-    sessions = await lt_client.fetch_sessions()
+    sessions = await app.state.lt_client.fetch_sessions()
     return {"code": 0, "sessions": sessions}
 
 
@@ -262,16 +277,14 @@ async def get_livetalking_sessions():
 #  Livestream Control
 # ═══════════════════════════════════════════════════════════════════
 
-from app.services.livetalking_client import LiveTalkingClient
 from app.services.play_queue import PlayQueue
 from app.services.script_manager import ScriptManager
-from app.services.llm_service import LLMService
 from app.services.danmaku.manager import MultiPlatformCollector
 from app.services.danmaku.base import DanmakuMessage
 
 
-async def _get_or_create_services():
-    """懒初始化全局服务"""
+async def _get_or_create_queue():
+    """懒初始化播放队列（直播启动时）"""
     from app.main import app
     from app.database import async_session
 
@@ -281,10 +294,7 @@ async def _get_or_create_services():
         app.state.play_queue = queue
         app.state.script_manager = script_mgr
 
-    if app.state.lt_client is None:
-        app.state.lt_client = LiveTalkingClient(base_url=_settings.livetalking_base_url)
-
-    return app.state.play_queue, app.state.lt_client
+    return app.state.play_queue
 
 
 @router.post("/api/livestream/start", tags=["livestream"])
@@ -293,29 +303,27 @@ async def start_livestream(req: LivestreamStartRequest):
     from app.main import app
     from app.database import async_session
 
-    queue, lt_client = await _get_or_create_services()
+    llm = app.state.llm_service
+    lt_client = app.state.lt_client
+    queue = await _get_or_create_queue()
 
-    # 1. 加载人设 → 初始化 LLM
+    # 1. 重新加载最新人设（前端可能刚改了 persona）
     async with async_session() as db:
         persona = await _get_or_create_persona(db)
-        persona_dict = persona.to_dict()
-
-    if app.state.llm_service is None:
-        app.state.llm_service = LLMService(persona_dict)
-        try:
-            await app.state.llm_service.init_knowledge_base()
-        except Exception as e:
-            logger.warning(f"Knowledge base init skipped: {e}")
+        llm.persona = persona.to_dict()
 
     # 2. 连接 LiveTalking
     lt_client.set_session(req.session_id)
     await lt_client.connect()
 
-    # 注册播放结束回调 → 出队播放
+    # 注册播放结束回调 → 出队播放（队列为空时阻塞等待）
     async def on_playback_end():
-        item = await queue.get_next()
-        if item is None:
-            return
+        while True:
+            item = await queue.get_next()
+            if item is not None:
+                break
+            await asyncio.sleep(0.3)  # 队列空，等待自动补位或弹幕插入
+
         await _broadcast_queue_update(queue)
         if item.type == "audio" and item.content:
             await lt_client.send_audio(item.content)
@@ -370,6 +378,9 @@ async def start_livestream(req: LivestreamStartRequest):
     app.state._room_id = req.room_id
     app.state._session_id = req.session_id
     app.state._danmaku_count = 0
+
+    # 6. 首次触发：数字人当前空闲，手动启动第一次出队播放
+    asyncio.create_task(on_playback_end())
 
     await _broadcast_status({"type": "status_change", "running": True, "room_id": req.room_id})
     logger.info(f"Livestream started: room={req.room_id}, session={req.session_id}")

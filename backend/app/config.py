@@ -12,15 +12,15 @@ class Settings(BaseSettings):
     # ── LiveTalking ──
     livetalking_base_url: str = "http://127.0.0.1:8010"
 
-    # ── LLM ──
+    # ── LLM（OpenAI 兼容接口）──
     llm_api_key: str = ""
-    llm_base_url: str = "https://api.deepseek.com/v1"
-    llm_model: str = "deepseek-chat"
+    llm_base_url: str = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+    llm_model: str = "qwen-plus"
 
-    # ── Embedding ──
+    # ── Embedding（通义千问 text-embedding-v4，与 LLM 共用 DASHSCOPE_API_KEY）──
     embedding_api_key: str = ""
-    embedding_base_url: str = "https://api.deepseek.com/v1"
-    embedding_model: str = "text-embedding-3-small"
+    embedding_base_url: str = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+    embedding_model: str = "text-embedding-v4"
 
     # ── Queue ──
     queue_min_size: int = 2
@@ -37,8 +37,8 @@ class Settings(BaseSettings):
     chroma_persist_path: str = "data/chroma_db"
 
     # ── App ──
-    app_host: str = "0.0.0.0"
-    app_port: int = 8020
+    # app_host: str = "0.0.0.0"
+    # app_port: int = 8020
     cors_origins: str = "*"
 
     class Config:

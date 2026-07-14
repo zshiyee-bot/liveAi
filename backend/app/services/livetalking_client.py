@@ -130,7 +130,10 @@ class LiveTalkingClient:
                                     logger.info("LiveTalking playback ended")
                                     for cb in self._playback_callbacks:
                                         try:
-                                            cb()
+                                            if asyncio.iscoroutinefunction(cb):
+                                                await cb()
+                                            else:
+                                                cb()
                                         except Exception as exc:
                                             logger.warning(f"Playback callback error: {exc}")
                                 elif status == "start":

@@ -6,11 +6,11 @@
     <el-card style="margin-bottom: 20px">
       <el-row :gutter="16" align="middle">
         <!-- LiveTalking URL -->
-        <el-col :span="6">
+        <!-- <el-col :span="6">
           <el-input v-model="store.ltBaseUrl" placeholder="LiveTalking URL" size="default">
             <template #prepend>URL</template>
           </el-input>
-        </el-col>
+        </el-col> -->
         <!-- Session 选择 -->
         <el-col :span="8">
           <el-select
@@ -33,7 +33,7 @@
           </el-button>
         </el-col>
         <!-- 房间号 -->
-        <el-col :span="3">
+        <el-col :span="5">
           <el-input v-model="roomId" placeholder="直播间房号" size="default" :disabled="store.running">
             <template #prepend>房间</template>
           </el-input>

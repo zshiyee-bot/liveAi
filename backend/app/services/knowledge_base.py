@@ -3,11 +3,31 @@
 ###############################################################################
 
 import os
-from langchain.text_splitter import RecursiveCharacterTextSplitter
-from langchain_community.document_loaders import DirectoryLoader, TextLoader
+from typing import List
+from openai import OpenAI
+from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_community.vectorstores import Chroma
-from langchain_openai import OpenAIEmbeddings
+from langchain_core.embeddings import Embeddings
 from app.utils.logger import logger
+
+
+class OpenAICompatEmbeddings(Embeddings):
+    """最小的 OpenAI 兼容 Embedding 实现。
+
+    不用 langchain_openai.OpenAIEmbeddings，因为它内部的
+    _get_len_safe_embeddings 在 DashScope 上会触发参数格式不兼容。
+    """
+
+    def __init__(self, model: str, api_key: str, base_url: str):
+        self.model = model
+        self.client = OpenAI(api_key=api_key, base_url=base_url)
+
+    def embed_documents(self, texts: List[str]) -> List[List[float]]:
+        resp = self.client.embeddings.create(model=self.model, input=texts)
+        return [d.embedding for d in sorted(resp.data, key=lambda x: x.index)]
+
+    def embed_query(self, text: str) -> List[float]:
+        return self.embed_documents([text])[0]
 
 
 class KnowledgeBase:
@@ -23,7 +43,7 @@ class KnowledgeBase:
     ):
         self.docs_path = docs_path
         self.persist_path = persist_path
-        self.embeddings = OpenAIEmbeddings(
+        self.embeddings = OpenAICompatEmbeddings(
             model=embedding_model,
             api_key=api_key or os.getenv("OPENAI_API_KEY", ""),
             base_url=base_url if base_url else None,
@@ -66,10 +86,6 @@ class KnowledgeBase:
                         continue
                     documents.append(content)
 
-        if not documents:
-            logger.warning("No documents found for knowledge base")
-            return
-
         text_splitter = RecursiveCharacterTextSplitter(
             chunk_size=500, chunk_overlap=50
         )
@@ -77,12 +93,72 @@ class KnowledgeBase:
         for doc in documents:
             chunks.extend(text_splitter.split_text(doc))
 
+        if not chunks:
+            logger.warning("No documents found for knowledge base, vectorstore not created")
+            return
+
         self._vectorstore = Chroma.from_texts(
             chunks,
             self.embeddings,
             persist_directory=self.persist_path,
         )
         logger.info(f"Knowledge base rebuilt: {len(documents)} docs -> {len(chunks)} chunks")
+
+    # ── 增量操作 ──────────────────────────────────────────────────
+
+    def _split_text(self, text: str) -> list[str]:
+        """将文档文本分割为 chunk"""
+        text_splitter = RecursiveCharacterTextSplitter(
+            chunk_size=500, chunk_overlap=50
+        )
+        return text_splitter.split_text(text)
+
+    async def _ensure_vectorstore(self, first_chunks: list[str], metadatas: list[dict]):
+        """向量库不存在时用首批数据创建"""
+        self._vectorstore = Chroma.from_texts(
+            first_chunks,
+            self.embeddings,
+            metadatas=metadatas,
+            persist_directory=self.persist_path,
+        )
+        logger.info(f"Knowledge base: created vectorstore with {len(first_chunks)} chunks")
+
+    async def add_document(self, doc_id: int, title: str, content: str):
+        """
+        增量添加文档：分块后插入 Chroma，无需全量重建。
+        如果向量库还未创建（首次添加），则用本文档创建。
+        """
+        chunks = self._split_text(content)
+        if not chunks:
+            return 0
+
+        metadatas = [{"doc_id": str(doc_id), "title": title}] * len(chunks)
+
+        if self._vectorstore is None:
+            await self._ensure_vectorstore(chunks, metadatas)
+        else:
+            self._vectorstore.add_texts(chunks, metadatas=metadatas)
+
+        logger.info(f"Knowledge base: added doc {doc_id} ({title}) -> {len(chunks)} chunks")
+        return len(chunks)
+
+    async def delete_document(self, doc_id: int):
+        """
+        按 doc_id 删除文档的所有 chunk。
+        Chroma 的 .delete() 支持按 metadata filter 删除。
+        """
+        if self._vectorstore is None:
+            logger.warning("Vector store not initialized, skipping delete")
+            return
+
+        try:
+            # Chroma delete by metadata filter
+            self._vectorstore._collection.delete(
+                where={"doc_id": str(doc_id)}
+            )
+            logger.info(f"Knowledge base: deleted doc {doc_id} from index")
+        except Exception as e:
+            logger.warning(f"Failed to delete doc {doc_id} from Chroma: {e}")
 
     async def search(self, query: str, k: int = 3):
         """检索相关文档片段"""
