@@ -86,11 +86,13 @@
 import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { ElMessage } from 'element-plus'
 import { useLivestreamStore } from '@/stores/livestream'
+import { useQueueStore } from '@/stores/queue'
 import LiveChat from '@/components/dashboard/LiveChat.vue'
 import QueueStatus from '@/components/dashboard/QueueStatus.vue'
 import { wsClient } from '@/api/ws'
 
 const store = useLivestreamStore()
+const queueStore = useQueueStore()
 const roomId = ref('')
 
 const canStart = computed(() => roomId.value && store.sessionId)
@@ -103,11 +105,13 @@ onMounted(() => {
 
 onUnmounted(() => {
   wsClient.disconnect()
+  queueStore.stopPolling()
 })
 
 async function handleStart() {
   try {
     await store.startLive(roomId.value, store.sessionId)
+    queueStore.startPolling()
     ElMessage.success('直播已启动')
   } catch {
     // error handled by interceptor
@@ -117,6 +121,7 @@ async function handleStart() {
 async function handleStop() {
   try {
     await store.stopLive()
+    queueStore.stopPolling()
     ElMessage.success('直播已停止')
   } catch {
     // error handled by interceptor

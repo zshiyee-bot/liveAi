@@ -387,6 +387,16 @@ async def start_livestream(req: LivestreamStartRequest):
     return {"code": 0, "msg": "ok"}
 
 
+@router.get("/api/queue", tags=["queue"])
+async def get_queue():
+    """获取当前播放队列快照（HTTP 轮询降级方案）"""
+    from app.main import app
+    queue = app.state.play_queue
+    if queue is None:
+        return {"high": [], "low": []}
+    return await queue.snapshot()
+
+
 @router.post("/api/livestream/stop", tags=["livestream"])
 async def stop_livestream():
     """停止直播"""
@@ -489,19 +499,9 @@ async def websocket_endpoint(ws: WebSocket):
     _ws_clients.add(ws)
     logger.info(f"Frontend WS connected (total={len(_ws_clients)})")
     try:
-        # 发送当前状态快照
-        from app.main import app
-        queue = app.state.play_queue
-        if queue:
-            await _broadcast_queue_update(queue)
         while True:
-            # 保持连接，接收客户端消息（心跳等）
-            try:
-                data = await asyncio.wait_for(ws.receive_text(), timeout=30)
-                if data == "ping":
-                    await ws.send_text("pong")
-            except asyncio.TimeoutError:
-                await ws.send_text("ping")  # 服务端心跳
+            # 仅保持连接存活，实际数据通过 _broadcast 发送
+            data = await ws.receive_text()
     except WebSocketDisconnect:
         pass
     except Exception as e:
