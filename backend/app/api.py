@@ -211,16 +211,31 @@ async def upload_document(
     db: AsyncSession = Depends(get_db),
 ):
     os.makedirs(_settings.knowledge_docs_path, exist_ok=True)
-    ext = os.path.splitext(file.filename or "doc.txt")[1]
+    ext = os.path.splitext(file.filename or "doc.txt")[1].lower()
     filename = f"{uuid.uuid4().hex}{ext}"
     filepath = os.path.join(_settings.knowledge_docs_path, filename)
     content = await file.read()
-    try:
-        text_content = content.decode("utf-8")
-    except UnicodeDecodeError:
-        text_content = content.decode("latin-1", errors="replace")
     with open(filepath, "wb") as f:
         f.write(content)
+
+    # 根据文件类型解析文本
+    if ext == ".pdf":
+        try:
+            from pypdf import PdfReader
+            from io import BytesIO
+            reader = PdfReader(BytesIO(content))
+            text_content = "\n".join(
+                page.extract_text() or "" for page in reader.pages
+            )
+        except Exception as e:
+            logger.warning(f"PDF text extraction failed: {e}")
+            text_content = f"[PDF 解析失败: {e}]"
+    else:
+        try:
+            text_content = content.decode("utf-8")
+        except UnicodeDecodeError:
+            text_content = content.decode("latin-1", errors="replace")
+
     doc = KnowledgeDocument(title=title, content=text_content, source_type="file", file_path=filepath)
     db.add(doc)
     await db.commit()
