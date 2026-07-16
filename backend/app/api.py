@@ -331,14 +331,11 @@ async def start_livestream(req: LivestreamStartRequest):
     lt_client.set_session(req.session_id)
     await lt_client.connect()
 
-    # 注册播放结束回调 → 出队播放（队列为空时阻塞等待）
-    async def on_playback_end():
-        while True:
-            item = await queue.get_next()
-            if item is not None:
-                break
-            await asyncio.sleep(0.3)  # 队列空，等待自动补位或弹幕插入
+    # ── 播放调度（SSE 主力 + 轮询兜底）──
+    _playback_lock = asyncio.Lock()       # 防止重复出队
 
+    async def do_send(item):
+        """发送一条到 LiveTalking"""
         await _broadcast_queue_update(queue)
         if item.type == "audio" and item.content:
             await lt_client.send_audio(item.content)
@@ -346,6 +343,22 @@ async def start_livestream(req: LivestreamStartRequest):
             await lt_client.send_text(item.content)
         await _broadcast_status({"type": "playback_started", "item_id": item.id, "source": item.source})
 
+    async def try_play_next():
+        """出队并发送（带锁，同一时刻只执行一次）"""
+        if _playback_lock.locked():
+            return
+        async with _playback_lock:
+            # 阻塞等待队列有数据
+            while True:
+                item = await queue.get_next()
+                if item is not None:
+                    break
+                await asyncio.sleep(0.3)
+            await do_send(item)
+
+    # SSE 回调（主力）
+    async def on_playback_end():
+        await try_play_next()
     lt_client.on_playback_ended(on_playback_end)
 
     # 3. 连接弹幕平台
@@ -383,6 +396,8 @@ async def start_livestream(req: LivestreamStartRequest):
             await _broadcast_queue_update(queue)
 
     app.state.collector.on_message(on_danmaku)
+    # 保存 handler 引用供 mock 接口使用
+    app.state._danmaku_handler = on_danmaku
     await app.state.collector.connect(req.room_id)
 
     # 4. 启动队列自动补位
@@ -394,8 +409,8 @@ async def start_livestream(req: LivestreamStartRequest):
     app.state._session_id = req.session_id
     app.state._danmaku_count = 0
 
-    # 6. 首次触发：数字人当前空闲，手动启动第一次出队播放
-    asyncio.create_task(on_playback_end())
+    # 6. 首次触发：手动启动第一次出队播放
+    asyncio.create_task(try_play_next())
 
     await _broadcast_status({"type": "status_change", "running": True, "room_id": req.room_id})
     logger.info(f"Livestream started: room={req.room_id}, session={req.session_id}")
@@ -437,6 +452,30 @@ async def stop_livestream():
     app.state._livestream_running = False
     await _broadcast_status({"type": "status_change", "running": False})
     logger.info("Livestream stopped")
+    return {"code": 0, "msg": "ok"}
+
+
+@router.post("/api/mock/danmaku", tags=["mock"])
+async def mock_danmaku(
+    content: str = Form(default="主播好厉害！"),
+    sender: str = Form(default="测试观众"),
+    msg_type: str = Form(default="danmaku"),
+):
+    """模拟弹幕/礼物/关注事件（仅测试用）"""
+    from app.main import app
+    handler = getattr(app.state, '_danmaku_handler', None)
+    if handler is None:
+        raise HTTPException(status_code=400, detail="直播未启动，无法模拟弹幕")
+
+    from app.services.danmaku.base import DanmakuMessage
+    msg = DanmakuMessage(
+        platform="mock",
+        sender=sender,
+        content=content,
+        msg_type=msg_type,
+    )
+    await handler(msg)
+    logger.info(f"Mock danmaku: [{msg_type}] {sender}: {content}")
     return {"code": 0, "msg": "ok"}
 
 

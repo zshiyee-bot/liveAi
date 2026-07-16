@@ -58,6 +58,37 @@
       </el-row>
     </el-card>
 
+    <!-- 模拟弹幕测试 -->
+    <el-card v-if="store.running" style="margin-bottom: 20px">
+      <template #header>
+        <span><el-icon><Tools /></el-icon> 弹幕测试</span>
+      </template>
+      <el-row :gutter="8" align="middle">
+        <el-col :span="4">
+          <el-select v-model="mockType" size="small" style="width: 100%">
+            <el-option label="弹幕" value="danmaku" />
+            <el-option label="礼物" value="gift" />
+            <el-option label="关注" value="follow" />
+          </el-select>
+        </el-col>
+        <el-col :span="3">
+          <el-input v-model="mockSender" size="small" placeholder="发送者" />
+        </el-col>
+        <el-col :span="6">
+          <el-input v-model="mockContent" size="small" placeholder="内容" @keyup.enter="sendMock" />
+        </el-col>
+        <el-col :span="2">
+          <el-button size="small" type="primary" @click="sendMock" :loading="mockSending">发送</el-button>
+        </el-col>
+        <el-col :span="9">
+          <el-button size="small" @click="quickMock('danmaku', '观众A', '主播好厉害！')">弹幕</el-button>
+          <el-button size="small" @click="quickMock('danmaku', '观众B', '今天天气怎么样')">知识问答</el-button>
+          <el-button size="small" @click="quickMock('gift', '大佬', '火箭 x1')" type="warning">礼物</el-button>
+          <el-button size="small" @click="quickMock('follow', '新粉丝', '')" type="success">关注</el-button>
+        </el-col>
+      </el-row>
+    </el-card>
+
     <el-row :gutter="16">
       <!-- 弹幕流 -->
       <el-col :span="14">
@@ -90,10 +121,38 @@ import { useQueueStore } from '@/stores/queue'
 import LiveChat from '@/components/dashboard/LiveChat.vue'
 import QueueStatus from '@/components/dashboard/QueueStatus.vue'
 import { wsClient } from '@/api/ws'
+import client from '@/api/client'
 
 const store = useLivestreamStore()
 const queueStore = useQueueStore()
 const roomId = ref('')
+
+const mockType = ref('danmaku')
+const mockSender = ref('测试观众')
+const mockContent = ref('主播好厉害！')
+const mockSending = ref(false)
+
+async function sendMock() {
+  mockSending.value = true
+  try {
+    const form = new FormData()
+    form.append('content', mockContent.value)
+    form.append('sender', mockSender.value)
+    form.append('msg_type', mockType.value)
+    await client.post('/api/mock/danmaku', form)
+  } catch {
+    // error handled by interceptor
+  } finally {
+    mockSending.value = false
+  }
+}
+
+async function quickMock(type: string, sender: string, content: string) {
+  mockType.value = type
+  mockSender.value = sender
+  mockContent.value = content
+  await sendMock()
+}
 
 const canStart = computed(() => roomId.value && store.sessionId)
 

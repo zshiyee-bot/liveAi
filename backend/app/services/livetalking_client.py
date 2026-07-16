@@ -89,6 +89,8 @@ class LiveTalkingClient:
             await self._http.aclose()
             self._http = None
 
+        self._playback_callbacks.clear()
+
         logger.info("LiveTalkingClient disconnected")
 
     # ── SSE 监听（播放状态）────────────────────────────────────────
