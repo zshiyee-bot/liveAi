@@ -32,11 +32,17 @@
             刷新
           </el-button>
         </el-col>
-        <!-- 房间号 -->
-        <el-col :span="5">
-          <el-input v-model="roomId" placeholder="直播间房号" size="default" :disabled="store.running">
-            <template #prepend>房间</template>
-          </el-input>
+        <!-- 平台 -->
+        <el-col :span="3">
+          <el-select v-model="platform" :disabled="store.running" size="default" style="width: 100%">
+            <el-option label="抖音" value="douyin" />
+            <el-option label="视频号" value="wxlive" />
+            <el-option label="B站" value="bilibili" />
+          </el-select>
+        </el-col>
+        <!-- 房间号（仅 B 站需要） -->
+        <el-col v-if="platform === 'bilibili'" :span="3">
+          <el-input v-model="roomId" placeholder="房间号" size="default" :disabled="store.running" />
         </el-col>
         <!-- 控制按钮 -->
         <el-col :span="5">
@@ -125,6 +131,7 @@ import client from '@/api/client'
 const store = useLivestreamStore()
 const queueStore = useQueueStore()
 const roomId = ref('')
+const platform = ref('douyin')
 
 const mockType = ref('danmaku')
 const mockSender = ref('测试观众')
@@ -153,7 +160,11 @@ async function quickMock(type: string, sender: string, content: string) {
   await sendMock()
 }
 
-const canStart = computed(() => roomId.value && store.sessionId)
+const canStart = computed(() => {
+  if (!store.sessionId) return false
+  if (platform.value === 'bilibili' && !roomId.value) return false
+  return true
+})
 
 onMounted(() => {
   store.fetchStatus()
@@ -162,7 +173,7 @@ onMounted(() => {
 
 async function handleStart() {
   try {
-    await store.startLive(roomId.value, store.sessionId)
+    await store.startLive(roomId.value, store.sessionId, platform.value)
     queueStore.startPolling()
     ElMessage.success('直播已启动')
   } catch {

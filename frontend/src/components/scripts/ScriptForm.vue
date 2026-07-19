@@ -53,7 +53,7 @@ import { createScript, uploadAudio } from '@/api/scripts'
 
 const emit = defineEmits<{ created: [] }>()
 
-const form = reactive({ title: '', type: 'text' as const, content: '', tags: [] as string[] })
+const form = reactive({ title: '', type: 'text' as string, content: '', tags: [] as string[] })
 const selectedFile = ref<File | null>(null)
 const submitting = ref(false)
 
@@ -70,7 +70,7 @@ const audioFileList = computed(() => {
 })
 
 function handleAudioSelect(file: UploadFile) {
-  selectedFile.value = file as File
+  selectedFile.value = file as unknown as File
   return false
 }
 

@@ -135,6 +135,14 @@ async def health_check():
 from app.api import router
 app.include_router(router)
 
+# 生产模式：托管前端编译产物
+import os as _os
+_frontend_dist = _os.path.join(_backend_dir, "..", "frontend", "dist")
+if _os.path.isdir(_frontend_dist):
+    from fastapi.staticfiles import StaticFiles
+    app.mount("/", StaticFiles(directory=_frontend_dist, html=True), name="frontend")
+    logger.info(f"Serving frontend from: {_frontend_dist}")
+
 
 if __name__ == "__main__":
     import uvicorn

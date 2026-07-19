@@ -92,7 +92,7 @@ async function handleDelete(id: number) {
 
 async function handleUpload(scriptId: number, file: UploadFile) {
   try {
-    await uploadAudio(scriptId, file as File)
+    await uploadAudio(scriptId, file as unknown as File)
     ElMessage.success('音频已上传')
     await store.fetchAll()
   } catch {

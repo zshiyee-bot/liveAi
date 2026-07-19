@@ -84,8 +84,9 @@ class DanmakuEvent(BaseModel):
 
 
 class LivestreamStartRequest(BaseModel):
-    room_id: str = Field(..., min_length=1)
+    room_id: str = Field(default="")
     session_id: str = Field(..., min_length=1)
+    platform: str = Field(default="bilibili")
 
 
 class LivestreamStatusResponse(BaseModel):

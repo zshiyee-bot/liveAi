@@ -5,10 +5,10 @@
     <el-card style="margin-bottom: 20px">
       <template #header><span><el-icon><Upload /></el-icon> 添加知识</span></template>
       <el-row :gutter="16">
-        <el-col :span="12">
+        <el-col :span="6">
           <el-input v-model="newDocTitle" placeholder="文档标题" />
         </el-col>
-        <el-col :span="8">
+        <el-col :span="14">
           <el-input
             v-model="newDocContent"
             type="textarea"
@@ -97,7 +97,7 @@ async function handleAddText() {
 
 async function handleFileUpload(file: UploadFile) {
   try {
-    await uploadDocument(file.name || 'unnamed', file as File)
+    await uploadDocument(file.name || 'unnamed', file as unknown as File)
     ElMessage.success('已上传')
     await store.fetchAll()
   } catch {

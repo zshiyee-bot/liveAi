@@ -6,8 +6,8 @@ export async function getLivetalkingSessions(): Promise<{ code: number; sessions
   return data
 }
 
-export async function startLivestream(roomId: string, sessionId: string): Promise<void> {
-  await client.post('/api/livestream/start', { room_id: roomId, session_id: sessionId })
+export async function startLivestream(roomId: string, sessionId: string, platform: string = 'bilibili'): Promise<void> {
+  await client.post('/api/livestream/start', { room_id: roomId || '', session_id: sessionId, platform })
 }
 
 export async function stopLivestream(): Promise<void> {

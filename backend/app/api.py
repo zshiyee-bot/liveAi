@@ -475,7 +475,7 @@ async def start_livestream(req: LivestreamStartRequest):
     app.state.collector.on_message(on_danmaku)
     # 保存 handler 引用供 mock 接口使用
     app.state._danmaku_handler = on_danmaku
-    await app.state.collector.connect(req.room_id)
+    await app.state.collector.connect(req.platform, req.room_id)
 
     # 4. 启动队列自动补位
     await queue.start_auto_fill(min_size=_settings.queue_min_size, interval=_settings.queue_auto_fill_interval)

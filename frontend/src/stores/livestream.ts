@@ -39,8 +39,8 @@ export const useLivestreamStore = defineStore('livestream', () => {
     }
   }
 
-  async function startLive(rid: string, sid: string) {
-    await apiStart(rid, sid)
+  async function startLive(rid: string, sid: string, platform: string = 'bilibili') {
+    await apiStart(rid, sid, platform)
     running.value = true
     roomId.value = rid
     sessionId.value = sid
