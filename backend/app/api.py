@@ -397,6 +397,9 @@ async def start_livestream(req: LivestreamStartRequest):
     lt_client = app.state.lt_client
     queue = await _get_or_create_queue()
 
+    # 每次队列变更自动广播到前端（put_high/put_low/get_next 内部触发）
+    queue.set_on_change(lambda: _broadcast_queue_update(queue))
+
     # 1. 重新加载最新人设（前端可能刚改了 persona）
     async with async_session() as db:
         persona = await _get_or_create_persona(db)
@@ -411,7 +414,6 @@ async def start_livestream(req: LivestreamStartRequest):
 
     async def do_send(item):
         """发送一条到 LiveTalking"""
-        await _broadcast_queue_update(queue)
         if item.type == "audio" and item.content:
             await lt_client.send_audio(item.content)
         else:
@@ -457,23 +459,18 @@ async def start_livestream(req: LivestreamStartRequest):
                     type="text", content=reply, source="danmaku",
                     metadata={"sender": msg.sender, "original": msg.content},
                 ))
-                await _broadcast_queue_update(queue)
         elif msg.msg_type == "gift":
             from app.services.play_queue import QueueItem
-            thanks = f"谢谢{msg.sender}的{msg.content}！"
             await queue.put_high(QueueItem(
-                type="text", content=thanks, source="gift",
+                type="text", content=f"谢谢{msg.sender}的{msg.content}！", source="gift",
                 metadata={"sender": msg.sender},
             ))
-            await _broadcast_queue_update(queue)
         elif msg.msg_type == "follow":
             from app.services.play_queue import QueueItem
-            greeting = f"欢迎{msg.sender}关注直播间！"
             await queue.put_high(QueueItem(
-                type="text", content=greeting, source="follow",
+                type="text", content=f"欢迎{msg.sender}关注直播间！", source="follow",
                 metadata={"sender": msg.sender},
             ))
-            await _broadcast_queue_update(queue)
 
     app.state.collector.on_message(on_danmaku)
     # 保存 handler 引用供 mock 接口使用

@@ -40,6 +40,20 @@ class PlayQueue:
         self._min_size = 2
         self._fill_interval = 3.0
         self._running = False
+        self._on_change: Optional[callable] = None  # 队列变更回调
+
+    def set_on_change(self, callback):
+        """设置回调：每次入队/出队后自动调用 callback()"""
+        self._on_change = callback
+
+    async def _notify_change(self):
+        if self._on_change:
+            try:
+                result = self._on_change()
+                if asyncio.iscoroutine(result):
+                    await result
+            except Exception:
+                pass
 
     # ── 入队 ──────────────────────────────────────────────────────
 
@@ -49,6 +63,7 @@ class PlayQueue:
         async with self._lock:
             self._high.append(item)
         logger.info(f"Queue put_high: [{item.source}] {item.content[:50]}... (high={len(self._high)}, low={len(self._low)})")
+        await self._notify_change()
 
     async def put_low(self, item: QueueItem):
         """低优先级入队（追加到低优队尾，同优先级 FIFO）"""
@@ -56,21 +71,23 @@ class PlayQueue:
         async with self._lock:
             self._low.append(item)
         logger.info(f"Queue put_low: [{item.source}] {item.content[:50]}... (high={len(self._high)}, low={len(self._low)})")
+        await self._notify_change()
 
     # ── 出队 ──────────────────────────────────────────────────────
 
     async def get_next(self) -> Optional[QueueItem]:
         """出队：优先高优，再低优（各自 FIFO）"""
+        item = None
         async with self._lock:
             if self._high:
                 item = self._high.popleft()
                 logger.info(f"Queue pop from HIGH: [{item.source}] (high={len(self._high)}, low={len(self._low)})")
-                return item
-            if self._low:
+            elif self._low:
                 item = self._low.popleft()
                 logger.info(f"Queue pop from LOW: [{item.source}] (high={len(self._high)}, low={len(self._low)})")
-                return item
-        return None
+        if item:
+            await self._notify_change()
+        return item
 
     # ── 队列信息 ──────────────────────────────────────────────────
 
