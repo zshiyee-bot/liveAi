@@ -23,6 +23,11 @@ const router = createRouter({
       name: 'Knowledge',
       component: () => import('@/views/KnowledgeBase.vue'),
     },
+    {
+      path: '/settings',
+      name: 'Settings',
+      component: () => import('@/views/SettingsView.vue'),
+    },
   ],
 })
 

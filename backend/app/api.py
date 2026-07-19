@@ -59,6 +59,81 @@ async def update_persona(data: PersonaUpdate, db: AsyncSession = Depends(get_db)
 
 
 # ═══════════════════════════════════════════════════════════════════
+#  Settings
+# ═══════════════════════════════════════════════════════════════════
+
+from app.models import AppSettings
+
+
+async def _get_settings(db: AsyncSession) -> AppSettings:
+    result = await db.execute(select(AppSettings).limit(1))
+    s = result.scalar_one_or_none()
+    if s is None:
+        s = AppSettings(**AppSettings.defaults())
+        db.add(s)
+        await db.commit()
+        await db.refresh(s)
+    return s
+
+
+@router.get("/api/settings", tags=["settings"])
+async def get_settings(db: AsyncSession = Depends(get_db)):
+    s = await _get_settings(db)
+    return {"code": 0, "data": s.to_dict()}
+
+
+@router.put("/api/settings", tags=["settings"])
+async def update_settings(data: dict, db: AsyncSession = Depends(get_db)):
+    s = await _get_settings(db)
+    allowed = set(AppSettings.defaults().keys())
+    for k, v in data.items():
+        if k in allowed and v is not None:
+            setattr(s, k, v)
+    await db.commit()
+    logger.info("Settings updated")
+    return {"code": 0, "data": s.to_dict()}
+
+
+@router.post("/api/settings/reload", tags=["settings"])
+async def reload_settings(db: AsyncSession = Depends(get_db)):
+    """用 DB 中的最新配置重建 LLM 和 Embedding"""
+    s = await _get_settings(db)
+    # 同步到环境变量
+    import os
+    if s.llm_api_key:
+        os.environ["OPENAI_API_KEY"] = s.llm_api_key
+    if s.embedding_api_key:
+        os.environ["EMBEDDING_API_KEY"] = s.embedding_api_key
+
+    from app.main import app
+    from app.services.llm_service import LLMService
+    from app.services.livetalking_client import LiveTalkingClient
+
+    # 重建 LLM service（传入 DB 中的最新配置）
+    persona = await _get_or_create_persona(db)
+    new_llm = LLMService(
+        persona.to_dict(),
+        llm_api_key=s.llm_api_key,
+        llm_base_url=s.llm_base_url,
+        llm_model=s.llm_model,
+        embedding_api_key=s.embedding_api_key,
+        embedding_base_url=s.embedding_base_url,
+        embedding_model=s.embedding_model,
+    )
+    try:
+        await new_llm.init_knowledge_base()
+    except Exception as e:
+        logger.warning(f"Knowledge base re-init skipped: {e}")
+    app.state.llm_service = new_llm
+
+    # 重建 LiveTalking client
+    app.state.lt_client = LiveTalkingClient(base_url=s.livetalking_base_url)
+
+    logger.info("Settings reloaded")
+    return {"code": 0, "msg": "ok"}
+
+
+# ═══════════════════════════════════════════════════════════════════
 #  Scripts
 # ═══════════════════════════════════════════════════════════════════
 

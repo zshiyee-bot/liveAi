@@ -10,8 +10,9 @@ aiosqlite>=0.20.0
 # LLM & LangChain
 langchain>=0.2.0
 langchain-openai>=0.1.0
-langchain-community>=0.2.0
+#langchain-community>=0.2.0
 langchain-text-splitters
+langchain_chroma
 chromadb>=0.5.0
 openai>=1.30.0
 pypdf>=5.0.0

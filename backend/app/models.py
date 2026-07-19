@@ -98,6 +98,37 @@ class Script(Base):
         }
 
 
+# ── AppSettings（前端可配置的系统参数，单行）─────────────────────
+
+class AppSettings(Base):
+    __tablename__ = "app_settings"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    livetalking_base_url: Mapped[str] = mapped_column(String(300), default="http://127.0.0.1:8010")
+    llm_api_key: Mapped[str] = mapped_column(String(300), default="")
+    llm_base_url: Mapped[str] = mapped_column(String(300), default="https://dashscope.aliyuncs.com/compatible-mode/v1")
+    llm_model: Mapped[str] = mapped_column(String(100), default="qwen-plus")
+    embedding_api_key: Mapped[str] = mapped_column(String(300), default="")
+    embedding_base_url: Mapped[str] = mapped_column(String(300), default="https://dashscope.aliyuncs.com/compatible-mode/v1")
+    embedding_model: Mapped[str] = mapped_column(String(100), default="text-embedding-v4")
+
+    def to_dict(self) -> dict:
+        return {c.name: getattr(self, c.name) for c in self.__table__.columns
+                if c.name not in ('id',)}
+
+    @classmethod
+    def defaults(cls) -> dict:
+        return {
+            "livetalking_base_url": "http://127.0.0.1:8010",
+            "llm_api_key": "",
+            "llm_base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+            "llm_model": "qwen-plus",
+            "embedding_api_key": "",
+            "embedding_base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+            "embedding_model": "text-embedding-v4",
+        }
+
+
 # ── KnowledgeDocument（知识库文档）────────────────────────────────
 
 class KnowledgeDocument(Base):

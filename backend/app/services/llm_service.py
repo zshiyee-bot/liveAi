@@ -1,5 +1,5 @@
 ###############################################################################
-#  LLM Service — LangChain 集成：记忆管理 + 知识库 RAG + 弹幕回复生成
+#  LLM Service — 记忆管理 + 知识库 RAG + 弹幕回复生成
 ###############################################################################
 
 import os
@@ -9,25 +9,38 @@ from openai import AsyncOpenAI
 from app.config import load_settings
 from app.utils.logger import logger
 
-settings = load_settings()
-
 # 标点符号列表 — 用于流式分句
 _PUNCTUATION = ",.!;:，。！？：；"
 
+_cfg = load_settings()
+
 
 class LLMService:
-    """LangChain 风格的 LLM 服务：人设驱动 + 短期记忆 + 知识库增强"""
+    """LLM 服务：人设驱动 + 短期记忆 + 知识库增强"""
 
-    def __init__(self, persona: dict):
+    def __init__(self, persona: dict, llm_api_key: str = "", llm_base_url: str = "",
+                 llm_model: str = "", embedding_api_key: str = "",
+                 embedding_base_url: str = "", embedding_model: str = ""):
         self.persona = persona
-        self.client = AsyncOpenAI(
-            api_key=settings.llm_api_key or os.getenv("OPENAI_API_KEY", ""),
-            base_url=settings.llm_base_url,
-        )
-        self.model = settings.llm_model
-        # 短期记忆：{user_id: [{"role": "user"|"assistant", "content": "..."}, ...]}
+        self.llm_api_key = llm_api_key or os.getenv("OPENAI_API_KEY", "")
+        self.llm_base_url = llm_base_url
+        self.llm_model = llm_model
+        self.embedding_api_key = embedding_api_key or os.getenv("EMBEDDING_API_KEY", "")
+        self.embedding_base_url = embedding_base_url
+        self.embedding_model = embedding_model
+
+        if self.llm_api_key:
+            self.client = AsyncOpenAI(
+                api_key=self.llm_api_key,
+                base_url=self.llm_base_url,
+            )
+        else:
+            self.client = None
+            logger.warning("LLM API key not configured — danmaku replies will be empty")
+
+        # 短期记忆
         self._memory: dict[str, list[dict]] = {}
-        self._memory_window = settings.memory_window_size
+        self._memory_window = _cfg.memory_window_size
         # 知识库（延迟初始化）
         self._knowledge_base = None
 
@@ -91,6 +104,9 @@ class LLMService:
 
     async def generate_reply(self, message: str, sender: str) -> str:
         """为弹幕生成回复（非流式，直接返回完整结果）"""
+        if self.client is None:
+            return ""
+
         # 检索知识库
         kb_context = ""
         if self._knowledge_base:
@@ -105,7 +121,7 @@ class LLMService:
 
         try:
             response = await self.client.chat.completions.create(
-                model=self.model,
+                model=self.llm_model,
                 messages=messages,
                 max_tokens=200,
                 temperature=0.8,
@@ -124,6 +140,10 @@ class LLMService:
 
     async def generate_reply_stream(self, message: str, sender: str) -> AsyncIterator[str]:
         """流式生成弹幕回复，按标点分句 yield"""
+        if self.client is None:
+            yield ""
+            return
+
         kb_context = ""
         if self._knowledge_base:
             try:
@@ -137,7 +157,7 @@ class LLMService:
 
         try:
             stream = await self.client.chat.completions.create(
-                model=self.model,
+                model=self.llm_model,
                 messages=messages,
                 max_tokens=200,
                 temperature=0.8,
@@ -183,11 +203,11 @@ class LLMService:
         try:
             from app.services.knowledge_base import KnowledgeBase
             self._knowledge_base = KnowledgeBase(
-                docs_path=settings.knowledge_docs_path,
-                persist_path=settings.chroma_persist_path,
-                embedding_model=settings.embedding_model,
-                api_key=settings.embedding_api_key,
-                base_url=settings.embedding_base_url,
+                docs_path=_cfg.knowledge_docs_path,
+                persist_path=_cfg.chroma_persist_path,
+                embedding_model=self.embedding_model,
+                api_key=self.embedding_api_key,
+                base_url=self.embedding_base_url,
             )
             await self._knowledge_base.initialize()
             logger.info("Knowledge base initialized")

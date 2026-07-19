@@ -43,9 +43,9 @@ export default defineConfig({
   },
   server: {
     proxy: {
-      '/api': 'http://localhost:8020',
+      '/api': `http://localhost:${process.env.BACKEND_PORT || '8020'}`,
       '/ws': {
-        target: 'ws://localhost:8020',
+        target: `ws://localhost:${process.env.BACKEND_PORT || '8020'}`,
         ws: true,
       },
     },

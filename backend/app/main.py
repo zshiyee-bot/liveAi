@@ -1,6 +1,18 @@
 ###############################################################################
 #  FastAPI 主入口
+#
+#  启动方式：
+#    cd backend && python -m app.main
+#    uvicorn app.main:app --port 8020
+#    python backend/app/main.py  （项目根目录也支持）
 ###############################################################################
+
+import sys, os
+
+# 确保 backend/ 在 sys.path 中（支持从任意目录启动）
+_backend_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _backend_dir not in sys.path:
+    sys.path.insert(0, _backend_dir)
 
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
@@ -20,11 +32,12 @@ async def lifespan(app: FastAPI):
     await init_db()
     logger.info("Database initialized")
 
-    # 1. 加载或创建默认 Persona
-    from app.models import Persona
+    # 1. 加载 DB Settings（优先于 .env / 默认值）
+    from app.models import Persona, AppSettings
     from sqlalchemy import select
 
     async with async_session() as db:
+        # Persona
         result = await db.execute(select(Persona).limit(1))
         persona = result.scalar_one_or_none()
         if persona is None:
@@ -35,21 +48,47 @@ async def lifespan(app: FastAPI):
             logger.info("Created default persona")
         persona_dict = persona.to_dict()
 
-    # 2. 初始化 LLMService（含知识库）
+        # AppSettings（DB 存储的配置，首次自动创建）
+        result = await db.execute(select(AppSettings).limit(1))
+        db_settings = result.scalar_one_or_none()
+        if db_settings is None:
+            db_settings = AppSettings(**AppSettings.defaults())
+            db.add(db_settings)
+            await db.commit()
+            await db.refresh(db_settings)
+            logger.info("Created default app settings")
+        s = db_settings  # shorthand
+
+    # 同步 key 到环境变量（LangChain / OpenAI SDK 从环境变量读取）
+    import os
+    if s.llm_api_key:
+        os.environ["OPENAI_API_KEY"] = s.llm_api_key
+    if s.embedding_api_key:
+        os.environ["EMBEDDING_API_KEY"] = s.embedding_api_key
+
+    # 2. 初始化 LLMService（使用 DB 中的配置）
     from app.services.llm_service import LLMService
 
-    app.state.llm_service = LLMService(persona_dict)
+    app.state.llm_service = LLMService(
+        persona_dict,
+        llm_api_key=s.llm_api_key,
+        llm_base_url=s.llm_base_url,
+        llm_model=s.llm_model,
+        embedding_api_key=s.embedding_api_key,
+        embedding_base_url=s.embedding_base_url,
+        embedding_model=s.embedding_model,
+    )
     try:
         await app.state.llm_service.init_knowledge_base()
     except Exception as e:
         logger.warning(f"Knowledge base init skipped: {e}")
-    logger.info(f"LLM service initialized: model={settings.llm_model}")
+    logger.info(f"LLM service initialized: model={s.llm_model}")
 
-    # 3. 初始化 LiveTalking 客户端（供 session 查询）
+    # 3. 初始化 LiveTalking 客户端
     from app.services.livetalking_client import LiveTalkingClient
 
-    app.state.lt_client = LiveTalkingClient(base_url=settings.livetalking_base_url)
-    logger.info(f"LiveTalking client initialized: {settings.livetalking_base_url}")
+    app.state.lt_client = LiveTalkingClient(base_url=s.livetalking_base_url)
+    logger.info(f"LiveTalking client initialized: {s.livetalking_base_url}")
 
     # 4. 播放队列和弹幕采集器在直播启动时懒初始化
     app.state.play_queue = None
@@ -95,3 +134,15 @@ async def health_check():
 # 注册所有路由
 from app.api import router
 app.include_router(router)
+
+
+if __name__ == "__main__":
+    import uvicorn
+    logger.info(f"Starting backend on {settings.app_host}:{settings.app_port}")
+    logger.info(f"API docs: http://localhost:{settings.app_port}/docs")
+    uvicorn.run(
+        "app.main:app",
+        host=settings.app_host,
+        port=settings.app_port,
+        reload=True,
+    )
