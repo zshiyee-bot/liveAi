@@ -11,7 +11,7 @@ function createWindow() {
     height: 900,
     minWidth: 1000,
     minHeight: 700,
-    title: 'LiveStream Pro - 数字人直播控制',
+    title: 'LiveStream - 数字人直播控制',
     webPreferences: {
       preload: join(__dirname, 'preload.js'),
       contextIsolation: true,

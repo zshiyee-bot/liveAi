@@ -51,9 +51,9 @@
           <el-button v-else type="danger" @click="handleStop">
             <el-icon><VideoPause /></el-icon> 停止直播
           </el-button>
-          <el-button v-if="store.running" @click="handleInterrupt" type="warning" plain>
+          <!-- <el-button v-if="store.running" @click="handleInterrupt" type="warning" plain>
             打断
-          </el-button>
+          </el-button> -->
         </el-col>
       </el-row>
     </el-card>
@@ -114,13 +114,12 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted, onUnmounted } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import { ElMessage } from 'element-plus'
 import { useLivestreamStore } from '@/stores/livestream'
 import { useQueueStore } from '@/stores/queue'
 import LiveChat from '@/components/dashboard/LiveChat.vue'
 import QueueStatus from '@/components/dashboard/QueueStatus.vue'
-import { wsClient } from '@/api/ws'
 import client from '@/api/client'
 
 const store = useLivestreamStore()
@@ -157,14 +156,8 @@ async function quickMock(type: string, sender: string, content: string) {
 const canStart = computed(() => roomId.value && store.sessionId)
 
 onMounted(() => {
-  wsClient.connect('/ws')
   store.fetchStatus()
   store.fetchSessions()
-})
-
-onUnmounted(() => {
-  wsClient.disconnect()
-  queueStore.stopPolling()
 })
 
 async function handleStart() {

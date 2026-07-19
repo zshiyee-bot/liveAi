@@ -1,5 +1,5 @@
-appId: com.livestream.pro
-productName: LiveStream Pro
+appId: com.livestream.base
+productName: LiveStream
 directories:
   output: release
   buildResources: build

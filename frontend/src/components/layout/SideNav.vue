@@ -1,7 +1,7 @@
 <template>
   <div style="padding: 20px 16px">
     <h2 style="color: #409eff; font-size: 18px; margin: 0 0 24px 0">
-      <el-icon><Monitor /></el-icon> LiveStream Pro
+      <el-icon><Monitor /></el-icon> LiveStream
     </h2>
     <el-menu
       :default-active="route.path"

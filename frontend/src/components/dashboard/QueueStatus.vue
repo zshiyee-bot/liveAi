@@ -7,10 +7,28 @@
       </span>
     </template>
 
+    <!-- 正在播放 -->
+    <div v-if="queue.currentItem" style="margin-bottom: 12px">
+      <div
+        style="padding: 8px 10px; background: #fef0f0; border: 1px solid #fbc4c4;
+               border-radius: 6px; font-size: 13px"
+      >
+        <div style="color: #f56c6c; font-weight: 600; margin-bottom: 4px">
+          <el-icon><VideoPlay /></el-icon> 正在播放
+          <el-tag size="small" :type="sourceTag(queue.currentItem.source)" style="margin-left: 6px">
+            {{ sourceLabel(queue.currentItem.source) }}
+          </el-tag>
+        </div>
+        <span style="color: #f56c6c; font-weight: 600">
+          {{ queue.currentItem.content_preview }}
+        </span>
+      </div>
+    </div>
+
     <!-- 高优先级 -->
     <div v-if="queue.highItems.length > 0" style="margin-bottom: 12px">
       <div style="font-size: 13px; color: #e6a23c; font-weight: 600; margin-bottom: 6px">
-        <el-tag type="warning" size="small">高优</el-tag> 弹幕回复 / 礼物感谢 / 关注欢迎
+        <el-tag type="warning" size="small">高优</el-tag> 排队中
       </div>
       <div
         v-for="item in queue.highItems"
@@ -25,7 +43,7 @@
     <!-- 低优先级 -->
     <div v-if="queue.lowItems.length > 0">
       <div style="font-size: 13px; color: #909399; font-weight: 600; margin-bottom: 6px">
-        <el-tag type="info" size="small">话术</el-tag> 自动补位
+        <el-tag type="info" size="small">话术</el-tag> 排队中
       </div>
       <div
         v-for="item in queue.lowItems"
@@ -38,7 +56,7 @@
     </div>
 
     <div
-      v-if="queue.highItems.length === 0 && queue.lowItems.length === 0"
+      v-if="!queue.currentItem && queue.highItems.length === 0 && queue.lowItems.length === 0"
       style="color: #999; text-align: center; padding: 40px 0; font-size: 13px"
     >
       队列为空，等待话术自动补位...

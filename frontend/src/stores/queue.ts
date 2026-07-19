@@ -7,6 +7,7 @@ import client from '@/api/client'
 export const useQueueStore = defineStore('queue', () => {
   const highItems = ref<QueueItem[]>([])
   const lowItems = ref<QueueItem[]>([])
+  const currentItem = ref<{ id: string; source: string; content_preview: string } | null>(null)
   let pollTimer: ReturnType<typeof setInterval> | null = null
 
   function updateFromSnapshot(snapshot: { high: QueueItem[]; low: QueueItem[] }) {
@@ -14,7 +15,6 @@ export const useQueueStore = defineStore('queue', () => {
     lowItems.value = snapshot.low || []
   }
 
-  // HTTP 轮询获取队列（每 1.5s）
   async function pollQueue() {
     try {
       const { data } = await client.get('/api/queue')
@@ -27,7 +27,7 @@ export const useQueueStore = defineStore('queue', () => {
   function startPolling() {
     if (pollTimer) return
     pollTimer = setInterval(pollQueue, 1500)
-    pollQueue() // 立即拉一次
+    pollQueue()
   }
 
   function stopPolling() {
@@ -37,14 +37,24 @@ export const useQueueStore = defineStore('queue', () => {
     }
     highItems.value = []
     lowItems.value = []
+    currentItem.value = null
   }
 
-  // WebSocket 实时更新（比轮询更快）
   wsClient.on('queue_update', (msg) => {
-    // if (msg.data) {
-    //   updateFromSnapshot(msg.data)
-    // }
+    if (msg.data) {
+      updateFromSnapshot(msg.data)
+    }
   })
 
-  return { highItems, lowItems, updateFromSnapshot, startPolling, stopPolling }
+  wsClient.on('playback_started', (msg) => {
+    if (msg.item_id) {
+      currentItem.value = {
+        id: msg.item_id,
+        source: msg.source || '',
+        content_preview: msg.content_preview || '',
+      }
+    }
+  })
+
+  return { highItems, lowItems, currentItem, updateFromSnapshot, startPolling, stopPolling }
 })

@@ -21,4 +21,4 @@ def setup_logger(name: str, level: int = logging.INFO) -> logging.Logger:
 
 
 # 默认 logger
-logger = setup_logger("livestream-pro")
+logger = setup_logger("livestream")

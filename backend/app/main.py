@@ -28,7 +28,7 @@ settings = load_settings()
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """应用生命周期：启动时初始化所有服务，关闭时清理资源"""
-    logger.info("Starting LiveStream Pro backend...")
+    logger.info("Starting LiveStream backend...")
     await init_db()
     logger.info("Database initialized")
 
@@ -96,7 +96,7 @@ async def lifespan(app: FastAPI):
 
     yield
 
-    logger.info("Shutting down LiveStream Pro backend...")
+    logger.info("Shutting down LiveStream backend...")
     if app.state.collector:
         try:
             await app.state.collector.disconnect()
@@ -105,7 +105,7 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(
-    title="LiveStream Pro",
+    title="LiveStream",
     description="数字人直播控制系统",
     version="0.1.0",
     lifespan=lifespan,

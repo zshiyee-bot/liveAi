@@ -416,7 +416,12 @@ async def start_livestream(req: LivestreamStartRequest):
             await lt_client.send_audio(item.content)
         else:
             await lt_client.send_text(item.content)
-        await _broadcast_status({"type": "playback_started", "item_id": item.id, "source": item.source})
+        await _broadcast_status({
+            "type": "playback_started",
+            "item_id": item.id,
+            "source": item.source,
+            "content_preview": item.content[:80],
+        })
 
     async def try_play_next():
         """出队并发送（带锁，同一时刻只执行一次）"""

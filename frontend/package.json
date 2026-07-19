@@ -1,5 +1,5 @@
 {
-  "name": "livestream-pro",
+  "name": "livestream",
   "version": "0.1.0",
   "description": "数字人直播控制系统",
   "main": "dist-electron/main.js",
