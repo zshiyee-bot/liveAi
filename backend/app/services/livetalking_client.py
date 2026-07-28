@@ -34,6 +34,7 @@ class LiveTalkingClient:
         self._sse_task: Optional[asyncio.Task] = None
         self._playback_callbacks: list[Callable] = []
         self._running = False
+        self._http = httpx.AsyncClient(timeout=30.0)
 
     # ── Session 管理 ──────────────────────────────────────────────
 
@@ -66,7 +67,6 @@ class LiveTalkingClient:
         if not self.session_id:
             raise ValueError("session_id not set, call set_session() first")
 
-        self._http = httpx.AsyncClient(timeout=30.0)
         self._running = True
 
         # 启动 SSE 监听
@@ -85,9 +85,9 @@ class LiveTalkingClient:
                 pass
             self._sse_task = None
 
-        if self._http:
-            await self._http.aclose()
-            self._http = None
+        # if self._http:
+        #     await self._http.aclose()
+        #     self._http = None
 
         self._playback_callbacks.clear()
 
@@ -197,6 +197,43 @@ class LiveTalkingClient:
                 files={"file": (os.path.basename(audio_path), f)},
             )
         data = resp.json()
+        return data
+
+    async def convert_media(self, video_path: str) -> dict:
+        """上传视频到 LiveTalking 转换（解压为帧序列+音频），返回 {media_path, ...}"""
+        if not self._http:
+            raise RuntimeError("Not connected")
+
+        if not os.path.exists(video_path):
+            raise FileNotFoundError(f"Video file not found: {video_path}")
+
+        with open(video_path, "rb") as f:
+            resp = await self._http.post(
+                f"{self.base_url}/convert_custom_media",
+                files={"file": (os.path.basename(video_path), f)},
+            )
+        data = resp.json()
+        if data.get("code") != 0:
+            logger.error(f"convert_custom_media failed: {data}")
+            raise RuntimeError(f"Convert media failed: {data.get('msg', 'unknown')}")
+        logger.info(f"Media converted: {data['data']['media_path']}")
+        return data["data"]
+
+    async def load_media(self, media_path: str):
+        """加载预转换的媒体并播放"""
+        if not self._http:
+            raise RuntimeError("Not connected")
+
+        resp = await self._http.post(
+            f"{self.base_url}/load_custom_media",
+            json={
+                "sessionid": self.session_id,
+                "media_path": media_path,
+            },
+        )
+        data = resp.json()
+        if data.get("code") != 0:
+            logger.warning(f"load_custom_media error: {data}")
         return data
 
     async def interrupt(self):

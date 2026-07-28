@@ -7,6 +7,7 @@
       <el-radio-group v-model="form.type">
         <el-radio value="text">文字</el-radio>
         <el-radio value="audio">音频</el-radio>
+        <el-radio value="video">视频</el-radio>
       </el-radio-group>
     </el-form-item>
     <el-form-item v-if="form.type === 'text'" label="内容">
@@ -19,12 +20,22 @@
     </el-form-item>
     <el-form-item v-if="form.type === 'audio'" label="音频">
       <el-upload
-        :before-upload="handleAudioSelect"
+        :before-upload="handleMediaSelect"
         :show-file-list="!!selectedFile"
-        :file-list="audioFileList"
+        :file-list="mediaFileList"
         accept="audio/*"
       >
         <el-button type="primary" plain>选择音频文件</el-button>
+      </el-upload>
+    </el-form-item>
+    <el-form-item v-if="form.type === 'video'" label="视频">
+      <el-upload
+        :before-upload="handleMediaSelect"
+        :show-file-list="!!selectedFile"
+        :file-list="mediaFileList"
+        accept="video/*"
+      >
+        <el-button type="primary" plain>选择视频文件（25fps, mp4）</el-button>
       </el-upload>
     </el-form-item>
     <el-form-item label="标签">
@@ -49,7 +60,7 @@
 import { ref, reactive, computed } from 'vue'
 import { ElMessage } from 'element-plus'
 import type { UploadFile } from 'element-plus'
-import { createScript, uploadAudio } from '@/api/scripts'
+import { createScript, uploadFile } from '@/api/scripts'
 
 const emit = defineEmits<{ created: [] }>()
 
@@ -60,16 +71,16 @@ const submitting = ref(false)
 const canSubmit = computed(() => {
   if (!form.title) return false
   if (form.type === 'text' && !form.content) return false
-  if (form.type === 'audio' && !selectedFile.value) return false
+  if ((form.type === 'audio' || form.type === 'video') && !selectedFile.value) return false
   return true
 })
 
-const audioFileList = computed(() => {
+const mediaFileList = computed(() => {
   if (!selectedFile.value) return []
   return [{ name: selectedFile.value.name, uid: 1 }]
 })
 
-function handleAudioSelect(file: UploadFile) {
+function handleMediaSelect(file: UploadFile) {
   selectedFile.value = file as unknown as File
   return false
 }
@@ -77,22 +88,9 @@ function handleAudioSelect(file: UploadFile) {
 async function handleSubmit() {
   submitting.value = true
   try {
-    if (form.type === 'audio' && selectedFile.value) {
-      // Create text placeholder first, then upload audio
-      const script = await createScript({
-        title: form.title,
-        type: 'audio',
-        content: '',
-        tags: form.tags,
-      })
-      await uploadAudio(script.id, selectedFile.value)
-    } else {
-      await createScript({
-        title: form.title,
-        type: 'text',
-        content: form.content,
-        tags: form.tags,
-      })
+    const script = await createScript({ title: form.title, type: form.type, content: form.content, tags: form.tags })
+    if (selectedFile.value) {
+      await uploadFile(script.id, selectedFile.value)
     }
     ElMessage.success('话术已添加')
     form.title = ''

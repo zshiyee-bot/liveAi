@@ -29,7 +29,7 @@ class PersonaResponse(BaseModel):
 
 class ScriptCreate(BaseModel):
     title: str = Field(..., min_length=1, max_length=200)
-    type: str = Field(default="text", pattern="^(text|audio)$")
+    type: str = Field(default="text", pattern="^(text|audio|video)$")
     content: str = Field(default="")
     tags: list[str] = Field(default_factory=list)
 
@@ -46,7 +46,7 @@ class ScriptResponse(BaseModel):
     title: str
     type: str
     content: str
-    audio_path: str | None = None
+    file_path: str | None = None
     tags: list[str]
     enabled: bool
     play_count: int

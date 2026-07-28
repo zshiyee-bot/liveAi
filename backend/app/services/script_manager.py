@@ -54,7 +54,7 @@ class ScriptManager:
 
             item = QueueItem(
                 type=chosen.type,
-                content=chosen.content if chosen.type == "text" else (chosen.audio_path or ""),
+                content=chosen.content if chosen.type == "text" else (chosen.file_path or ""),
                 source="script",
                 level="low",
                 metadata={"script_id": chosen.id, "title": chosen.title},

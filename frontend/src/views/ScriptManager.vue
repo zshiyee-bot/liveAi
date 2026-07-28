@@ -17,12 +17,14 @@
         <el-table-column prop="title" label="标题" min-width="150" />
         <el-table-column label="类型" width="80">
           <template #default="{ row }">
-            <el-tag :type="row.type === 'audio' ? 'warning' : ''" size="small">{{ row.type }}</el-tag>
+            <el-tag :type="row.type === 'audio' ? 'warning' : row.type === 'video' ? 'danger' : ''" size="small">
+              {{ typeLabel(row.type) }}
+            </el-tag>
           </template>
         </el-table-column>
         <el-table-column label="内容预览" min-width="200">
           <template #default="{ row }">
-            <span style="font-size: 13px; color: #666">{{ row.content?.slice(0, 80) || row.audio_path || '-' }}</span>
+            <span style="font-size: 13px; color: #666">{{ row.content?.slice(0, 80) || row.file_path || '-' }}</span>
           </template>
         </el-table-column>
         <el-table-column label="播放次数" width="80" prop="play_count" />
@@ -39,13 +41,15 @@
           <template #default="{ row }">
             <el-button size="small" type="danger" @click="handleDelete(row.id)" text>删除</el-button>
             <el-upload
-              v-if="row.type === 'audio' || !row.content"
+              v-if="row.type === 'audio' || row.type === 'video' || !row.content"
               :show-file-list="false"
               :before-upload="(f: UploadFile) => handleUpload(row.id, f)"
-              accept="audio/*"
+              :accept="row.type === 'video' ? 'video/*' : 'audio/*'"
               style="display: inline-block; margin-left: 4px"
             >
-              <el-button size="small" type="primary" text>上传音频</el-button>
+              <el-button size="small" type="primary" text>
+                {{ row.type === 'video' ? '上传视频' : '上传音频' }}
+              </el-button>
             </el-upload>
           </template>
         </el-table-column>
@@ -59,12 +63,15 @@ import { onMounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import type { UploadFile } from 'element-plus'
 import { useScriptsStore } from '@/stores/scripts'
-import { deleteScript, toggleScript, uploadAudio } from '@/api/scripts'
+import { deleteScript, toggleScript, uploadFile } from '@/api/scripts'
 import ScriptForm from '@/components/scripts/ScriptForm.vue'
 
 const store = useScriptsStore()
 
 onMounted(() => store.fetchAll())
+
+const TYPE_LABELS: Record<string, string> = { text: '文字', audio: '音频', video: '视频' }
+function typeLabel(t: string): string { return TYPE_LABELS[t] || t }
 
 async function onCreated() {
   await store.fetchAll()
@@ -92,8 +99,8 @@ async function handleDelete(id: number) {
 
 async function handleUpload(scriptId: number, file: UploadFile) {
   try {
-    await uploadAudio(scriptId, file as unknown as File)
-    ElMessage.success('音频已上传')
+    await uploadFile(scriptId, file as unknown as File)
+    ElMessage.success('文件已上传')
     await store.fetchAll()
   } catch {
     // error handled

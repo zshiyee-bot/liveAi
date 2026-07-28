@@ -13,9 +13,9 @@ export interface PersonaConfig {
 export interface Script {
   id: number
   title: string
-  type: 'text' | 'audio'
+  type: 'text' | 'audio' | 'video'
   content: string
-  audio_path: string | null
+  file_path: string | null
   tags: string[]
   enabled: boolean
   play_count: number

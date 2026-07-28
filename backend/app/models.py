@@ -64,7 +64,7 @@ class Script(Base):
     title: Mapped[str] = mapped_column(String(200), default="")
     type: Mapped[str] = mapped_column(String(20), default="text")
     content: Mapped[str] = mapped_column(Text, default="")
-    audio_path: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    file_path: Mapped[str | None] = mapped_column(String(500), nullable=True)
     tags: Mapped[str] = mapped_column(Text, default="[]")
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
     play_count: Mapped[int] = mapped_column(Integer, default=0)
@@ -88,7 +88,7 @@ class Script(Base):
             "title": self.title,
             "type": self.type,
             "content": self.content,
-            "audio_path": self.audio_path,
+            "file_path": self.file_path,
             "tags": self.tags_list,
             "enabled": self.enabled,
             "play_count": self.play_count,

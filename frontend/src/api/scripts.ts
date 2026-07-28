@@ -25,13 +25,13 @@ export async function toggleScript(id: number): Promise<{ enabled: boolean }> {
   return data
 }
 
-export async function uploadAudio(scriptId: number, file: File): Promise<{ audio_path: string }> {
+export async function uploadFile(scriptId: number, file: File): Promise<{ file_path: string }> {
   const form = new FormData()
   form.append('script_id', String(scriptId))
   form.append('file', file)
-  const { data } = await client.post('/api/scripts/upload-audio', form, {
+  const { data } = await client.post('/api/scripts/upload-file', form, {
     headers: { 'Content-Type': 'multipart/form-data' },
-    timeout: 60000,
+    timeout: 120000,
   })
   return data
 }

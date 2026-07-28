@@ -188,6 +188,12 @@ async def delete_script(script_id: int, db: AsyncSession = Depends(get_db)):
     script = result.scalar_one_or_none()
     if script is None:
         raise HTTPException(status_code=404, detail="Script not found")
+    # 删除关联文件
+    if script.file_path and os.path.isfile(script.file_path):
+        try:
+            os.remove(script.file_path)
+        except Exception as e:
+            logger.warning(f"Failed to delete script file: {e}")
     await db.delete(script)
     await db.commit()
     return {"code": 0, "msg": "ok"}
@@ -204,8 +210,8 @@ async def toggle_script(script_id: int, db: AsyncSession = Depends(get_db)):
     return {"code": 0, "enabled": script.enabled}
 
 
-@router.post("/api/scripts/upload-audio", tags=["scripts"])
-async def upload_audio(
+@router.post("/api/scripts/upload-file", tags=["scripts"])
+async def upload_file(
     script_id: int = Form(...),
     file: UploadFile = File(...),
     db: AsyncSession = Depends(get_db),
@@ -214,18 +220,37 @@ async def upload_audio(
     script = result.scalar_one_or_none()
     if script is None:
         raise HTTPException(status_code=404, detail="Script not found")
-    os.makedirs(UPLOAD_DIR, exist_ok=True)
-    ext = os.path.splitext(file.filename or "audio.wav")[1]
-    filename = f"{uuid.uuid4().hex}{ext}"
-    filepath = os.path.join(UPLOAD_DIR, filename)
+
     content = await file.read()
-    with open(filepath, "wb") as f:
-        f.write(content)
-    script.audio_path = filepath
-    script.type = "audio"
+    os.makedirs(UPLOAD_DIR, exist_ok=True)
+
+    if script.type == "video":
+        # 视频：先存本地，再调 LiveTalking convert_custom_media 转换
+        ext = os.path.splitext(file.filename or "video.mp4")[1]
+        local_path = os.path.join(UPLOAD_DIR, f"{uuid.uuid4().hex}{ext}")
+        with open(local_path, "wb") as f:
+            f.write(content)
+
+        from app.services.livetalking_client import LiveTalkingClient
+        from app.main import app as main_app
+        lt = main_app.state.lt_client or LiveTalkingClient(base_url=_settings.livetalking_base_url)
+        result_data = await lt.convert_media(local_path)
+        script.file_path = result_data["media_path"]  # 存 media_path，不是本地路径
+        # 转换完成后删除本地临时视频文件
+        try:
+            os.remove(local_path)
+        except Exception as e:
+            logger.warning(f"Failed to remove temp video: {e}")
+    else:
+        ext = os.path.splitext(file.filename or "audio.wav")[1]
+        local_path = os.path.join(UPLOAD_DIR, f"{uuid.uuid4().hex}{ext}")
+        with open(local_path, "wb") as f:
+            f.write(content)
+        script.file_path = local_path
+
     await db.commit()
     await db.refresh(script)
-    return {"code": 0, "audio_path": filepath}
+    return {"code": 0, "file_path": script.file_path}
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -414,7 +439,9 @@ async def start_livestream(req: LivestreamStartRequest):
 
     async def do_send(item):
         """发送一条到 LiveTalking"""
-        if item.type == "audio" and item.content:
+        if item.type == "video" and item.content:
+            await lt_client.load_media(item.content)
+        elif item.type == "audio" and item.content:
             await lt_client.send_audio(item.content)
         else:
             await lt_client.send_text(item.content)
