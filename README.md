@@ -17,6 +17,9 @@ python app/main.py
 ## 前端 (Web)
 cd frontend && npm run build
 
+## Windows整合包    
+<https://pan.quark.cn/s/a040bf5cb065>  
+
 ## 运行
 1. 运行[LiveTalking](https://github.com/lipku/livetalking)服务  
 浏览器打开http://livetalking-server:8010/index.html  连接视频
