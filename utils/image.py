@@ -151,6 +151,10 @@ _KEY_SEQ = itertools.count(1)
 _BUDGET_CACHE = {}
 _STATS = {'hits': 0, 'misses': 0}      # 累计命中/未命中（诊断用）
 _ACTIVE_WINDOW = 3.0        # 秒：超过这么久没被读过的段停止预取
+# 最近被读取的段（同一时刻只有一段在播）。只允许它向线程池提交预取任务：
+# 30 段素材链共用 4 个解码线程，若每段都各自预取 ahead 帧，过期段的几十个任务会把
+# 队列排满、活跃段的预取被饿死 —— 实测命中率因此掉到 61.9%。
+_ACTIVE_STORE = None
 
 
 def _pool():
@@ -206,6 +210,16 @@ def frame_cache_stats():
 def reset_frame_cache_stats():
     _STATS['hits'] = 0
     _STATS['misses'] = 0
+
+
+def clear_frame_cache():
+    """清空全局帧缓存并重置统计（诊断/测试用）。"""
+    global _POOL_BYTES, _ACTIVE_STORE
+    with _POOL_CACHE_LOCK:
+        _POOL_CACHE.clear()
+        _POOL_BYTES = 0
+    _ACTIVE_STORE = None
+    reset_frame_cache_stats()
 
 
 def _env_int(name, default):
@@ -271,7 +285,9 @@ class _FrameStore:
 
     def _advance(self, i):
         """记录访问位置并补足预取任务。"""
+        global _ACTIVE_STORE
         with self._lock:
+            _ACTIVE_STORE = self.key      # 声明「现在在读我这一段」
             if i < self._last_i:
                 # 回绕（段播完回到第 0 帧）或渲染线程回读：把预取游标拉回来。
                 # 已在全局缓存里的下标会被 _topup 跳过，所以回拉几乎没有代价。
@@ -286,7 +302,10 @@ class _FrameStore:
     def _topup_locked(self):
         if self.closed:
             return
-        # 非活跃段不预取：同时只有一段在播，替不播的段预取只会把活跃段的帧挤出全局缓存
+        # 非活跃段不预取：同时只有一段在播，替不播的段预取既会把活跃段的帧挤出
+        # 全局缓存，它排进线程池的任务还会挡住活跃段的预取。
+        if _ACTIVE_STORE != self.key:
+            return
         if time.time() - self._last_access > _ACTIVE_WINDOW:
             return
         target = min(self.n, self._last_i + 1 + self.ahead)
@@ -307,6 +326,13 @@ class _FrameStore:
                 return
 
     def _decode_into(self, i):
+        # 在队列里排了很久才轮到的任务：段已关闭、或已不是当前在播的段，直接放弃
+        # （不解码、不入缓存）。否则过期段残留的几十个任务会白占解码线程，
+        # 让活跃段的预取饿死（30 段实测命中率 61.9% 的主因）。
+        if self.closed or _ACTIVE_STORE != self.key:
+            with self._lock:
+                self._pending.discard(i)
+            return
         img = _decode(self.paths[i])
         with self._lock:
             self._pending.discard(i)
@@ -382,8 +408,11 @@ class LazyFrames:
             yield self[i]
 
     def close(self):
-        if self._paths is not None:      # 只有「根」持有 store 的生命周期
-            self._store.close()
+        # 视图也要能关闭：_load_segments 交出去的其实是 `frames[:n]` 视图，
+        # 早前「只有根持有 store 生命周期、视图 close() 空操作」的规则，会让调用方
+        # 的 close() 静默失效、会话结束后帧仍留在全局缓存（实测残留 605 帧）。
+        # 一个 store 只对应一段素材，任一视图关闭即代表这段素材不再使用。
+        self._store.close()
 
 
 def load_frames(img_list, eager_budget_mb=None, mode=None):
