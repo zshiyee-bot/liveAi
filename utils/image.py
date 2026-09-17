@@ -511,22 +511,31 @@ def load_frames_batch(img_lists, eager_budget_mb=None):
 # 幂等：重复 import / reload 不会重复包裹。
 # 逃生开关：设环境变量 LT_NO_CV2_PATCH=1 可临时停用（对照排查用）。
 # ─────────────────────────────────────────────────────────────────────────────
-_CV2_IMREAD_ORIG = cv2.imread
-_CV2_IMWRITE_ORIG = cv2.imwrite
+# ⚠️ 本模块有可能被以两个不同名字导入两次（例：avatars/musetalk/utils/__init__.py
+#    会把兄弟目录塞进 sys.path，于是 `image` 与 `utils.image` 可能并存）。
+#    第二次导入时 cv2.imread 已经是补丁版，若把它当「原实现」存下来就会无限递归，
+#    所以先探测有没有已经打过补丁。
+_ALREADY_PATCHED = getattr(cv2.imread, '_lt_unicode_safe', False)
+_CV2_IMREAD_ORIG = None if _ALREADY_PATCHED else cv2.imread
+_CV2_IMWRITE_ORIG = None if _ALREADY_PATCHED else cv2.imwrite
 
 
 def _cv2_imread_u(path, flags=cv2.IMREAD_COLOR):
     """cv2.imread 的 UTF-8 路径安全替身。"""
     if isinstance(path, (str, bytes, os.PathLike)):
         return imread_u(path, flags)
-    return _CV2_IMREAD_ORIG(path, flags)
+    if _CV2_IMREAD_ORIG is not None:
+        return _CV2_IMREAD_ORIG(path, flags)
+    return None       # 重复导入场景：没有可信的原实现，只能返回 None（不递归）
 
 
 def _cv2_imwrite_u(path, img, params=None):
     """cv2.imwrite 的 UTF-8 路径安全替身。"""
     if isinstance(path, (str, bytes, os.PathLike)):
         return imwrite_u(path, img, params)
-    return _CV2_IMWRITE_ORIG(path, img, params)
+    if _CV2_IMWRITE_ORIG is not None:
+        return _CV2_IMWRITE_ORIG(path, img, params)
+    return False      # 同上：不递归
 
 
 if not os.environ.get('LT_NO_CV2_PATCH'):
