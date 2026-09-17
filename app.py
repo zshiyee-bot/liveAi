@@ -78,17 +78,31 @@ def build_avatar_session(sessionid:str, params:dict)->BaseAvatar:
     opt_this.sessionid = sessionid
 
     avatar_id = params.get('avatar',opt.avatar_id) 
-    opt_this.avatar_id = avatar_id
     ref_audio = params.get('refaudio','') #音色
     ref_text = params.get('reftext','')
-    if (avatar_id and avatar_id != opt.avatar_id):
-        # Avoid reloading if already cached globally
-        if avatar_id not in global_avatars:
-            global_avatars[avatar_id] = load_avatar(avatar_id)
-        avatar_this = global_avatars[avatar_id]
-    else:
-        # Default avatar loaded at startup
-        avatar_this = global_avatars.get(opt.avatar_id)
+
+    # ─── 按素材目录自动判定模型类型，并（按需）加载权重 ────────────────
+    # 启动时不再预先加载任何模型；用户连接时由这里根据素材特征自动决定。
+    # 这样不需要用户选模型，也避免同时驻留两个模型撑爆显存。
+    from avatars.auto_loader import auto_models, detect_model, ModelLoadError
+
+    # 只有显式传了 model 参数时才覆盖自动判定（保留手动能力，便于排查）
+    force_kind = params.get('model') or None
+    try:
+        kind = force_kind or detect_model(avatar_id)
+        model_now, mod = auto_models.get(kind, batch_size=opt.batch_size)
+    except ModelLoadError as e:
+        # 消息是面向用户的中文，原样抛给上层转成 HTTP 错误
+        raise
+    opt_this.avatar_id = avatar_id
+    opt_this.model = kind
+
+    # 素材缓存按 (模型, 素材) 维度隔离 —— 不同模型不能共用同一份缓存
+    cache_key = f"{kind}:{avatar_id}"
+    if cache_key not in global_avatars:
+        global_avatars[cache_key] = mod.load_avatar(avatar_id)
+    avatar_this = global_avatars[cache_key]
+
     if ref_audio: #请求参数配置了参考音频
         opt_this.REF_FILE = ref_audio
         opt_this.REF_TEXT = ref_text
@@ -96,7 +110,7 @@ def build_avatar_session(sessionid:str, params:dict)->BaseAvatar:
     if custom_config:
         opt_this.customopt = json.loads(custom_config)
 
-    avatar_session = registry.create("avatar", opt.model, opt=opt_this, model=model, avatar=avatar_this)
+    avatar_session = registry.create("avatar", kind, opt=opt_this, model=model_now, avatar=avatar_this)
     return avatar_session
 
 async def offer(request):
@@ -122,36 +136,68 @@ async def download_record(request):
 
 
 def main():
-    global rtc_manager, opt, model,load_avatar
+    global rtc_manager, opt, model
     # 解析命令行参数
     from config import parse_args
     opt = parse_args()
 
-    # ─── 加载 avatar 插件（触发 @register 注册）──────────────────────
+    # ─── 注册 avatar 插件（触发 @register），但**不加载任何权重** ────────
+    # 依用户要求：启动时不确定用哪个模型，等用户连接时按素材目录自动判定。
+    # 好处：① 启动快（省掉 5~25s 权重加载）；② 显存 0 占用，直到真正要用；
+    #       ③ 不需要用户选模型，也不需要 --model 参数。
+    import importlib
+    from avatars.auto_loader import auto_models, scan_available, MODULE_OF
+
     _avatar_modules = {
         'musetalk':   'avatars.musetalk_avatar',
         'wav2lip':    'avatars.wav2lip_avatar',
         'ultralight': 'avatars.ultralight_avatar',
     }
-    import importlib
-    avatar_mod = importlib.import_module(_avatar_modules[opt.model])
-    load_model = avatar_mod.load_model
-    load_avatar = avatar_mod.load_avatar
-    warm_up = avatar_mod.warm_up
-    logger.info(opt)
+    # 全部 import 一次，让 @register 把三个 avatar 类都登记好；
+    # 真正加载权重推迟到连接时（auto_models.get）。
+    for _name, _path in _avatar_modules.items():
+        try:
+            importlib.import_module(_path)
+        except Exception as _e:
+            logger.warning(f"[auto] 跳过 avatar 模块 {_path}：{type(_e).__name__}: {_e}")
 
-    if opt.model == 'musetalk':
-        model = load_model()
-        global_avatars[opt.avatar_id] = load_avatar(opt.avatar_id) 
-        warm_up(opt.batch_size,model)      
-    elif opt.model == 'wav2lip':
-        model = load_model("./models/wav2lip.pth")
-        global_avatars[opt.avatar_id] = load_avatar(opt.avatar_id)
-        warm_up(opt.batch_size,model,256)
-    elif opt.model == 'ultralight':
-        model = load_model(opt)
-        global_avatars[opt.avatar_id] = load_avatar(opt.avatar_id)
-        warm_up(opt.batch_size,global_avatars[opt.avatar_id],160)
+    # 有活跃会话时拒绝切换模型。
+    # 注意 1：必须只数**已真正建好**的会话（值非 None）——
+    #   session_manager.create_session 会先插入一个 None 占位再调用本函数，
+    #   若把占位也算进去，那么"第一个连接"会把自己当成活跃会话，
+    #   于是永远无法从上一个模型切过来（切换永远被自己拒绝）。
+    # 注意 2：判据是「有没有别的会话正活着」，而不是「它用的模型是否等于当前模型」——
+    #   切换的目的就是要把**当前模型**卸载掉，所以正在用当前模型的那些会话
+    #   恰恰是必须阻止切换的对象。
+    auto_models.set_busy_check(lambda: [
+        s for s in session_manager.sessions.values() if s is not None
+    ])
+    # 僵尸会话回收：客户端在 ICE 完成前消失会留下永远 connecting 的会话，
+    # 若不清理会一直挡住模型切换（用户只能重启服务）。
+    auto_models.set_sweeper(lambda: session_manager.drop_stale_connecting(45.0))
+
+    # 启动时扫描可用素材，把「连哪个 ID 会加载哪个模型」打出来，便于用户对照
+    try:
+        avail = scan_available()
+        logger.info("=" * 62)
+        logger.info("[auto] 启动完成，未加载任何模型权重（连接时按素材自动加载）")
+        logger.info(f"[auto] 可用的 musetalk 素材（{len(avail['musetalk'])}）："
+                    + (", ".join(avail['musetalk'][:12])
+                       + (" ..." if len(avail['musetalk']) > 12 else "")
+                       if avail['musetalk'] else "（无）"))
+        logger.info(f"[auto] 可用的 wav2lip256 素材（{len(avail['wav2lip'])}）："
+                    + (", ".join(avail['wav2lip'][:12])
+                       + (" ..." if len(avail['wav2lip']) > 12 else "")
+                       if avail['wav2lip'] else "（无）"))
+        if avail['broken']:
+            logger.warning(f"[auto] 有 {len(avail['broken'])} 个目录不可用（缺文件或非 256 素材），"
+                           f"列举前 5 个：")
+            for _n, _why in list(avail['broken'].items())[:5]:
+                logger.warning(f"[auto]   · {_n}：{_why}")
+        logger.info("[auto] 网页里「角色 ID」填上面的素材名即可，模型会自动匹配")
+        logger.info("=" * 62)
+    except Exception as _e:
+        logger.warning(f"[auto] 素材扫描失败（不影响启动）：{type(_e).__name__}: {_e}")
 
     # init rtc manager
     session_manager.set_max_session(opt.max_session)

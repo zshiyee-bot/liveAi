@@ -317,7 +317,170 @@ class BaseAvatar:
             self.custom_audio_index[audiotype] = 0
             self.custom_index[audiotype] = 0
 
+    # ====================== 素材链调度（多段随机拼接） ======================
+    # 设计说明
+    #   需求：所有素材段共用同一张首尾图 -> 任意段可跳任意段，切换无接缝；
+    #        播完一段后随机挑下一段（排除刚播过的那段）；
+    #        切换可发生在句子中间（音频不断、嘴型不断，只换"身体来自哪段"）。
+    #
+    #   实现：本调度器只负责回答一个问题 ——
+    #        "当前这一帧应该取哪一段的第几帧？"（返回 (段号, 段内帧号)）
+    #   音频与嘴型的连续性由既有链路天然保证：
+    #        - 音频走 asr.output_queue，与素材段无关，切换时一帧不断；
+    #        - 嘴型由当前音频块驱动 inference_batch，切换不影响。
+    #
+    #   段列表长度为 1 时（官方单段素材），pick_next 恒返回 0，
+    #   行为与改动前完全一致（见 self._seg_cursor 的注释）。
+
+    def init_playlist(self, segments, mode=None):
+        """注册素材段列表。segments: list，元素为「一段的全部数组元组」。
+        每个段必须自带自己的 frame_list_cycle / face_list_cycle / coord_list_cycle
+        （musetalk 另有 mask_list_cycle / input_latent_list_cycle），
+        且各数组长度相同 —— 这样 (段号, 段内帧号) 就能同步索引所有数组。
+        传入 None 或空表示不使用素材链（回退到原单段行为）。
+
+        mode:
+          'sequence' — 顺序循环（0→1→…→n-1→0），永不越界
+          'shuffle'  — 随机挑下一段（排除刚播过的那段），等概率
+          'weight'   — 随机，但「本轮还没播过的段优先」（时间点越靠后概率越大），
+                       保证一轮内每段都出现一次
+        """
+        self.playlist = list(segments) if segments else []
+        self.playlist_index = 0      # 当前段号
+        self._seg_cursor = 0         # 段内帧号，只前进不回退
+        self._last_seg = None        # 刚播过的段号，下一轮随机时排除
+        self._cycle_count = 0        # 完整播完的段数（仅用于日志/统计）
+        self._played_round = set()   # 本轮已播过的段号（weight 模式用）
+        self.playlist_mode = mode or 'shuffle'
+        if self.playlist:
+            # 段名列表（供界面显示"当前正在播哪一段"）
+            try:
+                from avatars.wav2lip_avatar import _load_segments
+                self.playlist_names = getattr(_load_segments, 'last_names', None)
+            except Exception:
+                self.playlist_names = None
+            logger.info(f"素材链已启用：共 {len(self.playlist)} 段，模式={self.playlist_mode}，"
+                        f"入口=段0，各段帧数={[self._seg_len(i) for i in range(len(self.playlist))]}")
+
+
+    def reload_playlist(self, segments, mode=None):
+        """热重载素材链（免重启、不断音频）。
+
+        只替换「素材段数组 + 播放头 + 模式」，**不重建** ASR / TTS / 输出管线，
+        因此当前正在播的音频与嘴型链条不中断。
+        与 render 线程的竞争：下面三行赋值都是原子引用替换（GIL 保证），
+        render/inference 线程读到的要么是旧列表要么是新列表，不会读到半截状态。
+        """
+        if segments:
+            self.playlist = list(segments)
+        if mode:
+            self.playlist_mode = mode
+        # 播放头重置到入口段第 0 帧（接着播新链）
+        self.playlist_index = 0
+        self._seg_cursor = 0
+        self._last_seg = None
+        self._played_round = set()
+        # 旧数组引用换掉，让 GC 回收
+        try:
+            if self.playlist:
+                self.frame_list_cycle, self.face_list_cycle, self.coord_list_cycle = self.playlist[0][:3]
+        except Exception:
+            pass
+        logger.info(f"素材链热重载完成：共 {len(self.playlist)} 段，"
+                    f"模式={getattr(self, 'playlist_mode', 'shuffle')}")
+
+    def set_playlist_mode(self, mode):
+        """切换播放模式（sequence / shuffle / weight），立即生效。"""
+        if mode in ('sequence', 'shuffle', 'weight'):
+            self.playlist_mode = mode
+            self._played_round = set()
+            return True
+        return False
+
+
+    def _seg_len(self, seg_index):
+        """某段的帧数。以该段自身数组的长度为准。"""
+        seg = self.playlist[seg_index]
+        # 段元素是数组元组，取第一个数组的长度（各数组长度一致）
+        return len(seg[0])
+
+    @property
+    def use_playlist(self):
+        return bool(getattr(self, 'playlist', None))
+
+    def pick_next(self, cur):
+        """按 self.playlist_mode 挑下一段。
+
+        sequence : (cur+1) % n —— 顺序循环，永不越界（"走到尽头"= 回到第一段）
+        shuffle  : 在「非 cur」里等概率随机（无记忆）
+        weight   : 在「非 cur」里随机，但优先挑本轮还没播过的段 ——
+                   等价于「播得越少、概率越大」，保证一轮内每段都出现一次
+        段数==1 时恒返回 0（单段素材：行为等价于原来的顺序循环）。
+        """
+        n = len(self.playlist)
+        if n <= 1:
+            return 0
+
+        mode = getattr(self, 'playlist_mode', 'shuffle')
+
+        if mode == 'sequence':
+            return (cur + 1) % n
+
+        cand = [i for i in range(n) if i != cur]
+        if not cand:            # 理论不可达（n>=2 时 cand 非空）
+            return cur
+
+        if mode == 'weight':
+            # 本轮还没播过的优先
+            fresh = [i for i in cand if i not in self._played_round]
+            pool = fresh if fresh else cand
+            if not fresh:
+                # 一轮播完 -> 重开一轮（把当前段记为已播，避免立刻回到它）
+                self._played_round = {cur}
+            return int(np.random.choice(pool))
+
+        # shuffle：等概率、无记忆
+        return int(np.random.choice(cand))
+
+    def get_frame_index(self):
+        """取当前帧的 (段号, 段内帧号)，并推进播放头。
+        调用一次 = 产出一帧。静音分支与推理分支都调用本方法，
+        保证两条路径的播放头行为一致。
+        """
+        if not self.use_playlist:
+            return 0, None      # 回退：调用方用原来的 mirror_index
+
+        # 段播完 -> 挑下一段，重新从该段第 0 帧开始
+        if self._seg_cursor >= self._seg_len(self.playlist_index):
+            self._last_seg = self.playlist_index
+            self._played_round.add(self.playlist_index)
+            self._cycle_count += 1
+            nxt = self.pick_next(self.playlist_index)
+            logger.info(f"素材段切换：段{self.playlist_index} 播完({self._seg_cursor}帧) "
+                        f"-> 段{nxt}（模式={getattr(self, 'playlist_mode', 'shuffle')}，"
+                        f"已播完 {self._cycle_count} 段）")
+            self.playlist_index = nxt
+            self._seg_cursor = 0
+
+        seg_i, frame_i = self.playlist_index, self._seg_cursor
+        self._seg_cursor += 1
+        return seg_i, frame_i
+
+    def get_current_segment(self):
+        """当前段的所有数组（元组）。供 inference/paste_back 按段取数组。"""
+        if not self.use_playlist:
+            return None
+        return self.playlist[self.playlist_index]
+
     # ========================== 核心渲染及 Pipeline 桥接 ==========================
+    def _resolve_length(self):
+        """播放头用的长度：优先素材链当前段，否则用原有 frame_list_cycle。"""
+        if self.use_playlist:
+            return self._seg_len(self.playlist_index)
+        if hasattr(self, 'frame_list_cycle'):
+            return len(self.frame_list_cycle)
+        return 1
+
     def get_avatar_length(self):
         if hasattr(self, 'frame_list_cycle'):
             return len(self.frame_list_cycle)
@@ -355,15 +518,29 @@ class BaseAvatar:
 
             if is_all_silence: #全为静音数据，只需要取fullimg，不需要推理
                 for i in range(self.batch_size):
-                    idx = mirror_index(length, index)
-                    self.res_frame_queue.put((None, audio_frames[i*2:i*2+2], idx))
-                    index = index + 1
+                    if self.use_playlist:
+                        # 素材链：静音期同样推进播放头（架构上保留，
+                        # 当前直播全程说话，此分支通常不触发）
+                        seg_i, frame_i = self.get_frame_index()
+                        seg = self.get_current_segment()
+                        idx = (seg_i, frame_i)
+                        self.res_frame_queue.put((None, audio_frames[i*2:i*2+2], idx))
+                    else:
+                        idx = mirror_index(length, index)
+                        self.res_frame_queue.put((None, audio_frames[i*2:i*2+2], idx))
+                        index = index + 1
             else:
                 if current_speaking and not last_speaking and self.custom_index.get(1) is not None: #从静音到说话切换,并且有自定义静态视频
                     index = 0
                 t = time.perf_counter()
 
-                pred = self.inference_batch(index, audiofeat_batch)
+                if self.use_playlist:
+                    # 素材链：本批要产出的帧，逐帧问调度器"取哪段第几帧"
+                    idx_list = [self.get_frame_index() for _ in range(len(audiofeat_batch))]
+                else:
+                    idx_list = [mirror_index(length, index + i) for i in range(len(audiofeat_batch))]
+
+                pred = self.inference_batch(idx_list, audiofeat_batch)
 
                 counttime += (time.perf_counter() - t)
                 count += self.batch_size
@@ -372,7 +549,7 @@ class BaseAvatar:
                     count = 0
                     counttime = 0
                 for i, res_frame in enumerate(pred):
-                    self.res_frame_queue.put((res_frame, audio_frames[i*2:i*2+2], mirror_index(length, index)))
+                    self.res_frame_queue.put((res_frame, audio_frames[i*2:i*2+2], idx_list[i]))
                     index = index + 1
                     
             if current_speaking != last_speaking:
@@ -413,6 +590,9 @@ class BaseAvatar:
                     mirindex = mirror_index(len(self.custom_img_cycle[audiotype]),self.custom_index[audiotype])
                     target_frame = self.custom_img_cycle[audiotype][mirindex]
                     self.custom_index[audiotype] += 1
+                elif self.use_playlist and isinstance(idx, tuple):
+                    # 素材链：静音期取当前段的全身图（架构上保留该路径）
+                    target_frame = self.get_current_segment()[0][idx[1]]
                 else:
                     target_frame = self.frame_list_cycle[idx]
                 
@@ -446,8 +626,15 @@ class BaseAvatar:
                 else:
                     combine_frame = current_frame
 
-            cv2.putText(combine_frame, "LiveTalking", (10, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.3, (128,128,128), 1)
-            
+            # 原上游在此处用 cv2.putText 往每帧左上角烧录 "LiveTalking" 水印：
+            #     cv2.putText(combine_frame, "LiveTalking", (10, 20),
+            #                 cv2.FONT_HERSHEY_SIMPLEX, 0.3, (128,128,128), 1)
+            # 已按需求移除（水印会直接出现在 WebRTC/RTMP/虚拟摄像头推流画面上）。
+            # 如需恢复，取消上面两行注释即可。
+            # 注：README.md L220 / README-EN.md L211 声明"发布在 B站/视频号/抖音等平台
+            #     的视频需带上 LiveTalking 水印和标识"——移除水印仅用于本地调试/自用，
+            #     对外发布请自行遵守该声明，或自行叠加自己的水印。
+
             # 使用统一输出接口推送视频帧
             self.output.push_video_frame(combine_frame)
             self.record_video_data(combine_frame)

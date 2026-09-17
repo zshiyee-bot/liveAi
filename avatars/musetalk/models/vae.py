@@ -60,7 +60,8 @@ class VAE():
         if isinstance(img_name, str):
             window_fnames = [img_name]
             for fname in window_fnames:
-                img = cv2.imread(fname)
+                from utils.image import imread_u
+                img = imread_u(fname)      # cv2.imread 无法读中文路径
                 img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
                 img = cv2.resize(img, (self._resized_img, self._resized_img),
                                      interpolation=cv2.INTER_LANCZOS4)

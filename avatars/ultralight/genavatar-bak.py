@@ -104,7 +104,10 @@ for i in range(len_img):
     crop_img_ori = cv2.resize(crop_img_ori, (w, h))
     img[ymin:ymax, xmin:xmax] = crop_img_ori
 
-    cv2.putText(img, "LiveTalking", (10, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.3, (128,128,128), 1)
+    # 原上游在此处烧录 "LiveTalking" 水印。本文件是未被任何代码引用的历史备份
+    # （实际使用的是 avatars/ultralight/genavatar.py），同样已按需求移除：
+    #     cv2.putText(img, "LiveTalking", (10, 20),
+    #                 cv2.FONT_HERSHEY_SIMPLEX, 0.3, (128,128,128), 1)
     cv2.imwrite(f"{full_imgs_path}/{img_idx:08d}.png", img)
     cv2.imwrite(f"{face_imgs_path}/{img_idx:08d}.png", crop_img)
     coord_list.append((xmin, ymin, xmin+w, ymin+h))

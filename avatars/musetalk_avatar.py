@@ -66,7 +66,35 @@ def load_model():
     audio_processor = Audio2Feature(model_path="./models/whisper")
     return vae, unet, pe, timesteps, audio_processor
 
+def load_segment(base):
+    """加载单段 musetalk 素材，返回 5 元组（供素材链复用）。
+    数组顺序与 load_avatar 一致：
+      (frame_list_cycle, mask_list_cycle, coord_list_cycle,
+       mask_coords_list_cycle, input_latent_list_cycle)
+    """
+    with open(os.path.join(base, 'coords.pkl'), 'rb') as f:
+        coords = pickle.load(f)
+    latents = torch.load(os.path.join(base, 'latents.pt'))
+    fl = glob.glob(os.path.join(base, 'full_imgs', '*.[jpJP][pnPN]*[gG]'))
+    fl = sorted(fl, key=lambda x: int(os.path.splitext(os.path.basename(x))[0]))
+    frames = read_imgs(fl)
+    with open(os.path.join(base, 'mask_coords.pkl'), 'rb') as f:
+        mask_coords = pickle.load(f)
+    ml = glob.glob(os.path.join(base, 'mask', '*.[jpJP][pnPN]*[gG]'))
+    ml = sorted(ml, key=lambda x: int(os.path.splitext(os.path.basename(x))[0]))
+    masks = read_imgs(ml)
+    n = min(len(frames), len(masks), len(coords), len(mask_coords), len(latents))
+    return (frames[:n], masks[:n], coords[:n], mask_coords[:n], latents[:n])
+
+
 def load_avatar(avatar_id):
+    """加载素材。
+    返回 (frame_list_cycle, mask_list_cycle, coord_list_cycle,
+          mask_coords_list_cycle, input_latent_list_cycle, segments)。
+
+    当 avatar 目录下存在 playlist.json 时启用「素材链」：segments 为多段列表，
+    每段是一个 5 元组；此时前五项返回 segments[0]（向后兼容）。
+    """
     avatar_path = f"./data/avatars/{avatar_id}"
     full_imgs_path = f"{avatar_path}/full_imgs" 
     coords_path = f"{avatar_path}/coords.pkl"
@@ -88,7 +116,13 @@ def load_avatar(avatar_id):
     input_mask_list = glob.glob(os.path.join(mask_out_path, '*.[jpJP][pnPN]*[gG]'))
     input_mask_list = sorted(input_mask_list, key=lambda x: int(os.path.splitext(os.path.basename(x))[0]))
     mask_list_cycle = read_imgs(input_mask_list)
-    return frame_list_cycle,mask_list_cycle,coord_list_cycle,mask_coords_list_cycle,input_latent_list_cycle
+
+    from avatars.wav2lip_avatar import _load_segments
+    segments = _load_segments(avatar_path, avatar_id, 'musetalk')
+    if segments:
+        return segments[0][0], segments[0][1], segments[0][2], segments[0][3], segments[0][4], segments
+    return frame_list_cycle,mask_list_cycle,coord_list_cycle,mask_coords_list_cycle,input_latent_list_cycle,None
+
 
 @torch.no_grad()
 def warm_up(batch_size,model):
@@ -121,23 +155,56 @@ class MuseReal(BaseAvatar):
 
         self.vae, self.unet, self.pe, self.timesteps, self.audio_processor = model
 
-        self.frame_list_cycle,self.mask_list_cycle,self.coord_list_cycle,self.mask_coords_list_cycle, self.input_latent_list_cycle = avatar
+        # avatar 可能是 5 元组（单段，向后兼容）或 6 元组（末位是素材链 segments）
+        if len(avatar) == 6:
+            (self.frame_list_cycle, self.mask_list_cycle, self.coord_list_cycle,
+             self.mask_coords_list_cycle, self.input_latent_list_cycle, segs) = avatar
+            try:
+                from avatars.wav2lip_avatar import _load_segments
+                _mode = getattr(_load_segments, 'last_mode', None)
+            except Exception:
+                _mode = None
+            self.init_playlist(segs, mode=_mode)
+        else:
+            (self.frame_list_cycle, self.mask_list_cycle, self.coord_list_cycle,
+             self.mask_coords_list_cycle, self.input_latent_list_cycle) = avatar
+            self.init_playlist(None)
+        if self.use_playlist:
+            (self.frame_list_cycle, self.mask_list_cycle, self.coord_list_cycle,
+             self.mask_coords_list_cycle, self.input_latent_list_cycle) = self.playlist[0]
 
         self.asr = WhisperASR(opt,self,self.audio_processor)
         self.asr.warm_up()
+
+    def reload_playlist(self, segments, mode=None):
+        """热重载素材链（musetalk 版：需要同步 5 个数组，base 版只同步 3 个）。"""
+        super().reload_playlist(segments, mode=mode)
+        try:
+            if self.playlist:
+                (self.frame_list_cycle, self.mask_list_cycle, self.coord_list_cycle,
+                 self.mask_coords_list_cycle, self.input_latent_list_cycle) = self.playlist[0]
+        except Exception:
+            pass
+
+    def _seg_arrays(self, idx):
+        """按 idx 取 (frames, masks, coords, mask_coords, latents, frame_i)。
+        idx 为 tuple(段号, 段内帧号) 时从素材链取；为 int 时用单段数组。"""
+        if isinstance(idx, tuple):
+            seg_i, frame_i = idx
+            seg = self.playlist[seg_i]
+            return seg[0], seg[1], seg[2], seg[3], seg[4], frame_i
+        return (self.frame_list_cycle, self.mask_list_cycle, self.coord_list_cycle,
+                self.mask_coords_list_cycle, self.input_latent_list_cycle, idx)
     
 
     @torch.no_grad()
-    def inference_batch(self, index, audiofeat_batch):
-        # 这里的 index 是针对当前 avatar 的索引
-        # 返回一个 batch 的推理结果，batch 大小由 self.batch_size 决定
-        length = len(self.input_latent_list_cycle)
+    def inference_batch(self, idx_list, audiofeat_batch):
+        # idx_list: 本批每帧的索引，元素为 int（单段）或 tuple(段号,帧号)（素材链）
         whisper_batch = np.stack(audiofeat_batch)
         latent_batch = []
-        for i in range(self.batch_size):
-            idx = mirror_index(length, index + i)
-            latent = self.input_latent_list_cycle[idx]
-            latent_batch.append(latent)
+        for idx in idx_list:
+            _, _, _, _, latents, frame_i = self._seg_arrays(idx)
+            latent_batch.append(latents[frame_i])
         latent_batch = torch.cat(latent_batch, dim=0)
         
         audio_feature_batch = torch.from_numpy(whisper_batch)
@@ -152,15 +219,16 @@ class MuseReal(BaseAvatar):
         pred = self.vae.decode_latents(pred_latents)
         return pred
 
-    def paste_back_frame(self,pred_frame,idx:int):
-        bbox = self.coord_list_cycle[idx]
-        ori_frame = self.frame_list_cycle[idx].copy()
+    def paste_back_frame(self,pred_frame,idx):
+        frames, masks, coords, mask_coords_all, _, frame_i = self._seg_arrays(idx)
+        bbox = coords[frame_i]
+        ori_frame = frames[frame_i].copy()
         x1, y1, x2, y2 = bbox
 
         res_frame = cv2.resize(pred_frame.astype(np.uint8),(x2-x1,y2-y1))
-        mask = self.mask_list_cycle[idx]
-        mask_crop_box = self.mask_coords_list_cycle[idx]
+        mask = masks[frame_i]
+        mask_crop_box = mask_coords_all[frame_i]
 
         combine_frame = get_image_blending(ori_frame,res_frame,bbox,mask,mask_crop_box)
         return combine_frame
-            
+

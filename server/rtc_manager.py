@@ -41,11 +41,26 @@ class RTCManager:
 
     async def _create_pc_and_answer(self, avatar_session, sessionid, offer):
         """创建 PeerConnection、添加轨道、SDP 交换，返回已完成 answer 的 pc"""
+        # 记录创建时间与 pc 引用：session_manager.drop_stale_connecting()
+        # 需要它们来判断/清理「卡在 connecting 的僵尸会话」
+        import time as _time
+        if avatar_session is not None:
+            try:
+                if getattr(avatar_session, '_created_at', None) is None:
+                    avatar_session._created_at = _time.time()
+            except Exception:
+                pass
+
         ice_server = RTCIceServer(urls=self.opt.stun)
         pc = RTCPeerConnection(
             configuration=RTCConfiguration(iceServers=[ice_server])
         )
         self.pcs.add(pc)
+        if avatar_session is not None:
+            try:
+                avatar_session._rtc_pc = pc
+            except Exception:
+                pass
 
         @pc.on("connectionstatechange")
         async def on_connectionstatechange():
@@ -88,11 +103,41 @@ class RTCManager:
                 content_type="application/json",
                 text=json.dumps({"code": -1, "msg": str(e)}),
             )
+        except Exception as e:
+            # 模型自动加载/切换失败（素材不完整、显存不足、有活跃会话等）
+            # —— 必须给出可读原因，否则前端只会看到 "Failed to fetch" 之类的噪声
+            logger.warning("offer 构建会话失败：%s: %s", type(e).__name__, e)
+            return web.Response(
+                content_type="application/json",
+                text=json.dumps({
+                    "code": -2,
+                    "msg": f"{e}",
+                    "error_type": type(e).__name__,
+                }, ensure_ascii=False),
+            )
         logger.info('offer sessionid=%s', sessionid)
 
-        pc = await self._create_pc_and_answer(
-            session_manager.get_session(sessionid), sessionid, offer
-        )
+        # 建 PC 失败（例如客户端发了非法 SDP）时必须回收会话，
+        # 否则这个会话会永久占住名额，后续连接全报"已达上限"。
+        try:
+            pc = await self._create_pc_and_answer(
+                session_manager.get_session(sessionid), sessionid, offer
+            )
+        except Exception as e:
+            logger.warning("offer 建立 PeerConnection 失败，回收会话 %s：%s: %s",
+                           sessionid, type(e).__name__, e)
+            try:
+                session_manager.remove_session(sessionid)
+            except Exception:
+                logger.exception("回收会话 %s 时出错", sessionid)
+            return web.Response(
+                content_type="application/json",
+                text=json.dumps({
+                    "code": -3,
+                    "msg": f"建立 WebRTC 连接失败：{type(e).__name__}: {e}",
+                    "error_type": type(e).__name__,
+                }, ensure_ascii=False),
+            )
 
         return web.Response(
             content_type="application/json",

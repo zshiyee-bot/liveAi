@@ -1,0 +1,2442 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>素材库 · LiveTalking</title>
+<style>
+/* ══════════════════════════════════════════════════════════════
+   设计令牌
+   ══════════════════════════════════════════════════════════════ */
+:root{
+  --bg:#f4f5f7;
+  --bg-elev:#ffffff;
+  --sidebar:rgba(255,255,255,.86);
+  --card:#ffffff;
+  --line:#e9eaf0;
+  --line-2:#f1f2f6;
+  --ink:#111827;
+  --ink-2:#5b6474;
+  --ink-3:#7a8393;
+  --accent:#6366f1;
+  --accent-2:#8b5cf6;
+  --accent-soft:#eef0fe;
+  --grad:linear-gradient(135deg,#6366f1 0%,#8b5cf6 55%,#a855f7 100%);
+  --ok:#10b981; --ok-soft:#e7f8f1;
+  --warn:#f59e0b; --warn-soft:#fef4e3;
+  --bad:#ef4444;  --bad-soft:#fdeceb;
+  --sh-1:0 1px 2px rgba(16,24,40,.05);
+  --sh-2:0 4px 12px -2px rgba(16,24,40,.08), 0 2px 6px -2px rgba(16,24,40,.05);
+  --sh-3:0 18px 36px -12px rgba(16,24,40,.20), 0 8px 16px -8px rgba(16,24,40,.10);
+  --r-lg:18px; --r-md:12px; --r-sm:9px;
+  --ease:cubic-bezier(.22,.61,.36,1);
+}
+*{box-sizing:border-box}
+html,body{height:100%;margin:0}
+body{
+  font:14px/1.5 Inter,-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",Roboto,sans-serif;
+  color:var(--ink);background:var(--bg);overflow:hidden;
+  display:flex;height:100vh;-webkit-font-smoothing:antialiased;
+  font-feature-settings:"cv02","cv03","cv04","cv11";
+}
+button,input,select{font-family:inherit}
+::-webkit-scrollbar{width:10px;height:10px}
+::-webkit-scrollbar-thumb{background:#cfd3dc;border-radius:99px;border:3px solid transparent;background-clip:content-box}
+::-webkit-scrollbar-thumb:hover{background:#aeb4c0;background-clip:content-box}
+::-webkit-scrollbar-track{background:transparent}
+a{color:var(--accent);text-decoration:none}
+a:hover{text-decoration:underline}
+
+/* ══════════════ 侧边栏 ══════════════ */
+.side{
+  width:268px;flex:0 0 268px;display:flex;flex-direction:column;
+  background:var(--sidebar);backdrop-filter:blur(20px) saturate(180%);
+  border-right:1px solid var(--line);z-index:20;
+}
+.brand{padding:20px 18px 14px;display:flex;align-items:center;gap:11px;flex:0 0 auto}
+.brand .logo{
+  width:36px;height:36px;border-radius:11px;background:var(--grad);flex:0 0 36px;
+  display:grid;place-items:center;box-shadow:0 6px 16px -4px rgba(99,102,241,.55);
+}
+.brand .logo svg{width:19px;height:19px;fill:#fff}
+.brand h1{margin:0;font-size:15px;font-weight:700;letter-spacing:-.2px}
+.brand p{margin:1px 0 0;font-size:11.5px;color:var(--ink-3);font-weight:500}
+.side-scroll{flex:1;overflow-y:auto;padding:0 12px 16px;min-height:0}
+.sec{
+  font-size:11px;font-weight:700;color:var(--ink-3);letter-spacing:.06em;
+  padding:14px 10px 7px;text-transform:uppercase;
+}
+.nitem{
+  display:flex;align-items:center;gap:9px;height:36px;padding:0 10px;border-radius:var(--r-md);
+  cursor:default;user-select:none;color:var(--ink-2);position:relative;
+  transition:background .12s var(--ease),color .12s var(--ease);
+}
+.nitem:hover{background:#f1f2f6;color:var(--ink)}
+.nitem.on{background:var(--accent-soft);color:var(--accent);font-weight:600}
+.nitem.on::before{
+  content:'';position:absolute;left:-12px;top:9px;bottom:9px;width:3px;
+  background:var(--grad);border-radius:0 3px 3px 0;
+}
+.nitem .chev{
+  width:16px;flex:0 0 16px;display:grid;place-items:center;color:var(--ink-3);
+  font-size:9px;border-radius:4px;height:16px;transition:background .12s;
+}
+.nitem .chev:hover{background:#e5e7eb;color:var(--ink)}
+.nitem .ico{width:18px;height:18px;flex:0 0 18px;display:grid;place-items:center}
+.nitem .ico svg{width:17px;height:17px}
+.nitem .ico.dot::after{
+  content:'';width:9px;height:9px;border-radius:3px;background:#ced2db;
+  transition:background .14s var(--ease),box-shadow .14s var(--ease);
+}
+.nitem .ico.dot.has::after{
+  background:var(--accent);
+  box-shadow:0 0 0 3px rgba(99,102,241,.16);
+}
+.nitem.on .ico.dot::after{background:var(--accent);box-shadow:0 0 0 3px rgba(99,102,241,.2)}
+.nitem .lb{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:13px}
+.nitem .cnt{
+  font-size:11px;font-weight:600;color:var(--ink-3);background:#f1f2f6;
+  border-radius:99px;padding:1px 7px;flex:0 0 auto;line-height:1.5;
+}
+.nitem.on .cnt{background:#fff;color:var(--accent)}
+.nitem .cnt.warn{background:#fdf1de;color:#8d6417}
+.nitem .cnt.ok{background:#f1f2f6;color:var(--ink-3)}
+.nitem .cnt.live{background:#eaf7f1;color:#2f7f63}
+.nitem .cnt.live::before{
+  content:'';display:inline-block;width:6px;height:6px;border-radius:50%;
+  background:var(--ok);margin-right:4px;vertical-align:middle;animation:pulse 1.6s infinite;
+}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.35}}
+.sub{padding-left:22px}
+.sub .nitem{height:32px}
+.sub .nitem .lb{font-size:12.5px}
+
+/* ══════════════ 主区 ══════════════ */
+.main{flex:1;display:flex;flex-direction:column;min-width:0}
+.topbar{
+  height:64px;flex:0 0 64px;display:flex;align-items:center;gap:10px;padding:0 22px;
+  background:rgba(255,255,255,.72);backdrop-filter:blur(20px) saturate(180%);
+  border-bottom:1px solid var(--line);z-index:15;
+}
+.search{
+  position:relative;width:min(340px,36vw);flex:0 1 340px;
+}
+.search svg{position:absolute;left:12px;top:50%;transform:translateY(-50%);width:15px;height:15px;color:var(--ink-3);pointer-events:none}
+.search input{
+  width:100%;height:38px;border:1px solid transparent;background:#f1f2f6;border-radius:99px;
+  padding:0 34px 0 34px;font-size:13px;color:var(--ink);outline:none;
+  transition:background .15s var(--ease),box-shadow .15s var(--ease),border-color .15s var(--ease);
+}
+.search input::placeholder{color:var(--ink-3)}
+.search input:focus{background:#fff;border-color:#d9dce6;box-shadow:0 0 0 4px rgba(99,102,241,.12)}
+.search .clr{
+  position:absolute;right:10px;top:50%;transform:translateY(-50%);width:18px;height:18px;
+  border-radius:50%;background:#d5d8e0;color:#fff;border:0;font-size:11px;line-height:1;
+  cursor:pointer;display:none;place-items:center;padding:0;
+}
+.search.has .clr{display:grid}
+.spacer{flex:1}
+.seg{display:flex;background:#f1f2f6;border-radius:var(--r-sm);padding:3px;gap:2px}
+.seg button{
+  border:0;background:transparent;height:30px;padding:0 11px;border-radius:7px;cursor:pointer;
+  display:flex;align-items:center;gap:6px;color:var(--ink-2);font-size:12.5px;font-weight:500;
+  transition:background .14s var(--ease),color .14s var(--ease),box-shadow .14s var(--ease);
+}
+.seg button svg{width:15px;height:15px}
+.seg button:hover{color:var(--ink)}
+.seg button.on{background:#fff;color:var(--ink);box-shadow:var(--sh-1);font-weight:600}
+.sel-wrap{position:relative}
+select.sel{
+  height:38px;appearance:none;border:1px solid var(--line);background:#fff;border-radius:var(--r-sm);
+  padding:0 30px 0 12px;font-size:13px;color:var(--ink);cursor:pointer;outline:none;
+  transition:border-color .14s var(--ease),box-shadow .14s var(--ease);
+}
+select.sel:hover{border-color:#d9dce6}
+select.sel:focus{border-color:var(--accent);box-shadow:0 0 0 4px rgba(99,102,241,.12)}
+.sel-wrap::after{
+  content:'';position:absolute;right:12px;top:50%;width:7px;height:7px;pointer-events:none;
+  border-right:1.6px solid var(--ink-3);border-bottom:1.6px solid var(--ink-3);
+  transform:translateY(-70%) rotate(45deg);
+}
+.btn{
+  height:38px;padding:0 15px;border-radius:var(--r-sm);border:1px solid var(--line);background:#fff;
+  color:var(--ink);font-size:13px;font-weight:600;cursor:pointer;display:inline-flex;align-items:center;gap:7px;
+  transition:transform .12s var(--ease),box-shadow .15s var(--ease),background .14s var(--ease),border-color .14s var(--ease);
+  white-space:nowrap;
+}
+.btn svg{width:16px;height:16px;flex:0 0 16px}
+.btn:hover{background:#fbfbfd;border-color:#d9dce6;box-shadow:var(--sh-1)}
+.btn:active{transform:translateY(1px)}
+.btn.pri{background:var(--grad);border-color:transparent;color:#fff;box-shadow:0 6px 18px -6px rgba(99,102,241,.6)}
+.btn.pri:hover{box-shadow:0 10px 24px -6px rgba(99,102,241,.7);background:var(--grad)}
+.btn.dan{color:var(--bad);border-color:#f6d5d3}
+.btn.dan:hover{background:var(--bad-soft);border-color:#f0b6b3}
+.btn[disabled]{opacity:.42;cursor:not-allowed;box-shadow:none;transform:none}
+.btn.icon{padding:0;width:38px;justify-content:center}
+.menu-wrap{position:relative}
+.menu{
+  position:absolute;right:0;top:44px;background:#fff;border:1px solid var(--line);border-radius:var(--r-md);
+  box-shadow:var(--sh-3);padding:6px;min-width:216px;display:none;z-index:60;
+}
+.menu.on{display:block;animation:pop .14s var(--ease)}
+@keyframes pop{from{opacity:0;transform:translateY(-6px) scale(.98)}to{opacity:1;transform:none}}
+.menu .mi{
+  display:flex;align-items:center;gap:10px;padding:9px 11px;border-radius:8px;cursor:default;font-size:13px;
+  color:var(--ink);
+}
+.menu .mi:hover{background:#f4f5f7}
+.menu .mi .k{margin-left:auto;color:var(--ink-3);font-size:11.5px}
+
+/* ══════════════ 面包屑 ══════════════ */
+.crumb{
+  display:flex;align-items:center;gap:2px;padding:16px 22px 10px;flex:0 0 auto;flex-wrap:wrap;
+}
+.crumb .seg2{
+  padding:5px 10px;border-radius:8px;cursor:pointer;font-size:13.5px;color:var(--ink-2);
+  transition:background .12s,color .12s;max-width:320px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+}
+.crumb .seg2:hover{background:#eaecef;color:var(--ink)}
+.crumb .seg2.last{color:var(--ink);font-weight:700;cursor:default}
+.crumb .seg2.last:hover{background:transparent}
+.crumb .sep{color:#c9cdd6;font-size:15px;user-select:none}
+.crumb .meta{margin-left:auto;font-size:12.5px;color:var(--ink-3);font-weight:500;white-space:nowrap}
+
+/* 混模型告警条（库内同时有 wav2lip 与 musetalk 片段时出现） */
+.kindwarn{
+  display:flex;gap:10px;align-items:flex-start;margin:0 22px 6px;padding:11px 14px;
+  background:#fffbeb;border:1px solid #fde68a;border-radius:12px;
+  color:#92400e;font-size:13px;line-height:1.65;flex:0 0 auto;
+}
+.kindwarn b{color:#78350f}
+
+/* 模型类型 chip：wav2lip 用蓝、musetalk 用紫，便于一眼区分 */
+.chip.k.w{background:#e0e7ff;color:#3730a3;border-color:#c7d2fe}
+.chip.k.m{background:#f3e8ff;color:#6b21a8;border-color:#e9d5ff}
+/* 侧栏片段行的模型小标 */
+.kt{font-size:10px;font-weight:700;padding:1px 5px;border-radius:5px;flex:0 0 auto;letter-spacing:.2px}
+.kt.w{background:#e0e7ff;color:#3730a3}
+.kt.m{background:#f3e8ff;color:#6b21a8}
+
+/* 对话框里的单选卡片（新建库/训练时选模型） */
+.opts{display:flex;flex-direction:column;gap:8px}
+.opt{
+  display:block;position:relative;padding:11px 13px 11px 38px;border:1.5px solid var(--line);
+  border-radius:var(--r-sm);cursor:pointer;background:#fff;transition:border-color .14s,background .14s;
+}
+.opt:hover{border-color:#c7cbd6;background:#fafbfc}
+.opt.on{border-color:var(--accent);background:var(--accent-soft)}
+.opt input{position:absolute;left:13px;top:13px;margin:0;accent-color:var(--accent)}
+.opt .ot{display:block;font-size:13.5px;font-weight:650;color:var(--ink)}
+.opt .od{display:block;font-size:12px;color:#6b7484;margin-top:3px;line-height:1.62}
+.opt.on .ot{color:var(--accent)}
+
+/* 顶部"已选 N 项"标签 */
+#selCount{
+  display:none;align-items:center;font-size:12px;font-weight:600;color:var(--accent);
+  background:var(--accent-soft);border-radius:99px;padding:2px 10px;
+}
+
+/* 侧栏行的悬停操作按钮（重命名 / 删除）—— 之前只能右键卡片，不好发现 */
+.nitem .hops{display:none;gap:2px;flex:0 0 auto;margin-left:6px}
+.nitem:hover .hops{display:flex}
+.nitem:hover .cnt{display:none}          /* 悬停时用操作按钮占位，避免行宽跳动 */
+.hbtn{
+  width:20px;height:20px;border-radius:5px;display:flex;align-items:center;justify-content:center;
+  color:#7b8494;cursor:pointer;transition:background .12s,color .12s;
+}
+.hbtn svg{width:13px;height:13px}
+.hbtn:hover{background:#e8eaef;color:#2b3445}
+.hbtn.del:hover{background:#fee2e2;color:#dc2626}
+
+/* ══════════════ 内容区 ══════════════ */
+.content{flex:1;overflow-y:auto;padding:4px 22px 40px;min-height:0;position:relative}
+.grid{
+  display:grid;grid-template-columns:repeat(auto-fill,minmax(228px,1fr));
+  gap:18px;align-content:start;align-items:start;
+}
+.grid.list{display:flex;flex-direction:column;gap:6px}
+
+/* ── 卡片 ── */
+.card{
+  background:var(--card);border:1px solid var(--line);border-radius:var(--r-lg);overflow:hidden;
+  cursor:default;user-select:none;position:relative;
+  transition:transform .18s var(--ease),box-shadow .18s var(--ease),border-color .18s var(--ease);
+  animation:rise .28s var(--ease) backwards;
+}
+@keyframes rise{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
+.card:hover{transform:translateY(-3px);box-shadow:var(--sh-3);border-color:#dfe2ea}
+.card.sel{border-color:var(--accent);box-shadow:0 0 0 3px rgba(99,102,241,.16), var(--sh-2)}
+.card.sel:hover{box-shadow:0 0 0 3px rgba(99,102,241,.20), var(--sh-3)}
+
+/* 媒体区：模糊铺底 + 居中原始比例图（任何画幅都不变形） */
+.media{
+  position:relative;aspect-ratio:4/3;background:#1b1f2a;overflow:hidden;
+}
+.media .cover{
+  position:absolute;inset:-16%;width:132%;height:132%;object-fit:cover;
+  filter:blur(34px) saturate(1.3);opacity:.62;transform:scale(1.1);
+}
+.media .shot{
+  position:absolute;inset:0;margin:auto;max-width:calc(100% - 26px);max-height:calc(100% - 26px);
+  object-fit:contain;border-radius:10px;box-shadow:0 10px 26px -6px rgba(0,0,0,.55);
+  background:#0e1015;
+}
+.media.grad{background:var(--grad);display:grid;place-items:center}
+.media.grad .glyph{width:62px;height:62px;filter:drop-shadow(0 8px 20px rgba(0,0,0,.28));opacity:.97}
+.tag{
+  position:absolute;top:10px;left:10px;height:22px;padding:0 9px;border-radius:99px;
+  background:rgba(255,255,255,.92);color:#2b3242;font-size:11px;font-weight:700;
+  display:inline-flex;align-items:center;gap:4px;backdrop-filter:blur(8px);
+  box-shadow:0 2px 8px rgba(0,0,0,.18);letter-spacing:.01em;
+}
+.tag.muse{background:rgba(139,92,246,.92);color:#fff}
+.tag.wav{background:rgba(99,102,241,.92);color:#fff}
+.tag.ready{background:rgba(255,255,255,.93);color:#2b3242}
+.tag.wait{background:rgba(245,158,11,.96);color:#fff}
+.tag.done{background:rgba(16,185,129,.95);color:#fff}
+.tag.fail{background:rgba(239,68,68,.95);color:#fff}
+.pill{
+  position:absolute;bottom:10px;right:10px;height:22px;padding:0 9px;border-radius:8px;
+  background:rgba(14,16,21,.82);color:#fff;font-size:11px;font-weight:600;
+  display:inline-flex;align-items:center;backdrop-filter:blur(6px);
+}
+.pill.mae{left:10px;right:auto}
+.pill.mae{display:inline-flex;align-items:center}
+.pill.mae::before{content:'';width:7px;height:7px;border-radius:50%;margin-right:5px;flex:0 0 7px}
+.pill.g::before{background:#34d399}
+.pill.y::before{background:#fbbf24}
+.pill.r::before{background:#fb7185}
+.chk{
+  position:absolute;top:10px;right:10px;width:22px;height:22px;border-radius:7px;
+  background:rgba(255,255,255,.92);border:1.5px solid rgba(255,255,255,.9);
+  display:grid;place-items:center;opacity:0;transform:scale(.85);
+  transition:opacity .14s var(--ease),transform .14s var(--ease),background .14s;
+  box-shadow:0 2px 8px rgba(0,0,0,.18);z-index:3;
+  cursor:pointer;
+}
+/* 勾选框加大点击热区（视觉仍 22px），避免"点不中" */
+.chk::before{content:'';position:absolute;inset:-7px}
+.card:hover .chk,.card.sel .chk{opacity:1;transform:none}
+/* 已选中时勾选框必须一直看得见，否则无法判断"这个勾上没有" */
+.lrow .chk{position:static;opacity:1;transform:none;flex:0 0 20px;width:20px;height:20px;
+  border:1.5px solid #d3d7e2;background:#fff;box-shadow:none;margin-right:11px}
+.lrow .chk svg{color:#fff}
+.lrow.sel .chk{background:var(--accent);border-color:var(--accent)}
+.lrow.sel .chk svg{opacity:1}
+.chk svg{width:13px;height:13px;color:#fff;opacity:0}
+.card.sel .chk{background:var(--accent);border-color:var(--accent)}
+.card.sel .chk svg{opacity:1}
+
+/* ── 批量操作条 ── */
+.selbar{
+  display:none;align-items:center;gap:7px;padding:5px 6px 5px 13px;
+  background:var(--accent-soft);border:1.5px solid #c7ccf8;border-radius:99px;
+  animation:selin .16s var(--ease);
+}
+@keyframes selin{from{opacity:0;transform:translateY(-3px)}to{opacity:1;transform:none}}
+.selbar .count{font-size:12.5px;font-weight:700;color:var(--accent);white-space:nowrap;margin-right:2px}
+.sbtn{
+  border:0;border-radius:99px;padding:5px 12px;font-size:12.5px;font-weight:600;
+  background:#fff;color:var(--ink);cursor:pointer;white-space:nowrap;
+  box-shadow:0 1px 3px rgba(20,24,40,.10);transition:background .13s,transform .13s,opacity .13s;
+}
+.sbtn:hover{background:#f6f7fb;transform:translateY(-1px)}
+.sbtn:active{transform:none}
+.sbtn.danger{background:#fee2e2;color:#b91c1c}
+.sbtn.danger:hover{background:#fecaca}
+.sbtn.ghost{background:transparent;color:#5b6472;box-shadow:none}
+.sbtn.ghost:hover{background:rgba(255,255,255,.7)}
+.sbtn.dis{opacity:.4;pointer-events:none}
+.quick{
+  position:absolute;inset:auto 0 0 0;display:flex;gap:6px;justify-content:flex-end;padding:10px;
+  background:linear-gradient(to top,rgba(10,12,18,.78),transparent);
+  opacity:0;transform:translateY(6px);transition:opacity .16s var(--ease),transform .16s var(--ease);z-index:2;
+}
+.card:hover .quick{opacity:1;transform:none}
+.qb{
+  width:30px;height:30px;border-radius:9px;border:0;background:rgba(255,255,255,.92);
+  display:grid;place-items:center;cursor:pointer;box-shadow:0 2px 8px rgba(0,0,0,.2);
+  transition:background .13s,transform .13s;
+}
+.qb:hover{background:#fff;transform:scale(1.08)}
+.qb:active{transform:scale(.96)}
+.qb svg{width:15px;height:15px}
+.media::after{
+  content:'';position:absolute;inset:0;pointer-events:none;
+  background:linear-gradient(to top,rgba(8,10,16,.55) 0%,rgba(8,10,16,0) 34%),
+             linear-gradient(to bottom,rgba(8,10,16,.42) 0%,rgba(8,10,16,0) 30%);
+}
+.card .body{padding:13px 14px 16px}
+.card .ttl{
+  font-size:13.5px;font-weight:650;line-height:1.4;color:var(--ink);
+  display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;
+  word-break:break-all;letter-spacing:-.1px;
+}
+.card .info{
+  margin-top:6px;font-size:12.5px;color:#5b6474;display:flex;align-items:center;gap:6px;
+  flex-wrap:wrap;font-weight:500;
+}
+.card .info .dotsep{color:#c3c8d4}
+.card .prog{margin-top:9px;height:5px;border-radius:99px;background:#eef0f4;overflow:hidden}
+.card .prog i{display:block;height:100%;border-radius:99px;background:var(--grad);transition:width .4s var(--ease)}
+.card .prog.f i{background:linear-gradient(90deg,#ef4444,#f97316)}
+
+/* ── 列表视图 ── */
+.lrow{
+  display:grid;grid-template-columns:minmax(180px,1.6fr) 120px 74px 84px 116px 96px;
+  align-items:center;gap:12px;padding:2px 14px;height:56px;border-radius:var(--r-md);
+  border:1px solid transparent;background:var(--card);cursor:default;user-select:none;
+  transition:background .12s,border-color .12s,box-shadow .12s;
+}
+.lrow:hover{background:#fbfbfd;border-color:var(--line);box-shadow:var(--sh-1)}
+.lrow.sel{background:var(--accent-soft);border-color:#c7ccf8}
+.lhead{
+  display:grid;grid-template-columns:minmax(180px,1.6fr) 120px 74px 84px 116px 96px;
+  gap:12px;padding:0 14px;height:34px;align-items:center;
+  font-size:11px;font-weight:700;color:var(--ink-3);letter-spacing:.05em;text-transform:uppercase;
+  position:sticky;top:0;background:var(--bg);z-index:5;
+}
+.lrow .nm{display:flex;align-items:center;gap:12px;min-width:0}
+.lrow .nm .th{
+  width:42px;height:42px;flex:0 0 42px;border-radius:10px;overflow:hidden;background:#0e1015;
+  position:relative;display:grid;place-items:center;
+}
+.lrow .nm .th img{width:100%;height:100%;object-fit:cover}
+.lrow .nm .th.grad{background:var(--grad)}
+.lrow .nm .th svg{width:20px;height:20px}
+.lrow .nm .tx{min-width:0}
+.lrow .nm .t1{
+  font-size:13.5px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+}
+.lrow .nm .t2{font-size:11.5px;color:var(--ink-3);margin-top:1px}
+.lrow .cell{font-size:12.5px;color:var(--ink-2)}
+.lrow .cell.mut{color:var(--ink-3)}
+.chip{
+  display:inline-flex;align-items:center;height:22px;padding:0 9px;border-radius:99px;
+  font-size:11px;font-weight:700;background:#f1f2f6;color:var(--ink-2);
+}
+.chip.g{background:#eaf7f1;color:#2f7f63}
+.chip.y{background:#fdf5e7;color:#95651b}
+.chip.r{background:#fbeeed;color:#a4433c}
+.chip.i{background:var(--accent-soft);color:var(--accent)}
+
+/* ── 空状态 ── */
+.empty{
+  display:flex;flex-direction:column;align-items:center;justify-content:center;
+  gap:14px;padding:70px 20px;text-align:center;grid-column:1/-1;
+}
+.empty .circ{
+  width:76px;height:76px;border-radius:24px;background:#fff;border:1px solid var(--line);
+  display:grid;place-items:center;box-shadow:var(--sh-2);
+}
+.empty .circ svg{width:32px;height:32px;color:#c3c8d4}
+.empty h3{margin:0;font-size:15.5px;font-weight:700}
+.empty p{margin:0;font-size:13px;color:var(--ink-3);max-width:440px;line-height:1.65}
+.skel{display:grid;grid-template-columns:repeat(auto-fill,minmax(228px,1fr));gap:18px}
+.sk{height:274px;border-radius:var(--r-lg);background:linear-gradient(100deg,#eef0f4 30%,#f7f8fa 50%,#eef0f4 70%);background-size:220% 100%;animation:shim 1.3s infinite}
+@keyframes shim{from{background-position:180% 0}to{background-position:-40% 0}}
+
+/* ── 拖拽 ── */
+.dragov{
+  position:fixed;inset:0;background:rgba(99,102,241,.10);backdrop-filter:blur(4px);
+  display:none;place-items:center;z-index:200;
+}
+body.dragging .dragov{display:grid}
+.dragov .bx{
+  background:#fff;border-radius:22px;padding:34px 46px;text-align:center;box-shadow:var(--sh-3);
+  border:2px dashed var(--accent);
+}
+.dragov .bx svg{width:42px;height:42px;color:var(--accent);margin-bottom:10px}
+.dragov .bx b{display:block;font-size:15px}
+.dragov .bx span{font-size:12.5px;color:var(--ink-3)}
+
+/* ══════════════ 编排 / 状态 面板 ══════════════ */
+.panel{background:var(--card);border:1px solid var(--line);border-radius:var(--r-lg);box-shadow:var(--sh-1);overflow:hidden}
+.panel-h{
+  display:flex;align-items:center;gap:12px;padding:14px 18px;border-bottom:1px solid var(--line-2);flex-wrap:wrap;
+}
+.panel-h h3{margin:0;font-size:14px;font-weight:700;display:flex;align-items:center;gap:8px}
+.panel-h .sub2{font-size:12.5px;color:var(--ink-3);font-weight:500}
+.panel-b{padding:16px 18px}
+/* 封面提示条 */
+.note{
+  display:flex;gap:11px;align-items:flex-start;padding:12px 14px;border-radius:var(--r-md);
+  background:var(--accent-soft);color:#3730a3;font-size:12.5px;line-height:1.6;
+}
+.note svg{width:16px;height:16px;flex:0 0 16px;margin-top:2px}
+.note code{background:rgba(255,255,255,.75);padding:1px 6px;border-radius:5px;font-family:ui-monospace,Consolas,monospace;font-size:12px}
+/* 媒体链两栏 */
+.chain2{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+.col2{display:flex;flex-direction:column;border:1px solid var(--line);border-radius:var(--r-md);overflow:hidden;background:#fcfcfd}
+.col2 .hd{
+  padding:10px 14px;font-size:12px;font-weight:700;color:var(--ink-2);background:#f7f8fa;
+  border-bottom:1px solid var(--line-2);display:flex;justify-content:space-between;align-items:center;
+}
+.col2 .ls{overflow:auto;max-height:330px;padding:8px;display:flex;flex-direction:column;gap:5px}
+.col2 .li{
+  display:flex;align-items:center;gap:9px;padding:9px 11px;border-radius:10px;cursor:default;
+  background:#fff;border:1px solid var(--line-2);font-size:13px;
+  transition:border-color .13s,box-shadow .13s,transform .13s;
+}
+.col2 .li:hover{border-color:#c7ccf8;box-shadow:var(--sh-1)}
+.col2 .li.add{cursor:pointer}
+.col2 .li.add:hover{transform:translateX(2px);border-color:var(--accent)}
+.col2 .li .idx{
+  min-width:30px;height:22px;border-radius:7px;background:#f1f2f6;color:var(--ink-2);
+  font-size:11px;font-weight:700;display:grid;place-items:center;padding:0 6px;
+}
+.col2 .li .idx.entry{background:var(--grad);color:#fff}
+.col2 .li .nm2{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:550}
+.col2 .li .act{
+  width:24px;height:24px;border-radius:7px;display:grid;place-items:center;cursor:pointer;
+  color:var(--ink-3);transition:background .12s,color .12s;font-size:13px;
+}
+.col2 .li .act:hover{background:#f1f2f6;color:var(--ink)}
+.col2 .li .act.del:hover{background:var(--bad-soft);color:var(--bad)}
+.col2 .ft{padding:9px 12px;border-top:1px solid var(--line-2);display:flex;gap:8px;background:#f7f8fa}
+.col2 .ft .btn{height:30px;padding:0 12px;font-size:12.5px}
+/* 接缝表 */
+table.tb{width:100%;border-collapse:collapse;font-size:13px}
+table.tb th{
+  text-align:left;padding:10px 12px;font-size:11px;font-weight:700;color:var(--ink-3);
+  letter-spacing:.05em;text-transform:uppercase;border-bottom:1px solid var(--line);
+}
+table.tb td{padding:11px 12px;border-bottom:1px solid var(--line-2);vertical-align:middle}
+table.tb tr:last-child td{border-bottom:0}
+table.tb tbody tr:hover{background:#fbfbfd}
+/* 统计卡 */
+.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:14px}
+.stat{background:#fcfcfd;border:1px solid var(--line);border-radius:var(--r-md);padding:14px 16px}
+.stat .k{font-size:11.5px;color:var(--ink-3);font-weight:600;letter-spacing:.03em}
+.stat .v{font-size:23px;font-weight:750;margin-top:5px;letter-spacing:-.5px}
+.stat .v.sm{font-size:15px;font-weight:650;word-break:break-all;line-height:1.4}
+.bar{height:7px;border-radius:99px;background:#eef0f4;overflow:hidden;margin-top:10px}
+.bar i{display:block;height:100%;background:var(--grad);border-radius:99px;transition:width .5s var(--ease)}
+
+/* ══════════════ 右键菜单 ══════════════ */
+.ctx{
+  position:fixed;z-index:1000;background:rgba(255,255,255,.97);backdrop-filter:blur(20px) saturate(180%);
+  border:1px solid var(--line);border-radius:var(--r-md);box-shadow:var(--sh-3);padding:6px;min-width:210px;display:none;
+}
+.ctx.on{display:block;animation:pop .13s var(--ease)}
+.ctx .it{
+  padding:9px 11px;border-radius:8px;cursor:default;font-size:13px;display:flex;align-items:center;gap:10px;
+}
+.ctx .it:hover{background:var(--accent-soft);color:var(--accent)}
+.ctx .it.dis{color:#c3c8d4}
+.ctx .it.dis:hover{background:transparent;color:#c3c8d4}
+.ctx .hr{height:1px;background:var(--line-2);margin:5px 8px}
+
+/* ══════════════ 弹层 ══════════════ */
+.mask{
+  position:fixed;inset:0;background:rgba(17,24,39,.42);backdrop-filter:blur(6px);
+  display:none;align-items:center;justify-content:center;z-index:900;padding:20px;
+}
+.mask.on{display:flex;animation:fade .16s var(--ease)}
+@keyframes fade{from{opacity:0}to{opacity:1}}
+.dlg{
+  background:#fff;border-radius:20px;box-shadow:0 32px 64px -16px rgba(16,24,40,.36);
+  width:min(720px,94vw);max-height:90vh;display:flex;flex-direction:column;
+  animation:up .22s var(--ease);
+}
+@keyframes up{from{opacity:0;transform:translateY(14px) scale(.98)}to{opacity:1;transform:none}}
+.dlg h3{margin:0;padding:22px 24px 6px;font-size:17px;font-weight:700;letter-spacing:-.2px}
+.dlg .bd{padding:12px 24px 4px;overflow:auto;flex:1}
+.dlg .ft{padding:16px 24px 20px;display:flex;justify-content:flex-end;gap:9px}
+.dlg input[type=text],.dlg input[type=number]{
+  width:100%;height:42px;border:1px solid var(--line);border-radius:var(--r-md);padding:0 13px;
+  font-size:14px;outline:none;background:#fcfcfd;transition:border-color .15s,box-shadow .15s,background .15s;
+}
+.dlg input:focus{border-color:var(--accent);background:#fff;box-shadow:0 0 0 4px rgba(99,102,241,.12)}
+.lbl{display:block;font-size:12.5px;font-weight:600;color:var(--ink-2);margin:14px 0 7px}
+.hint{font-size:12.5px;color:var(--ink-3);line-height:1.7}
+.hint b{color:var(--ink-2)}
+.hint code{background:#f1f2f6;padding:1.5px 6px;border-radius:5px;font-family:ui-monospace,Consolas,monospace;font-size:12px}
+.pvw{display:flex;flex-direction:column;align-items:center;gap:16px}
+.pvw .shots{display:flex;gap:14px;flex-wrap:wrap;justify-content:center}
+.pvw .shot2{text-align:center}
+.pvw .shot2 span{display:block;font-size:11.5px;color:var(--ink-3);margin-bottom:6px;font-weight:600}
+.pvw .shot2 img{
+  max-height:38vh;border-radius:var(--r-md);border:1px solid var(--line);box-shadow:var(--sh-2);background:#0e1015;
+}
+.kv{display:grid;grid-template-columns:auto 1fr;gap:9px 20px;font-size:13px;width:100%;max-width:520px}
+.kv .k{color:var(--ink-3)}
+.kv .v{color:var(--ink);font-weight:600;word-break:break-all}
+.mono{font-family:ui-monospace,Consolas,monospace;font-size:12.5px}
+#toast{
+  position:fixed;bottom:26px;left:50%;transform:translate(-50%,20px);opacity:0;pointer-events:none;
+  background:rgba(17,24,39,.94);backdrop-filter:blur(12px);color:#fff;padding:12px 20px;border-radius:14px;
+  font-size:13px;font-weight:500;z-index:1200;box-shadow:0 16px 40px -8px rgba(0,0,0,.45);
+  display:flex;align-items:center;gap:10px;max-width:80vw;
+  transition:opacity .22s var(--ease),transform .22s var(--ease);
+}
+#toast.on{opacity:1;transform:translate(-50%,0)}
+#toast .ic{width:18px;height:18px;border-radius:50%;background:var(--ok);display:grid;place-items:center;flex:0 0 18px}
+#toast.err .ic{background:var(--bad)}
+#toast .ic svg{width:11px;height:11px;color:#fff}
+
+@media (max-width:1000px){
+  .side{width:74px;flex:0 0 74px}
+  .brand h1,.brand p,.nitem .lb,.nitem .cnt,.sec{display:none}
+  .brand{justify-content:center;padding:18px 0 12px}
+  .nitem{justify-content:center;padding:0}
+  .nitem.on::before{left:0}
+  .sub{padding-left:0}
+  .search{flex:1 1 auto;width:auto}
+  .lhead,.lrow{grid-template-columns:minmax(120px,1fr) 100px 70px}
+  .lhead span:nth-child(n+4),.lrow .cell:nth-child(n+4){display:none}
+  .chain2{grid-template-columns:1fr}
+}
+</style>
+</head>
+<body>
+
+<!-- ══════════ 侧边栏 ══════════ -->
+<aside class="side">
+  <div class="brand">
+    <div class="logo">
+      <svg viewBox="0 0 24 24"><path d="M4 6.5A2.5 2.5 0 016.5 4h3.2l2 2.4h5.8A2.5 2.5 0 0120 8.9v8.6A2.5 2.5 0 0117.5 20h-11A2.5 2.5 0 014 17.5v-11z"/></svg>
+    </div>
+    <div>
+      <h1>素材库</h1>
+      <p>LiveTalking</p>
+    </div>
+  </div>
+  <div class="side-scroll" id="side"></div>
+</aside>
+
+<!-- ══════════ 主区 ══════════ -->
+<div class="main">
+  <div class="topbar">
+    <div class="search" id="searchWrap">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.6-3.6"/></svg>
+      <input type="search" id="search" placeholder="搜索文件夹与片段…" autocomplete="off">
+      <button class="clr" id="searchClr" title="清空">✕</button>
+    </div>
+    <div class="spacer"></div>
+    <div class="sel-wrap"><select class="sel" id="kindBy" title="按模型筛选片段">
+      <option value="">全部模型</option>
+      <option value="wav2lip">wav2lip（口型对齐）</option>
+      <option value="musetalk">musetalk（更像真人）</option>
+      <option value="unknown">未识别</option>
+    </select></div>
+    <div class="sel-wrap"><select class="sel" id="sortBy" title="排序">
+      <option value="name">名称 A→Z</option>
+      <option value="name_d">名称 Z→A</option>
+      <option value="frames">帧数 多→少</option>
+      <option value="mae">首尾差异 小→大</option>
+    </select></div>
+    <div class="seg" id="viewSeg">
+      <button data-v="icons" class="on" title="卡片视图">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7.5" height="7.5" rx="2"/><rect x="13.5" y="3" width="7.5" height="7.5" rx="2"/><rect x="3" y="13.5" width="7.5" height="7.5" rx="2"/><rect x="13.5" y="13.5" width="7.5" height="7.5" rx="2"/></svg>
+        卡片</button>
+      <button data-v="list" title="列表视图">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 6h16M4 12h16M4 18h16"/></svg>
+        列表</button>
+    </div>
+    <button class="btn" id="btnNewLib">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>新建库</button>
+    <!-- 批量操作条：只要有选中项就出现，把「选中之后能干嘛」直接摆出来。
+         之前多选功能存在但没有可见出口，用户只能靠「更多」菜单猜。 -->
+    <div class="selbar" id="selBar">
+      <span class="count" id="selCount"></span>
+      <button class="sbtn" id="selChain" title="用选中的片段组成素材链">编排素材链</button>
+      <button class="sbtn" id="selTrain" title="把选中的原始视频加入训练队列">一键训练</button>
+      <button class="sbtn danger" id="selDel" title="删除选中的项（Delete）">删除</button>
+      <button class="sbtn ghost" id="selClear" title="清空选择（Esc）">清空</button>
+    </div>
+    <div class="menu-wrap">
+      <button class="btn pri" id="btnUpload">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 16V4M7 9l5-5 5 5M4 17v1.5A2.5 2.5 0 006.5 21h11a2.5 2.5 0 002.5-2.5V17"/></svg>上传</button>
+    </div>
+    <button class="btn icon" id="btnMore" title="更多操作">
+      <svg viewBox="0 0 24 24" fill="currentColor"><circle cx="5" cy="12" r="2"/><circle cx="12" cy="12" r="2"/><circle cx="19" cy="12" r="2"/></svg></button>
+    <div class="menu" id="moreMenu">
+      <div class="mi" data-a="newclip">新建片段</div>
+      <div class="mi" data-a="train">一键训练</div>
+      <div class="mi" data-a="chain">编排素材链</div>
+      <div class="mi" data-a="del" style="color:#ef4444">删除选中</div>
+      <div class="mi" data-a="refresh">重新扫描<span class="k">F5</span></div>
+    </div>
+  </div>
+
+  <div class="crumb" id="crumb"></div>
+  <div class="kindwarn" id="kindWarn" style="display:none"></div>
+  <div class="content" id="content">
+    <div class="grid" id="grid"></div>
+  </div>
+</div>
+
+<div class="dragov" id="dragov"><div class="bx">
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 16V4M7 9l5-5 5 5M4 17v1.5A2.5 2.5 0 006.5 21h11a2.5 2.5 0 002.5-2.5V17"/></svg>
+  <b>松开即可上传</b><span id="dragTarget">上传到当前库</span></div></div>
+
+<div class="ctx" id="ctx"></div>
+<div class="mask" id="mask"><div class="dlg" id="dlg"></div></div>
+<div id="toast"><span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"><path d="M4 12.5l5.5 5.5L20 7"/></svg></span><span id="toastMsg"></span></div>
+<input type="file" id="filePick" accept="video/*" multiple style="display:none">
+
+<script>
+'use strict';
+/* ══════════════════════════════════════════════════════════════════════════
+   素材库 · 现代卡片界面
+   数据: /api/libs  /api/libs/{lib}  /api/libs/tasks  /api/materials/active
+   路由: #/  #/lib/<库>  #/lib/<库>/<片段>  #/chain  #/queue  #/active
+   ══════════════════════════════════════════════════════════════════════════ */
+const q = encodeURIComponent;
+const S = {
+  libs: [], tasks: [], active: [],
+  cur: {kind:'root'}, detail: null,
+  sel: new Set(), anchor: null, expanded: new Set(),
+  chainDraft: null, chainLib: null, chainMode: 'shuffle', chainDraftLib: null,
+  q: '', sort: 'name', view: 'icons', kind: '',
+  loaded: false,
+};
+
+/* ───── HTTP ─────
+   jget/jpost 失败时返回 {code:-1, msg}。
+   ⚠️ 注意：fetch 抛出的 TypeError 在 Chrome 里 message 就是字面量 "Failed to fetch"，
+   它对用户毫无信息量（分不清是服务没起、端口不通还是请求被取消）。
+   这里做一次「人话翻译」，让错误提示能直接指导操作。 */
+function netErrMsg(e, u){
+  const m = String((e && e.message) || e || '');
+  if (m.includes('Failed to fetch') || m.includes('NetworkError') || m.includes('Load failed')){
+    return `无法连接到服务（${u}）。请确认 LiveTalking 已启动、端口正确，` +
+           `并且这个页面是通过服务地址打开的（http://127.0.0.1:8010/materials.html），不要用 file:// 直接打开`;
+  }
+  if (m.includes('aborted') || (e && e.name === 'AbortError')) return '请求被取消（可能超时或页面切换）';
+  return m || '请求失败';
+}
+async function jget(u){
+  try { const r = await fetch(u); const t = await r.text();
+    try { return JSON.parse(t); } catch(e){ return {code:-1,msg:'服务返回了非 JSON 内容: '+t.slice(0,160)}; }
+  } catch(e){ return {code:-1, msg: netErrMsg(e, u)}; }
+}
+/* 带重试的读取：训练期间服务偶尔会因 GPU 忙而响应慢，单次失败不该让界面报错 */
+async function jgetRetry(u, tries=3, delay=800){
+  let last = null;
+  for (let i=0;i<tries;i++){
+    const r = await jget(u);
+    if (r && r.code === 0) return r;
+    last = r;
+    if (r && r.code === -1) await new Promise(z => setTimeout(z, delay));
+    else break;
+  }
+  return last || {code:-1, msg:'读取失败'};
+}
+async function jpost(u, body, method){
+  try {
+    const r = await fetch(u, {method:method||'POST',
+      headers:{'Content-Type':'application/json; charset=utf-8'},
+      body: body == null ? undefined : JSON.stringify(body)});
+    const t = await r.text();
+    try { return JSON.parse(t); } catch(e){ return {code:-1,msg:'服务返回了非 JSON 内容: '+t.slice(0,160)}; }
+  } catch(e){ return {code:-1, msg: netErrMsg(e, u)}; }
+}
+
+/* ───── 小工具 ───── */
+const $ = id => document.getElementById(id);
+function esc(s){ return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;')
+  .replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;'); }
+let tT = null, tOk = true;
+function toast(msg, ms, isErr){
+  const el = $('toast');
+  $('toastMsg').textContent = msg;
+  el.classList.toggle('err', !!isErr);
+  el.classList.add('on');
+  clearTimeout(tT);
+  tT = setTimeout(()=> el.classList.remove('on'), ms || 2800);
+}
+const fa = n => n == null ? '—' : Number(n).toFixed(2);
+function maeCls(v){ return v == null ? '' : (v <= 1.5 ? 'g' : (v <= 3.0 ? 'y' : 'r')); }
+function maeTxt(v){ return v == null ? '—' : Number(v).toFixed(2); }
+function maeWord(v){ return v == null ? '—' : (v <= 1.5 ? '优秀' : (v <= 3.0 ? '可接受' : '不可用')); }
+function mb(x){ return x == null ? '—' : (x >= 1024 ? (x/1024).toFixed(2)+' GB' : x.toFixed(1)+' MB'); }
+function durS(sec){
+  if (sec == null) return '—';
+  const m = Math.floor(sec/60), s = Math.round(sec%60);
+  return m > 0 ? `${m}:${String(s).padStart(2,'0')}` : sec.toFixed(1)+'s';
+}
+function hue(s){
+  let h = 0;
+  for (let i=0;i<s.length;i++) h = (h*31 + s.charCodeAt(i)) >>> 0;
+  return h % 360;
+}
+function gradFor(name){
+  const h = hue(name);
+  return `linear-gradient(135deg, hsl(${h} 78% 62%), hsl(${(h+42)%360} 76% 50%))`;
+}
+/* 选中项的唯一 key。
+ *
+ * ⚠️ 必须与 selList() 的拼法**完全一致**，否则会出现「选中了，但删除/编排提示没选中」。
+ * 历史 bug：根视图下库项的 it.lib 被填成了库自己的名字，
+ * 于是 key 变成 `lib:NAME/NAME`（重复），而 selList() 找的是 `lib:NAME`
+ * → 永远匹配不上，表现为「在根视图选中库后，删除/重命名毫无反应」。
+ * 统一规则：lib/self 用 `lib:NAME`；clip 用 `clip:LIB/NAME`；upload 用 `upload:LIB/FILE`。
+ */
+const keyOf = it => {
+  const k = it.kind;
+  if (k === 'lib')  return 'lib:' + it.name;
+  if (k === 'self') return 'self:' + it.name;
+  if (k === 'clip' || k === 'upload') return k + ':' + (it.lib || '') + '/' + it.name;
+  if (k === 'task') return 'task:' + it.name;
+  return k + ':' + (it.lib ? it.lib + '/' : '') + it.name;
+};
+const curLib = () => S.libs.find(l => l.name === S.cur.lib) || null;
+const clipOf = (L, n) => (L && L.clips || []).find(c => c.name === n) || null;
+
+/* ───── SVG 图标 ───── */
+const I = {
+  folder:'<svg viewBox="0 0 24 24" fill="currentColor"><path d="M4 6.5A2.5 2.5 0 016.5 4h3.2l2 2.4h5.8A2.5 2.5 0 0120 8.9v8.6A2.5 2.5 0 0117.5 20h-11A2.5 2.5 0 014 17.5v-11z"/></svg>',
+  video:'<svg viewBox="0 0 24 24" fill="currentColor"><path d="M4 6.5A2.5 2.5 0 016.5 4h7A2.5 2.5 0 0116 6.5v11a2.5 2.5 0 01-2.5 2.5h-7A2.5 2.5 0 014 17.5v-11zM17.5 9.6l3-1.8v8.4l-3-1.8V9.6z"/></svg>',
+  play:'<svg viewBox="0 0 24 24" fill="currentColor"><path d="M7 4.5l12 7.5-12 7.5v-15z"/></svg>',
+  trash:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16M9 7V5h6v2M7 7l.9 12.1A2 2 0 0010 21h4a2 2 0 002-1.9L17 7"/></svg>',
+  plus:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>',
+  check:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12.5l4.5 4.5L19 7"/></svg>',
+  link:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M10 13.5a4 4 0 005.7 0l3-3a4 4 0 10-5.7-5.7l-1 1"/><path d="M14 10.5a4 4 0 00-5.7 0l-3 3a4 4 0 105.7 5.7l1-1"/></svg>',
+  info:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 7.6v.1"/></svg>',
+  up:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5M6 11l6-6 6 6"/></svg>',
+  down:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M6 13l6 6 6-6"/></svg>',
+  x:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg>',
+  film:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2.5"/><path d="M8 4v16M16 4v16M3 9h5M3 15h5M16 9h5M16 15h5"/></svg>',
+  box:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"><path d="M3 7.5L12 3l9 4.5v9L12 21l-9-4.5v-9z"/><path d="M3 7.5L12 12l9-4.5M12 12v9"/></svg>',
+  clock:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5.4l3.4 2"/></svg>',
+  pulse:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M3 12h4l2.4-6 3.2 12L15 12h6"/></svg>',
+  shield:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><path d="M12 3l7.5 3v6c0 4.6-3.1 8.2-7.5 9-4.4-.8-7.5-4.4-7.5-9V6L12 3z"/></svg>',
+  tick:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3.4" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12.5l4.5 4.5L19 7"/></svg>',
+  searchEmpty:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.6-3.6M8.5 11h5"/></svg>',
+  plusCircle:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 8.5v7M8.5 12h7"/></svg>',
+  pen:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 20h4L20 8a2.8 2.8 0 10-4-4L4 16v4z"/><path d="M14.5 5.5l4 4"/></svg>',
+};
+const kindIco = k => k === 'musetalk' ? I.film : (k === 'upload' ? I.up : I.video);
+
+/* ══════════════════════════════════════════════════════════════
+   侧边栏
+   ══════════════════════════════════════════════════════════════ */
+function renderSide(){
+  const h = [];
+  const runN = S.tasks.filter(t=>t.status==='running').length;
+  const pendN = S.tasks.filter(t=>t.status==='pending').length;
+  const doneN = S.tasks.filter(t=>t.status==='completed').length;
+
+  h.push(`<div class="sec">${S.q.trim() ? '搜索结果' : '素材库'}</div>`);
+  h.push(navRow({kind:'root'}, `<span class="ico">${I.box}</span>`, '全部素材库',
+        `${S.libs.length}`, ''));
+
+  const kw = S.q.trim().toLowerCase();
+  for (const L of S.libs){
+    // 搜索时同时过滤左侧列表：命中库名本身，或库内有片段命中
+    if (kw && !(
+        L.name.toLowerCase().includes(kw) ||
+        L.clips.some(c => c.name.toLowerCase().includes(kw)) ||
+        L.uploads.some(u => u.file.toLowerCase().includes(kw))
+      )) continue;
+    const open = kw ? true : S.expanded.has(L.name);   // 搜索时自动展开，方便看到命中的片段
+    const wait = L.uploads.filter(u=>!u.trained_as).length;
+    let badge = L.clip_count ? `${L.clip_count} 段` : (L.self_ready ? '素材' : '空');
+    let cls = '';
+    if (wait){ badge = `${wait} 待训`; cls = 'warn'; }
+    else if (!L.clip_count && !L.self_ready && !L.uploads.length){ badge = '空库'; }
+    // ⚠️ 展开箭头不能只看 clip_count：只有上传视频、还没训练的库
+    //    （clip_count=0 但 uploads>0）也必须能展开，否则用户看不到自己刚上传的文件。
+    const hasKids = L.clip_count > 0 || L.uploads.length > 0;
+    const chev = hasKids
+      ? `<span class="chev" data-tw="${esc(L.name)}">${open?'▼':'▶'}</span>`
+      : `<span class="chev"></span>`;
+    h.push(
+      `<div class="nitem${on(L.name)}" data-kind="lib" data-lib="${esc(L.name)}" title="${esc(L.name)}">` +
+      chev +
+      `<span class="ico dot${(L.clip_count||L.self_ready||L.uploads.length)?' has':''}"></span>` +
+      `<span class="lb">${esc(L.name)}</span>` +
+      `<span class="cnt ${cls}">${esc(badge)}</span>` +
+      // 悬停操作：重命名 / 删除（之前只能靠右键卡片，发现不了）
+      `<span class="hops">` +
+        `<span class="hbtn" data-op="ren-lib" data-lib="${esc(L.name)}" title="重命名库">${I.pen}</span>` +
+        `<span class="hbtn del" data-op="del-lib" data-lib="${esc(L.name)}" title="删除库">${I.trash}</span>` +
+      `</span></div>`
+    );
+    if (open){
+      h.push('<div class="sub">');
+      for (const c of L.clips){
+        if (kw && !c.name.toLowerCase().includes(kw) && !L.name.toLowerCase().includes(kw)) continue;
+        if (S.kind && c.kind !== S.kind) continue;   // 跟随顶栏模型筛选
+        const ktag = c.kind === 'musetalk' ? '<span class="kt m">muse</span>'
+                   : c.kind === 'wav2lip'  ? '<span class="kt w">wav</span>' : '';
+        h.push(
+          `<div class="nitem${on(L.name, c.name)}" data-kind="clip" data-lib="${esc(L.name)}" data-clip="${esc(c.name)}" title="${esc(c.name)} · ${esc(c.kind || '')}">` +
+          `<span class="chev"></span><span class="ico">${kindIco(c.kind)}</span>` +
+          `<span class="lb">${esc(c.name)}</span>` + ktag +
+          `<span class="cnt ${c.trained?'':'warn'}">${c.frames||0}</span>` +
+          `<span class="hops">` +
+            `<span class="hbtn" data-op="ren-clip" data-lib="${esc(L.name)}" data-clip="${esc(c.name)}" title="重命名片段">${I.pen}</span>` +
+            `<span class="hbtn del" data-op="del-clip" data-lib="${esc(L.name)}" data-clip="${esc(c.name)}" title="删除片段">${I.trash}</span>` +
+          `</span></div>`
+        );
+      }
+      for (const u of L.uploads){
+        if (kw && !u.file.toLowerCase().includes(kw) && !L.name.toLowerCase().includes(kw)) continue;
+        h.push(
+          `<div class="nitem" data-kind="upload" data-lib="${esc(L.name)}" data-clip="${esc(u.stem)}" title="${esc(u.file)}">` +
+          `<span class="chev"></span><span class="ico">${I.up}</span>` +
+          `<span class="lb">${esc(u.file)}</span>` +
+          `<span class="cnt ${u.trained_as?'':'warn'}">${u.trained_as?'已训':'待训'}</span>` +
+          `<span class="hops">` +
+            `<span class="hbtn" data-op="ren-up" data-lib="${esc(L.name)}" data-file="${esc(u.file)}" title="重命名文件">${I.pen}</span>` +
+            `<span class="hbtn del" data-op="del-up" data-lib="${esc(L.name)}" data-file="${esc(u.file)}" title="删除上传文件">${I.trash}</span>` +
+          `</span></div>`
+        );
+      }
+      h.push('</div>');
+    }
+  }
+
+  h.push(`<div class="sec">工作区</div>`);
+  h.push(navRow({kind:'queue'}, `<span class="ico">${I.clock}</span>`, '训练队列',
+    runN ? `${runN} 运行中` : (pendN ? `${pendN} 排队` : (doneN ? `${doneN} 已完成` : '空闲')),
+    runN||pendN ? 'warn' : 'ok'));
+  const pl = curLib() && curLib().playlist;
+  h.push(navRow({kind:'chain'}, `<span class="ico">${I.link}</span>`, '素材链编排',
+    pl && (pl.segments||[]).length ? `${(pl.segments||[]).length} 段` : '未编排', ''));
+  h.push(navRow({kind:'active'}, `<span class="ico">${I.pulse}</span>`, '实时状态',
+    S.active.length ? `${S.active.length} 会话` : '无会话', S.active.length ? 'live' : ''));
+
+  $('side').innerHTML = h.join('');
+}
+function on(lib, clip){
+  if (S.cur.kind === 'root') return '';
+  if (clip) return (S.cur.kind==='clip' && S.cur.lib===lib && S.cur.clip===clip) ? ' on' : '';
+  if (S.cur.kind === 'lib') return S.cur.lib === lib ? ' on' : '';
+  return '';
+}
+function navRow(pos, ico, label, badge, cls){
+  const active = S.cur.kind === pos.kind && pos.kind !== 'lib' ? ' on' : '';
+  return `<div class="nitem${active}" data-kind="${pos.kind}" title="${esc(label)}">` +
+    `<span class="chev"></span>${ico}<span class="lb">${esc(label)}</span>` +
+    `<span class="cnt ${cls}">${esc(badge)}</span></div>`;
+}
+
+/* ══════════════════════════════════════════════════════════════
+   面包屑
+   ══════════════════════════════════════════════════════════════ */
+function renderCrumb(){
+  const segs = [{l:'素材库', pos:{kind:'root'}}];
+  if (S.cur.kind === 'lib' || S.cur.kind === 'clip')
+    segs.push({l:S.cur.lib, pos:{kind:'lib', lib:S.cur.lib}});
+  if (S.cur.kind === 'clip')
+    segs.push({l:S.cur.clip, pos:{kind:'clip', lib:S.cur.lib, clip:S.cur.clip}});
+  const nm = {queue:'训练队列', chain:'素材链编排', active:'实时状态'};
+  if (nm[S.cur.kind]) segs.push({l:nm[S.cur.kind], pos:{kind:S.cur.kind}});
+
+  let h = '';
+  segs.forEach((s,i)=>{
+    if (i) h += `<span class="sep">/</span>`;
+    const last = i === segs.length-1;
+    h += `<span class="seg2${last?' last':''}" data-kind="${s.pos.kind}"` +
+      (s.pos.lib?` data-lib="${esc(s.pos.lib)}"`:'') +
+      (s.pos.clip?` data-clip="${esc(s.pos.clip)}"`:'') +
+      ` title="${esc(s.l)}">${esc(s.l)}</span>`;
+  });
+  h += `<span class="meta">${crumbMeta()}</span>`;
+  $('crumb').innerHTML = h;
+  renderKindWarn();
+}
+/* 库内同时存在 wav2lip 与 musetalk 片段时给出醒目提示：
+   两者不能编在同一条素材链里（服务一次只加载一种模型），
+   引导用户用顶栏「模型筛选」分开看、分开编排。 */
+function renderKindWarn(){
+  const el = $('kindWarn'); if (!el) return;
+  const L = (S.cur.kind === 'lib' || S.cur.kind === 'clip') ? curLib() : null;
+  if (!L || !L.mixed){ el.style.display = 'none'; el.innerHTML = ''; return; }
+  const k = L.kinds || {};
+  const parts = [];
+  if (k.wav2lip) parts.push(`wav2lip <b>${k.wav2lip}</b> 段`);
+  if (k.musetalk) parts.push(`musetalk <b>${k.musetalk}</b> 段`);
+  if (k.unknown) parts.push(`未识别 <b>${k.unknown}</b> 段`);
+  el.style.display = 'flex';
+  el.innerHTML =
+    `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:18px;height:18px;flex:0 0 18px;margin-top:1px"><path d="M12 9v4M12 17h.01M10.3 3.9L1.8 18a2 2 0 001.7 3h17a2 2 0 001.7-3L13.7 3.9a2 2 0 00-3.4 0z"/></svg>` +
+    `<div><b>这个库里混着两种模型的片段</b>（${parts.join(' · ')}）。<br>` +
+    `同一条素材链<b>不能混用</b>不同模型 —— 服务一次只加载一种模型。` +
+    `请用左上角「模型筛选」只留一种，再勾选编排；` +
+    `或把片段用右键「移动到其他库」按模型分开存放。</div>`;
+}
+function crumbMeta(){
+  if (S.cur.kind === 'chain') return '拖动顺序 · 保存后实时生效';
+  if (S.cur.kind === 'queue') return '串行执行 · 一个完成再跑下一个';
+  if (S.cur.kind === 'active') return '正在播放的素材链';
+  const v = viewItems(), all = currentItems();
+  const kw = S.q.trim();
+  if (kw) return `${v.length} / ${all.length} 个匹配`;
+  return `${v.length} 个项目`;
+}
+
+/* ══════════════════════════════════════════════════════════════
+   条目模型
+   ══════════════════════════════════════════════════════════════ */
+function currentItems(){
+  if (S.cur.kind === 'root')
+    return S.libs.map(L => ({kind:'lib', lib:L.name, name:L.name, obj:L}));
+  if (S.cur.kind === 'lib' || S.cur.kind === 'clip'){
+    const L = curLib(); if (!L) return [];
+    const out = L.clips.map(c => ({kind:'clip', lib:L.name, name:c.name, obj:c}));
+    // 老式单目录素材：data/avatars/<id>/ 本身就是素材（官方 avatar 与 start.bat 用的）
+    if (!L.clip_count && L.self_ready) out.push({kind:'self', lib:L.name, name:L.name, obj:L});
+    for (const u of L.uploads) out.push({kind:'upload', lib:L.name, name:u.file, stem:u.stem, obj:u});
+    return out;
+  }
+  if (S.cur.kind === 'queue')
+    return S.tasks.map(t => ({kind:'task', name:t.task_id, obj:t}));
+  return [];
+}
+function itemFrames(it){
+  if (it.kind === 'clip') return it.obj.frames;
+  if (it.kind === 'self') return it.obj.self_frames;
+  if (it.kind === 'lib')  return it.obj.self_frames || 0;
+  return null;
+}
+function itemMae(it){ return it.kind === 'clip' ? it.obj.tail_head_mae : null; }
+function viewItems(){
+  let it = currentItems();
+  const kw = S.q.trim().toLowerCase();
+  if (kw) it = it.filter(x => String(x.name).toLowerCase().includes(kw));
+  // 按模型类型筛选，方便把 wav2lip 与 musetalk 分开看、分开编排。
+  //   - 片段：按片段自身 kind 过滤
+  //   - 库  ：若库里含有该类型的片段就保留（根视图下列表全是库，必须这样过滤才有意义）
+  //   - 上传：无法预知训练成什么，始终显示（否则用户会以为文件丢了）
+  if (S.kind){
+    it = it.filter(x => {
+      if (x.kind === 'clip') return (x.obj && x.obj.kind) === S.kind;
+      if (x.kind === 'upload') return true;
+      if (x.kind === 'lib' || x.kind === 'self'){
+        const L = x.obj; if (!L) return false;
+        const kinds = (L.trained_kinds && L.trained_kinds.length)
+          ? L.trained_kinds
+          : Object.keys(L.kinds || {}).filter(k => k !== 'unknown');
+        // 库还没训练出任何片段时无从判断，保留（否则新建的库会"消失"）
+        if (!kinds.length) return true;
+        return kinds.includes(S.kind);
+      }
+      return true;
+    });
+  }
+  const s = S.sort;
+  const cmp = (a,b) => String(a.name).localeCompare(String(b.name), 'zh', {numeric:true});
+  return it.slice().sort((a,b)=>{
+    if (s === 'name_d') return cmp(b,a);
+    if (s === 'frames') return (itemFrames(b)||0) - (itemFrames(a)||0);
+    if (s === 'mae'){
+      const x = itemMae(a), y = itemMae(b);
+      return (x==null?99:x) - (y==null?99:y);
+    }
+    return cmp(a,b);
+  });
+}
+
+/* ══════════════════════════════════════════════════════════════
+   内容区
+   ══════════════════════════════════════════════════════════════ */
+function renderContent(){
+  const g = $('grid');
+  if (S.cur.kind === 'chain'){ renderChain(); return; }
+  if (S.cur.kind === 'active'){ renderActive(); return; }
+
+  if (!S.loaded){
+    g.className = 'skel';
+    g.innerHTML = Array.from({length:8}, ()=>'<div class="sk"></div>').join('');
+    return;
+  }
+  const items = viewItems();
+  if (!items.length){
+    g.className = 'grid';
+    g.innerHTML = emptyHTML();
+    return;
+  }
+  if (S.view === 'list'){
+    g.className = 'grid list';
+    g.innerHTML = `<div class="lhead"><span>名称</span><span>类型</span><span>帧数</span>` +
+      `<span>时长</span><span>分辨率</span><span>首尾差异</span></div>` +
+      items.map(lrowHTML).join('');
+  } else {
+    g.className = 'grid';
+    g.innerHTML = items.map(cardHTML).join('');
+  }
+}
+function emptyHTML(){
+  const kw = S.q.trim();
+  if (kw){
+    return `<div class="empty"><div class="circ">${I.searchEmpty}</div>
+      <h3>没有匹配「${esc(kw)}」的项目</h3>
+      <p>试试别的关键词，或者点右上角的搜索框清空。</p></div>`;
+  }
+  if (S.cur.kind === 'root')
+    return `<div class="empty"><div class="circ">${I.plusCircle}</div>
+      <h3>还没有素材库</h3>
+      <p>先点右上角「新建库」建一个数字人库（库名就是以后在直播页要填的角色 ID），
+         再把视频拖进来，然后点「一键训练」。</p>
+      <button class="btn pri" onclick="newLib()">新建第一个库</button></div>`;
+  if (S.cur.kind === 'lib')
+    return `<div class="empty"><div class="circ">${I.uploadBig||I.up}</div>
+      <h3>这个库还是空的</h3>
+      <p>把原始视频<b>拖到这里</b>，或者点右上角「上传」。
+         上传后到「更多 → 一键训练」生成素材，就能加入素材链了。</p>
+      <button class="btn pri" onclick="doUpload()">上传视频</button></div>`;
+  if (S.cur.kind === 'queue')
+    return `<div class="empty"><div class="circ">${I.clock}</div>
+      <h3>训练队列是空的</h3>
+      <p>在库页面点「更多 → 一键训练」把待训练的视频加进来。队列是串行的。</p></div>`;
+  return `<div class="empty"><div class="circ">${I.box}</div><h3>没有内容</h3></div>`;
+}
+
+function cardHTML(it){
+  const k = keyOf(it), sel = S.sel.has(k) ? ' sel' : '';
+  let media = '', title = '', info = [], tag = '', pill = '', act = '', prog = '';
+
+  if (it.kind === 'lib'){
+    const L = it.obj;
+    const wait = L.uploads.filter(u=>!u.trained_as).length;
+    const fc = L.clips.find(c=>c.trained);
+    const src = fc ? `/api/libs/${q(L.name)}/clipframe?clip=${q(fc.name)}&which=first`
+                   : (L.self_ready ? `/api/materials/${q(L.name)}/frame?which=first` : null);
+    media = src
+      ? `<div class="media"><img class="cover" loading="lazy" src="${src}" alt=""><img class="shot" loading="lazy" src="${src}" alt=""></div>`
+      : `<div class="media grad" style="background:${gradFor(L.name)}"><div class="glyph">${I.folder}</div></div>`;
+    title = `<div class="ttl">${esc(L.name)}</div>`;
+    info = [
+      L.clip_count ? `${L.clip_count} 个片段`
+        : (L.self_ready ? `${L.self_frames} 帧 · 单目录素材` : '空库'),
+      L.uploads.length ? `${L.uploads.length} 个上传` : null,
+    ].filter(Boolean);
+    if (wait) tag = `<span class="tag wait">${wait} 待训练</span>`;
+    else if (L.has_playlist) tag = `<span class="tag ready">已编排</span>`;
+    if (L.clip_count) pill = `<span class="pill">${L.clip_count} 段</span>`;
+    act = qb('预览', I.play, `onPreview('${esc(L.name)}')`) +
+          qb('删除', I.trash, `onQuickDel('lib','${esc(L.name)}','${esc(L.name)}')`);
+  }
+  else if (it.kind === 'self'){
+    const L = it.obj;
+    const src = `/api/materials/${q(L.name)}/frame?which=first`;
+    media = `<div class="media"><img class="cover" loading="lazy" src="${src}" alt=""><img class="shot" loading="lazy" src="${src}" alt=""></div>`;
+    title = `<div class="ttl">${esc(L.name)}</div>`;
+    info = [`${L.self_frames} 帧`, durS(L.self_frames/25) + ' @25fps'];
+    tag = `<span class="tag ready">可直接用</span>`;
+    pill = `<span class="pill">单目录</span>`;
+    act = qb('预览', I.play, `previewSelf('${esc(it.lib)}')`) +
+          qb('复制角色 ID', I.link, `copyId('${esc(it.lib)}')`);
+  }
+  else if (it.kind === 'clip'){
+    const c = it.obj;
+    const src = `/api/libs/${q(it.lib)}/clipframe?clip=${q(c.name)}&which=first`;
+    media = `<div class="media"><img class="cover" loading="lazy" src="${src}" alt=""><img class="shot" loading="lazy" src="${src}" alt=""></div>`;
+    title = `<div class="ttl">${esc(c.name)}</div>`;
+    info = [c.kind === 'musetalk' ? 'musetalk' : (c.kind === 'wav2lip' ? 'wav2lip' : '未就绪'),
+            `${c.frames} 帧`,
+            (c.width && c.height) ? `${c.width}×${c.height}` : null].filter(Boolean);
+    tag = c.trained ? '' : `<span class="tag wait">未训练</span>`;
+    pill = `<span class="pill">${durS(c.duration_sec)}</span>`;
+    if (c.tail_head_mae != null)
+      pill += `<span class="pill mae ${maeCls(c.tail_head_mae)}" title="段内首尾帧差异 MAE：结尾帧与开头帧的像素差，越小越能无缝循环播放（≤1.5 优秀 / 1.5~3 可接受 / &gt;3 不可用）">首尾 ${maeTxt(c.tail_head_mae)}</span>`;
+    act = qb('预览首尾帧', I.play, `previewClip('${esc(it.lib)}','${esc(c.name)}')`) +
+          qb('删除', I.trash, `onQuickDel('clip','${esc(it.lib)}','${esc(c.name)}')`);
+  }
+  else if (it.kind === 'upload'){
+    const u = it.obj;
+    media = `<div class="media grad" style="background:${gradFor(it.stem)}">` +
+      `<div class="glyph" style="opacity:.28;width:78px;height:78px">${I.film}</div>` +
+      `<div class="glyph" style="position:absolute">${I.up}</div></div>`;
+    title = `<div class="ttl">${esc(u.file)}</div>`;
+    info = [mb(u.size_mb), '原始视频'];
+    tag = u.trained_as
+      ? `<span class="tag done">已训练</span>`
+      : `<span class="tag wait">待训练</span>`;
+    pill = `<span class="pill">${u.trained_as ? '已训练为 '+esc(u.trained_as) : '待训练'}</span>`;
+    act = (u.trained_as ? qb('打开片段', I.play, `goTo({kind:'clip',lib:'${esc(it.lib)}',clip:'${esc(u.trained_as)}'})`) : '') +
+          qb('训练', I.up, `trainOne('${esc(it.lib)}','${esc(u.file)}')`) +
+          qb('删除', I.trash, `onQuickDel('upload','${esc(it.lib)}','${esc(u.file)}')`);
+  }
+  else if (it.kind === 'task'){
+    const t = it.obj;
+    const st = {pending:'排队中',running:'训练中',completed:'已完成',failed:'失败'}[t.status] || t.status;
+    const pct = Math.max(0, Math.min(100, Math.round(t.progress||0)));
+    const ic = t.status==='completed' ? I.tick : (t.status==='failed' ? I.x : I.film);
+    media = `<div class="media grad" style="background:${t.status==='failed'
+        ? 'linear-gradient(135deg,#ef4444,#f97316)'
+        : (t.status==='completed' ? 'linear-gradient(135deg,#10b981,#059669)' : gradFor(t.avatar_id||'x'))}">` +
+      `<div class="glyph">${ic}</div></div>`;
+    title = `<div class="ttl">${esc(t.avatar_id || '—')}</div>`;
+    info = [t.model_type || '—', st, `${pct}%`];
+    tag = `<span class="tag ${t.status==='failed'?'fail':(t.status==='completed'?'done':'wait')}">${esc(st)}</span>`;
+    prog = `<div class="prog${t.status==='failed'?' f':''}"><i style="width:${pct}%"></i></div>`;
+    if (t.error_msg) info.push(String(t.error_msg).slice(0,40));
+  }
+
+  // 叠加层必须放进 .media 内部，否则绝对定位会落到整张卡片上（会压住下面的文字）
+  const ov = `<span class="chk" title="勾选（可多选）">${I.check}</span>${tag}${pill}<div class="quick">${act}</div>`;
+  const mediaFull = media.endsWith('</div>') ? media.slice(0, -6) + ov + '</div>' : media + ov;
+  return `<div class="card${sel}" data-key="${esc(k)}" data-kind="${it.kind}" data-name="${esc(it.name)}"` +
+    (it.lib?` data-lib="${esc(it.lib)}"`:'') + (it.stem?` data-stem="${esc(it.stem)}"`:'') + `>
+    ${mediaFull}
+    <div class="body">
+      ${title}
+      <div class="info">${info.map((x,i)=> (i?'<span class="dotsep">·</span>':'') + `<span>${esc(x)}</span>`).join('')}</div>
+      ${prog}
+    </div>
+  </div>`;
+}
+function qb(tip, svg, onclick){
+  return `<button class="qb" title="${esc(tip)}" onclick="event.stopPropagation();${onclick}">${svg}</button>`;
+}
+
+function lrowHTML(it){
+  const k = keyOf(it);                       // ← 必须：下面 data-key 与勾选态都靠它（原先直接用未声明的 k 会 ReferenceError）
+  const sel = S.sel.has(k) ? ' sel' : '';
+  let th, t2 = '', kind = '', frames = '—', d = '—', res = '—', mae = '—';
+
+  if (it.kind === 'lib' || it.kind === 'self'){
+    const L = it.obj;
+    const fc = (L.clips||[]).find(c=>c.trained);
+    const src = fc ? `/api/libs/${q(L.name)}/clipframe?clip=${q(fc.name)}&which=first`
+                   : `/api/materials/${q(L.name)}/frame?which=first`;
+    th = `<span class="th"><img loading="lazy" src="${src}" alt=""></span>`;
+    kind = L.clip_count ? '库（文件夹）' : '单目录素材';
+    t2 = L.clip_count ? `${L.clip_count} 个片段` : `${L.self_frames} 帧`;
+    frames = L.clip_count ? `${L.clip_count} 段` : L.self_frames;
+    d = L.clip_count ? '—' : durS(L.self_frames/25);
+  } else if (it.kind === 'clip'){
+    const c = it.obj;
+    const src = `/api/libs/${q(it.lib)}/clipframe?clip=${q(c.name)}&which=first`;
+    th = `<span class="th"><img loading="lazy" src="${src}" alt=""></span>`;
+    kind = c.kind === 'musetalk' ? 'musetalk 片段' : (c.kind === 'wav2lip' ? 'wav2lip 片段' : '未就绪片段');
+    t2 = c.name === it.name ? it.lib : '';
+    frames = c.frames; d = durS(c.duration_sec);
+    res = (c.width&&c.height) ? `${c.width}×${c.height}` : '—';
+    mae = c.tail_head_mae == null ? '—'
+      : `<span class="chip ${maeCls(c.tail_head_mae)}">${maeTxt(c.tail_head_mae)} ${maeWord(c.tail_head_mae)}</span>`;
+  } else if (it.kind === 'upload'){
+    const u = it.obj;
+    th = `<span class="th grad" style="background:${gradFor(it.stem)}"><span style="color:#fff">${I.up}</span></span>`;
+    kind = '原始视频';
+    t2 = mb(u.size_mb);
+    frames = '—';
+    mae = u.trained_as ? `<span class="chip g">已训练为 ${esc(u.trained_as)}</span>`
+                       : `<span class="chip y">待训练</span>`;
+  } else if (it.kind === 'task'){
+    const t = it.obj;
+    const pct = Math.round(t.progress||0);
+    th = `<span class="th grad"><span style="color:#fff">${t.status==='completed'?I.tick:(t.status==='failed'?I.x:I.film)}</span></span>`;
+    kind = {pending:'排队中',running:'训练中',completed:'已完成',failed:'失败'}[t.status]||t.status;
+    t2 = `${t.model_type||''} · ${pct}%`;
+    frames = '—';
+  }
+  return `<div class="lrow${sel}" data-key="${esc(k)}" data-kind="${it.kind}" data-name="${esc(it.name)}"` +
+    (it.lib?` data-lib="${esc(it.lib)}"`:'') + (it.stem?` data-stem="${esc(it.stem)}"`:'') + `>
+    <span class="chk" title="勾选（可多选）">${I.check}</span>
+    <span class="nm">${th}<span class="tx"><span class="t1">${esc(it.name)}</span>` +
+    (t2?`<span class="t2">${esc(t2)}</span>`:'') + `</span></span>
+    <span class="cell">${esc(kind)}</span>
+    <span class="cell mut">${frames}</span>
+    <span class="cell mut">${d}</span>
+    <span class="cell mut">${res}</span>
+    <span class="cell">${mae}</span>
+  </div>`;
+}
+
+/* ══════════════════════════════════════════════════════════════
+   训练队列视图
+   ══════════════════════════════════════════════════════════════ */
+function renderQueuePanel(){
+  const run = S.tasks.filter(t=>t.status==='running');
+  const pend = S.tasks.filter(t=>t.status==='pending');
+  const done = S.tasks.filter(t=>t.status==='completed');
+  const fail = S.tasks.filter(t=>t.status==='failed');
+  const cur = run[0];
+  let h = `<div class="panel" style="grid-column:1/-1">
+    <div class="panel-h"><h3>${I.clock} 训练队列</h3>
+      <span class="sub2">串行执行 · 一个完成再跑下一个</span></div>
+    <div class="panel-b">
+      <div class="stats">
+        <div class="stat"><div class="k">运行中</div><div class="v">${run.length}</div></div>
+        <div class="stat"><div class="k">排队中</div><div class="v">${pend.length}</div></div>
+        <div class="stat"><div class="k">已完成</div><div class="v">${done.length}</div></div>
+        <div class="stat"><div class="k">失败</div><div class="v" style="color:${fail.length?'#ef4444':'inherit'}">${fail.length}</div></div>
+      </div>`;
+  if (cur){
+    const pct = Math.round(cur.progress||0);
+    h += `<div style="margin-top:18px">
+      <div style="display:flex;justify-content:space-between;font-size:13px;font-weight:600;margin-bottom:8px">
+        <span>正在训练：${esc(cur.avatar_id)} <span style="color:#98a1b0;font-weight:500">(${esc(cur.model_type)})</span></span>
+        <span style="color:#6366f1">${pct}%</span></div>
+      <div class="bar"><i style="width:${pct}%"></i></div></div>`;
+  }
+  h += `</div></div>`;
+  $('grid').className = 'grid';
+  $('grid').innerHTML = h;
+}
+
+/* ══════════════════════════════════════════════════════════════
+   实时状态视图
+   ══════════════════════════════════════════════════════════════ */
+function renderActive(){
+  const sess = Array.isArray(S.active) ? S.active : [];
+  let h = `<div class="panel" style="grid-column:1/-1">
+    <div class="panel-h"><h3>${I.pulse} 实时状态</h3>
+      <span class="sub2">${sess.length ? sess.length + ' 个会话在线' : '当前没有会话'}</span></div>`;
+  if (!sess.length){
+    h += `<div class="panel-b"><div class="note">${I.info}
+      <div>当前没有 WebRTC 会话。打开 <a href="/index.html" target="_blank">直播页</a> 连接后，
+      这里会实时显示每个会话正在播放哪一段素材链。</div></div></div>`;
+  } else {
+    h += `<div class="panel-b"><div class="stats">`;
+    for (const s of sess){
+      const segs = s.segments || [];
+      const i = s.playlist_index || 0;
+      const pct = s.seg_len ? Math.min(100, Math.round((s.seg_cursor||0) / s.seg_len * 100)) : 0;
+      const mode = {shuffle:'随机',weight:'随机·不重复',sequence:'顺序循环'}[s.mode] || '—';
+      h += `<div class="stat">
+        <div class="k">会话 ${esc(String(s.sessionid||'').slice(0,8))}</div>
+        <div class="v sm">${esc(s.avatar_id || '—')}</div>
+        <div style="font-size:12px;color:#5b6474;margin-top:8px">
+          ${s.use_playlist
+            ? `正在播放 <b>${esc(segs[i] || '—')}</b> · 第 ${i+1}/${s.seg_count} 段`
+            : '未使用素材链（单段素材）'}</div>
+        ${s.use_playlist ? `<div class="bar"><i style="width:${pct}%"></i></div>
+          <div style="font-size:11.5px;color:#98a1b0;margin-top:7px">${mode} · 本段 ${s.seg_cursor||0}/${s.seg_len||0} 帧</div>` : ''}
+      </div>`;
+    }
+    h += `</div></div>`;
+  }
+  h += `</div>`;
+  $('grid').className = 'grid';
+  $('grid').innerHTML = h;
+}
+
+/* ══════════════════════════════════════════════════════════════
+   素材链编排
+   ══════════════════════════════════════════════════════════════ */
+function renderChain(){
+  const g = $('grid'); g.className = 'grid';
+  const usables = S.libs.filter(L => L.clip_count > 0);
+  if (!usables.length){
+    g.innerHTML = `<div class="empty"><div class="circ">${I.link}</div>
+      <h3>还没有可编排的片段</h3>
+      <p>素材链是「多个片段按顺序/随机拼接播放」，所以需要至少 2 个已训练片段。<br>
+         先新建一个库 → 上传视频 → 一键训练，然后再回来编排。</p>
+      <button class="btn pri" onclick="newLib()">新建库</button></div>`;
+    return;
+  }
+  if (!S.chainLib || !usables.find(L => L.name === S.chainLib))
+    S.chainLib = (S.cur.lib && usables.find(L=>L.name===S.cur.lib) ? S.cur.lib : usables[0].name);
+  const L = S.libs.find(x => x.name === S.chainLib);
+  const pl = L.playlist || {};
+  if (!S.chainDraft || S.chainDraftLib !== L.name){
+    S.chainDraft = (pl.segments || []).slice();
+    S.chainDraftLib = L.name;
+    S.chainMode = pl.mode || 'shuffle';
+  }
+  const trained = L.clips.filter(c => c.trained);
+  const avail = trained.filter(c => !S.chainDraft.includes(c.name));
+  // 模型一致性：一条素材链只能有一种模型（服务一次只加载一种）。
+  // 若库里混着两种，只让同一模型的片段可加入 —— 从「已选的第一段」定下本条链的模型。
+  const KNAME = {wav2lip:'wav2lip', musetalk:'musetalk', unknown:'未识别'};
+  const firstSeg = S.chainDraft.length
+    ? trained.find(c => c.name === S.chainDraft[0]) : null;
+  const chainKind = firstSeg ? firstSeg.kind : null;
+  const kindOf = n => { const c = trained.find(x=>x.name===n); return c ? c.kind : null; };
+  const mixedSelected = new Set(S.chainDraft.map(kindOf).filter(Boolean)).size > 1;
+  // 可加入的候选：若已定模型，则只留同模型
+  const availOk = chainKind ? avail.filter(c => c.kind === chainKind) : avail;
+  const blockedByKind = chainKind ? avail.length - availOk.length : 0;
+  const modeHint = {
+    shuffle:'每段播完随机挑一段（不会连续重复同一段）。<b>所有段等概率</b>，与段时长无关。',
+    weight:'随机，但<b>本轮还没播过的段优先</b> —— 播得越少概率越大，一轮内每段必然出现一次。',
+    sequence:'严格按下面的顺序 1→2→3→…→1 循环，完全可预测。',
+  };
+  const kindTip = chainKind
+    ? `<div class="note" style="margin-bottom:12px;background:#eef2ff;border-color:#c7d2fe">
+         ${I.info}<div>本条素材链锁定为 <b>${KNAME[chainKind] || chainKind}</b> 模型
+         ${blockedByKind ? `· 另有 ${blockedByKind} 个其他模型的片段已灰掉（不能混编）` : ''}。
+         若要编排另一种模型，先「清空」再从那个模型的片段开始。</div></div>`
+    : '';
+  const mixedTip = mixedSelected
+    ? `<div class="note" style="margin-bottom:12px;background:#fef2f2;border-color:#fecaca">
+         ${I.info}<div style="color:#b91c1c"><b>当前链里混了不同模型的片段，保存会被拒绝。</b>
+         请移除后再保存，或清空重来。</div></div>`
+    : '';
+
+  g.innerHTML = `
+  <div class="panel" style="grid-column:1/-1">
+    <div class="panel-h">
+      <h3>${I.link} 素材链编排</h3>
+      <span class="sub2">把多个片段拼成一条循环播放的长素材</span>
+      <div class="spacer" style="flex:1"></div>
+      <div class="sel-wrap"><select class="sel" id="chainLib">
+        ${usables.map(x=>`<option value="${esc(x.name)}"${x.name===L.name?' selected':''}>${esc(x.name)}（${x.clip_count} 段）</option>`).join('')}
+      </select></div>
+      <div class="sel-wrap"><select class="sel" id="chainMode">
+        <option value="shuffle"${S.chainMode==='shuffle'?' selected':''}>随机（等概率）</option>
+        <option value="weight"${S.chainMode==='weight'?' selected':''}>随机 · 不重复</option>
+        <option value="sequence"${S.chainMode==='sequence'?' selected':''}>顺序循环</option>
+      </select></div>
+      <button class="btn pri" id="chainSave">保存并实时生效</button>
+      <button class="btn" id="chainVerify">校验接缝</button>
+    </div>
+    <div class="panel-b">
+      <div class="note" style="margin-bottom:16px">${I.info}
+        <div>${modeHint[S.chainMode]}</div></div>
+      ${kindTip}${mixedTip}
+      <div class="chain2">
+        <div class="col2">
+          <div class="hd"><span>可用片段</span><span class="chip i">${availOk.length} 个未使用</span></div>
+          <div class="ls" id="avail">${availOk.length ? availOk.map(c=>`
+            <div class="li add" data-add="${esc(c.name)}">
+              <span class="idx">+</span><span class="nm2">${esc(c.name)}</span>
+              <span class="chip k${c.kind==='musetalk'?' m':' w'}">${KNAME[c.kind] || c.kind}</span>
+              <span class="chip ${maeCls(c.tail_head_mae)}">首尾 ${maeTxt(c.tail_head_mae)}</span>
+              <span class="chip">${c.frames} 帧</span>
+            </div>`).join('')
+            : '<div style="padding:26px;text-align:center;color:#98a1b0;font-size:13px">'
+              + (chainKind ? (blockedByKind ? '其他模型的片段不能加进这条链（见上方提示）' : '这个库的片段已经全部在右边了') : '这个库的片段已经全部在右边了')
+              + '</div>'}
+          </div>
+          <div class="ft">
+            <button class="btn" id="chainAll">全部加入</button>
+            <button class="btn" id="chainClear">清空</button>
+          </div>
+        </div>
+        <div class="col2">
+          <div class="hd"><span>播放顺序</span><span class="chip i">${S.chainDraft.length} 段</span></div>
+          <div class="ls" id="chain">${S.chainDraft.length ? S.chainDraft.map((n,i)=>{
+            const c = trained.find(x=>x.name===n) || {};
+            return `<div class="li">
+              <span class="idx ${i===0?'entry':''}">${i===0?'入口':i+1}</span>
+              <span class="nm2">${esc(n)}</span>
+              <span class="chip k${c.kind==='musetalk'?' m':' w'}">${KNAME[c.kind] || (c.kind||'—')}</span>
+              <span class="chip ${maeCls(c.tail_head_mae)}">首尾 ${maeTxt(c.tail_head_mae)}</span>
+              <span class="act" data-up="${i}" title="上移">▲</span>
+              <span class="act" data-down="${i}" title="下移">▼</span>
+              <span class="act del" data-del="${i}" title="移除">✕</span>
+            </div>`;}).join('')
+            : `<div style="padding:26px;text-align:center;color:#98a1b0;font-size:13px">
+                 从左边点片段加进来。<br><span style="font-size:12px">建议第一段选动作最中性的（如深呼吸/微点头）</span></div>`}
+          </div>
+          <div class="ft"><span class="hint" style="font-size:12px">顺序就是实际播放顺序，可上移/下移调整</span></div>
+        </div>
+      </div>
+      <div id="seamBox" style="margin-top:18px"></div>
+    </div>
+  </div>`;
+
+  $('chainMode').onchange = e => { S.chainMode = e.target.value; renderChain(); };
+  $('chainLib').onchange = e => { S.chainLib = e.target.value; S.chainDraft = null; renderChain(); };
+  $('chain').onclick = e => {
+    const up = e.target.getAttribute('data-up'), dn = e.target.getAttribute('data-down'),
+          dl = e.target.getAttribute('data-del'), a = S.chainDraft;
+    if (up != null){ const i = +up; if (i>0){ [a[i-1],a[i]]=[a[i],a[i-1]]; renderChain(); } }
+    else if (dn != null){ const i = +dn; if (i<a.length-1){ [a[i+1],a[i]]=[a[i],a[i+1]]; renderChain(); } }
+    else if (dl != null){ a.splice(+dl,1); renderChain(); }
+  };
+  $('avail').onclick = e => {
+    const li = e.target.closest('[data-add]'); if (!li) return;
+    S.chainDraft.push(li.getAttribute('data-add')); renderChain();
+  };
+  // 「全部加入」也必须遵守单模型约束：混着加进去保存会被服务端拒绝
+  $('chainAll').onclick = () => {
+    const k0 = S.chainDraft.length
+      ? (trained.find(c=>c.name===S.chainDraft[0]) || {}).kind : null;
+    const kk = k0 || (trained[0] || {}).kind;
+    let skipped = 0;
+    trained.forEach(c=>{
+      if (S.chainDraft.includes(c.name)) return;
+      if (kk && c.kind !== kk){ skipped++; return; }   // 不同模型：跳过
+      S.chainDraft.push(c.name);
+    });
+    if (skipped) toast(`已跳过 ${skipped} 个不同模型的片段（不能混编）`, 4200);
+    renderChain();
+  };
+  $('chainClear').onclick = () => { S.chainDraft = []; renderChain(); };
+  $('chainSave').onclick = async () => {
+    if (!S.chainDraft.length){ toast('素材链至少要有一段', 2600, true); return; }
+    const j = await jpost(`/api/libs/${q(L.name)}/playlist`, {clips:S.chainDraft, mode:S.chainMode});
+    if (j.code !== 0){ toast('保存失败：' + j.msg, 5000, true); return; }
+    const n = ((j.data||{}).reloaded_sessions||[]).length;
+    toast(n ? `已保存，并实时生效到 ${n} 个正在运行的会话` : '已保存（当前无活跃会话，下次连接即生效）', 4200);
+    await loadAll();
+  };
+  $('chainVerify').onclick = async () => {
+    const j = await jget(`/api/libs/${q(L.name)}`);
+    if (j.code !== 0){ toast('读取失败：' + j.msg, 4000, true); return; }
+    const clips = j.data.clips || [];
+    const map = {}; clips.forEach(c => map[c.name] = c);
+    const order = S.chainDraft.length ? S.chainDraft : clips.map(c=>c.name);
+    let worstAll = 0;
+    let rows = '';
+    order.forEach((n,i)=>{
+      const c = map[n] || {};
+      const v = c.tail_head_mae, sv = c.seam_from_prev_mae;
+      const w = Math.max(v==null?0:v, sv==null?0:sv);
+      if (i>0) worstAll = Math.max(worstAll, w);
+      rows += `<tr>
+        <td><span class="chip ${i===0?'i':''}">${i===0?'入口':i+1}</span></td>
+        <td style="font-weight:600">${esc(n)}</td>
+        <td>${v==null?'—':`<span class="chip ${maeCls(v)}">${maeTxt(v)}</span>`}</td>
+        <td>${sv==null?'<span style="color:#98a1b0">第一段</span>':`<span class="chip ${maeCls(sv)}">${maeTxt(sv)}</span>`}</td>
+        <td>${w===0 && v==null ? '—' : `<span class="chip ${maeCls(w)}">${maeWord(w)}</span>`}</td></tr>`;
+    });
+    $('seamBox').innerHTML = `<div class="panel" style="box-shadow:none">
+      <div class="panel-h"><h3>接缝质量校验</h3>
+        <span class="sub2">段内首尾差异 与 上一段尾→本段头 的像素差（越小越无缝）</span>
+        <div class="spacer" style="flex:1"></div>
+        <span class="chip ${maeCls(worstAll)}">整条链最差 ${maeTxt(worstAll)} · ${maeWord(worstAll)}</span></div>
+      <div class="panel-b" style="padding:0">
+        <table class="tb"><thead><tr><th>#</th><th>片段</th><th>段内首尾差异</th>
+          <th>接缝（上段尾→本段头）</th><th>结论</th></tr></thead><tbody>${rows}</tbody></table>
+        <div style="padding:14px 18px;border-top:1px solid var(--line-2)" class="hint">
+          判定标准：<b>≤1.5 优秀</b>（几乎看不出切换）· <b>1.5~3 可接受</b> · <b>&gt;3 不可用</b>（会看到明显跳变）。<br>
+          想做到无缝，最稳的办法是让每段视频的<b>首帧和尾帧是同一张图</b>（生成工具里指定首尾帧），这样段内和接缝都会接近 0。
+        </div>
+      </div></div>`;
+  };
+}
+
+/* ══════════════════════════════════════════════════════════════
+   状态栏（并入面包屑右侧，无需单独状态栏）
+   ══════════════════════════════════════════════════════════════ */
+
+/* ══════════════════════════════════════════════════════════════
+   数据加载
+   ══════════════════════════════════════════════════════════════ */
+async function loadAll(){
+  let a, b, c;
+  try {
+    [a, b, c] = await Promise.all([
+      jget('/api/libs'), jget('/api/libs/tasks'), jget('/api/materials/active')
+    ]);
+  } catch (e){
+    // 服务在重启 / 网络瞬断：给出可读提示，并**保留当前界面**（不清空、不白屏）
+    toast('读取素材库失败：' + (e && e.message ? e.message : '请求失败') +
+          '（服务可能正在重启，稍后会自动恢复）', 6000, true);
+    return false;
+  }
+  if (a && a.code === 0) S.libs = a.data.libs || [];
+  else if (a) toast('读取素材库失败：' + a.msg, 5000, true);
+  if (b && b.code === 0) S.tasks = b.data.tasks || [];
+  if (c && c.code === 0) S.active = (c.data && c.data.active) || [];
+  // 选中项清理：必须用「所有视图的全部条目」做存活判定。
+  //   ⚠️ 原实现用 currentItems()（只含**当前视图**），于是在根视图选中几个库、
+  //   再进入某个库之后，3 秒轮询就会把那些库的选中态悄悄删掉 —— 表现为
+  //   "选了几个，过一会儿自己就没了"。
+  const alive = new Set();
+  for (const L of S.libs){
+    alive.add('lib:' + L.name);
+    alive.add('self:' + L.name);
+    for (const c of (L.clips   || [])) alive.add('clip:'   + L.name + '/' + c.name);
+    for (const u of (L.uploads || [])) alive.add('upload:' + L.name + '/' + u.file);
+  }
+  for (const t of S.tasks) alive.add('task:' + t.task_id);
+  for (const k of [...S.sel]) if (!alive.has(k)) S.sel.delete(k);
+  S.loaded = true;
+  S._pollSig = pollTargetSig();
+  renderAll();
+  return true;
+}
+// paintSelection() 必须放在这里：S.sel 可能在别处被清空（如删除后），
+// 只重绘内容区不会同步「批量操作条」，会留下「已选 N 项」的假状态。
+function renderAll(){ renderSide(); renderCrumb(); renderContent(); paintSelection(); updateBtns(); }
+
+/* 数据指纹：库名 + 片段名/帧数 + 上传名。只有它变了才需要重建侧栏 DOM。
+   目的是让 3 秒轮询在「什么都没变」时完全不碰 DOM（消除闪烁）。 */
+function pollTargetSig(){
+  const parts = [];
+  for (const L of S.libs){
+    parts.push(L.name + '|' + (L.clip_count||0) + '|' + (L.uploads||[]).length);
+    for (const c of (L.clips||[])) parts.push(c.name + ':' + c.frames + ':' + (c.trained?1:0));
+    for (const u of (L.uploads||[])) parts.push('u' + u.file + (u.trained_as||''));
+  }
+  parts.push('tasks:' + S.tasks.map(t=>t.status).join(','));
+  return parts.join(';');
+}
+
+/* 只更新「实时状态」的角标数字，不做整树重建 */
+function updateActiveBadge(){
+  const el = document.querySelector('[data-kind="active"] .cnt');
+  if (!el) return;
+  const n = (S.active||[]).length;
+  const old = el.textContent;
+  const txt = n ? String(n) : '无会话';
+  if (old !== txt){ el.textContent = txt; el.classList.toggle('warn', !!n); }
+}
+
+/* 让结构没变时 loadAll 也能跳过重建（避免"保存后立刻闪一下"） */
+function loadAllMaybeRender(){
+  const sig = pollTargetSig();
+  if (sig === S._pollSig){ updateActiveBadge(); return; }
+  S._pollSig = sig;
+  renderAll();
+}
+
+/* ══════════════════════════════════════════════════════════════
+   选中
+   ══════════════════════════════════════════════════════════════ */
+/** 只切换某一项的选中态，**不动其它已选项**。
+ *  这是"勾选多个"的核心：卡片右上角的 .chk 勾选框、以及多选模式下的普通点击都走它。
+ */
+function toggleOne(it){
+  const k = keyOf(it);
+  if (S.sel.has(k)) S.sel.delete(k); else S.sel.add(k);
+  S.anchor = k;                    // 供 Shift 区间选择使用
+  paintSelection(); updateBtns();
+}
+
+function selectItem(it, e){
+  const k = keyOf(it);
+  if (e.ctrlKey || e.metaKey){
+    toggleOne(it); return;
+  } else if (e.shiftKey && S.anchor){
+    const items = viewItems();
+    const a = items.findIndex(x => keyOf(x) === S.anchor);
+    const b = items.findIndex(x => keyOf(x) === k);
+    if (a >= 0 && b >= 0){
+      S.sel.clear();
+      for (let i=Math.min(a,b); i<=Math.max(a,b); i++) S.sel.add(keyOf(items[i]));
+    } else { S.sel.clear(); S.sel.add(k); }
+  } else {
+    S.sel.clear(); S.sel.add(k); S.anchor = k;
+  }
+  // ⚠️ 不要在这里 renderContent()！
+  //   renderContent() 会 g.innerHTML = ... 整片重建，所有 <img> 被销毁重建，
+  //   浏览器必须重新解码 PNG → 用户看到"整个界面闪烁"。
+  //   这里只需要改选中态的 class，不触碰 DOM 结构。
+  paintSelection(); updateBtns();
+}
+
+/** 只更新选中态 class（不重建 DOM），避免缩略图闪烁。 */
+function paintSelection(){
+  const g = $('grid');
+  if (!g) return;
+  g.querySelectorAll('.card[data-key], .lrow[data-key], [data-key]').forEach(el => {
+    const k = el.getAttribute('data-key');
+    if (k) el.classList.toggle('sel', S.sel.has(k));
+  });
+  // 侧栏的选中态（保持同步）
+  const s = $('side');
+  if (s){
+    s.querySelectorAll('.nitem[data-kind]').forEach(el => {
+      const k = el.classList.contains('sub') ? null : null;
+      // 侧栏项用它自己的 data-* 组合出 key（clip/upload/lib）
+      const kind = el.getAttribute('data-kind');
+      const lib = el.getAttribute('data-lib');
+      const clip = el.getAttribute('data-clip');
+      let key = null;
+      if (kind === 'lib') key = 'lib:' + lib;
+      else if (kind === 'clip') key = 'clip:' + lib + '/' + clip;
+      else if (kind === 'upload') key = 'upload:' + lib + '/' + clip;
+      if (key) el.classList.toggle('on', S.sel.has(key));
+    });
+  }
+  updateSelCount();
+}
+
+/** 批量操作条的显隐与按钮可用性。 */
+function updateSelCount(){
+  const n = S.sel.size;
+  const bar = $('selBar');
+  const el = $('selCount');
+  if (el) el.textContent = n ? `已选 ${n} 项` : '';
+  if (bar) bar.style.display = n ? 'inline-flex' : 'none';
+  if (!n) return;
+  const sel = selList();
+  const cl = sel.filter(x => x.kind === 'clip');
+  const up = sel.filter(x => x.kind === 'upload');
+  // 「编排素材链」至少要 2 个片段才有意义
+  const bc = $('selChain');
+  if (bc) bc.classList.toggle('dis', cl.length < 2);
+  // 「一键训练」只对原始视频（未训练的）有意义
+  const bt = $('selTrain');
+  if (bt) bt.classList.toggle('dis', !up.some(u => !u.obj.trained_as));
+}
+function selList(){
+  const out = [];
+  for (const L of S.libs){
+    if (S.sel.has('lib:'+L.name)) out.push({kind:'lib', lib:L.name, name:L.name, obj:L});
+    if (S.sel.has('self:'+L.name)) out.push({kind:'self', lib:L.name, name:L.name, obj:L});
+    for (const c of L.clips)   if (S.sel.has('clip:'+L.name+'/'+c.name)) out.push({kind:'clip', lib:L.name, name:c.name, obj:c});
+    for (const u of L.uploads) if (S.sel.has('upload:'+L.name+'/'+u.file)) out.push({kind:'upload', lib:L.name, name:u.file, stem:u.stem, obj:u});
+  }
+  for (const t of S.tasks) if (S.sel.has('task:'+t.task_id)) out.push({kind:'task', name:t.task_id, obj:t});
+  return out;
+}
+function updateBtns(){
+  const hasLib = (S.cur.kind === 'lib' || S.cur.kind === 'clip');
+  const n = selList().length;
+  $('btnNewLib').disabled = false;
+  $('btnUpload').disabled = !hasLib;
+  $('btnMore').disabled = false;
+}
+function updateMoreMenu(){
+  const hasLib = (S.cur.kind === 'lib' || S.cur.kind === 'clip');
+  const sel = selList();
+  const hasUntrained = hasLib && curLib() && curLib().uploads.some(u=>!u.trained_as);
+  $('btnMore').disabled = false;
+  const m = $('moreMenu');
+  const can = sel.some(x=>x.kind==='upload');
+  m.querySelector('[data-a="newclip"]').classList.toggle('dis', !hasLib);
+  m.querySelector('[data-a="train"]').classList.toggle('dis', !(hasUntrained || can));
+  m.querySelector('[data-a="chain"]').classList.toggle('dis', !S.libs.some(L=>L.clip_count>0));
+  m.querySelector('[data-a="del"]').classList.toggle('dis', !sel.length);
+}
+
+/* ══════════════════════════════════════════════════════════════
+   导航
+   ══════════════════════════════════════════════════════════════ */
+function hashOf(p){
+  if (!p || p.kind === 'root') return '#/';
+  if (p.kind === 'lib')  return '#/lib/' + encodeURIComponent(p.lib);
+  if (p.kind === 'clip') return '#/lib/' + encodeURIComponent(p.lib) + '/' + encodeURIComponent(p.clip);
+  return '#/' + p.kind;
+}
+function parseHash(){
+  const h = String(location.hash||'').replace(/^#\/?/, '');
+  if (!h) return {kind:'root'};
+  const p = h.split('/').map(x => { try { return decodeURIComponent(x); } catch(e){ return x; } });
+  if (p[0] === 'lib' && p[1])
+    return p[2] ? {kind:'clip', lib:p[1], clip:p[2]} : {kind:'lib', lib:p[1]};
+  if (['queue','chain','active'].includes(p[0])) return {kind:p[0]};
+  return {kind:'root'};
+}
+function goTo(p, noHash){
+  S.cur = Object.assign({kind:'root'}, p);
+  if (p && p.lib) S.chainLib = p.lib;
+  S.sel.clear(); S.anchor = null;
+  if (!noHash){ const h = hashOf(S.cur); if (location.hash !== h) location.hash = h; }
+  renderAll();
+  $('content').scrollTop = 0;
+}
+
+/* ══════════════════════════════════════════════════════════════
+   弹层
+   ══════════════════════════════════════════════════════════════ */
+function closeDlg(){ $('mask').classList.remove('on'); $('dlg').innerHTML = ''; }
+function openDlg(h){ $('dlg').innerHTML = h; $('mask').classList.add('on'); }
+function promptBox(title, sub, label, def, okText, onOk){
+  openDlg(`<h3>${esc(title)}</h3>
+    <div class="bd">${sub?`<div class="hint" style="margin-bottom:4px">${sub}</div>`:''}
+      <label class="lbl">${esc(label)}</label>
+      <input type="text" id="dlgIn" value="${esc(def||'')}" autocomplete="off" spellcheck="false">
+      <div id="dlgErr" class="hint" style="color:#ef4444;display:none"></div></div>
+    <div class="ft"><button class="btn" id="dlgNo">取消</button>
+      <button class="btn pri" id="dlgYes">${esc(okText||'确定')}</button></div>`);
+  const inp = $('dlgIn'); inp.focus(); inp.select();
+  const ok = async () => {
+    const v = inp.value.trim();
+    if (!v){ const e = $('dlgErr'); e.textContent = '不能为空'; e.style.display='block'; return; }
+    $('dlgNo').disabled = $('dlgYes').disabled = true;
+    await onOk(v); closeDlg();
+  };
+  $('dlgYes').onclick = ok;
+  $('dlgNo').onclick = closeDlg;
+  inp.onkeydown = e => { if (e.key === 'Enter') ok(); if (e.key === 'Escape') closeDlg(); };
+}
+function confirmBox(title, bodyHTML, okText, danger, onOk){
+  openDlg(`<h3>${esc(title)}</h3>
+    <div class="bd"><div style="font-size:13.5px;line-height:1.75">${bodyHTML}</div></div>
+    <div class="ft"><button class="btn" id="dlgNo">取消</button>
+      <button class="btn ${danger?'dan':'pri'}" id="dlgYes">${esc(okText||'确定')}</button></div>`);
+  $('dlgYes').onclick = async () => { $('dlgYes').disabled = true; await onOk(); closeDlg(); };
+  $('dlgNo').onclick = closeDlg;
+}
+
+/** 带"文本输入 + 单选"的对话框。
+ *  opts: {title, sub, label, def, choices:[{v,label,desc}], choiceLabel, choiceDef, okText, onOk(name, choice)} */
+function promptChoiceBox(opts){
+  const choices = (opts.choices || []).map(c =>
+    `<label class="opt${c.v === opts.choiceDef ? ' on' : ''}" data-v="${esc(c.v)}">
+       <input type="radio" name="dlgOpt" value="${esc(c.v)}"${c.v === opts.choiceDef ? ' checked' : ''}>
+       <span class="ot">${c.label}</span>
+       ${c.desc ? `<span class="od">${c.desc}</span>` : ''}
+     </label>`).join('');
+  openDlg(`<h3>${esc(opts.title)}</h3>
+    <div class="bd">
+      ${opts.sub ? `<div class="hint" style="margin-bottom:10px">${opts.sub}</div>` : ''}
+      <label class="lbl">${esc(opts.label)}</label>
+      <input type="text" id="dlgIn" value="${esc(opts.def||'')}" autocomplete="off" spellcheck="false">
+      ${choices ? `<label class="lbl" style="margin-top:14px">${esc(opts.choiceLabel||'类型')}</label>
+        <div class="opts" id="dlgOpts">${choices}</div>` : ''}
+      <div id="dlgErr" class="hint" style="color:#ef4444;display:none"></div>
+    </div>
+    <div class="ft"><button class="btn" id="dlgNo">取消</button>
+      <button class="btn pri" id="dlgYes">${esc(opts.okText||'确定')}</button></div>`);
+  const inp = $('dlgIn'); inp.focus(); inp.select();
+  const optsEl = $('dlgOpts');
+  if (optsEl){
+    optsEl.onclick = e => {
+      const l = e.target.closest('.opt'); if (!l) return;
+      [...optsEl.children].forEach(x => x.classList.toggle('on', x === l));
+      const r = l.querySelector('input'); if (r) r.checked = true;
+    };
+  }
+  const getChoice = () => {
+    const r = document.querySelector('input[name="dlgOpt"]:checked');
+    return r ? r.value : (opts.choiceDef || '');
+  };
+  const ok = async () => {
+    const v = inp.value.trim();
+    if (!v){ const e = $('dlgErr'); e.textContent = '名称不能为空'; e.style.display='block'; return; }
+    $('dlgNo').disabled = $('dlgYes').disabled = true;
+    await opts.onOk(v, getChoice()); closeDlg();
+  };
+  $('dlgYes').onclick = ok;
+  $('dlgNo').onclick = closeDlg;
+  inp.onkeydown = e => { if (e.key === 'Enter') ok(); if (e.key === 'Escape') closeDlg(); };
+}
+
+/** 训练模型选择对话框（单选 + 说明）。
+ *  onOk(model) —— model 为 'wav2lip' | 'musetalk' */
+function trainModelBox(title, sub, defModel, onOk){
+  const cur = defModel || 'wav2lip';
+  const choices = [
+    {v:'wav2lip', label:'wav2lip 256', desc:'口型准、速度快（~25fps 满帧）。<b>推荐口播直播用</b>。产物含 face_imgs/ 与 coords.pkl。'},
+    {v:'musetalk', label:'musetalk v15', desc:'画质更细腻、口型自然，但推理较慢（~20-24fps）。产物含 latents.pt 与 mask/。'},
+  ].map(c => `<label class="opt${c.v === cur ? ' on' : ''}" data-v="${c.v}">
+       <input type="radio" name="dlgM" value="${c.v}"${c.v === cur ? ' checked' : ''}>
+       <span class="ot">${c.label}</span><span class="od">${c.desc}</span>
+     </label>`).join('');
+  openDlg(`<h3>${esc(title)}</h3>
+    <div class="bd">
+      ${sub ? `<div class="hint" style="margin-bottom:10px">${sub}</div>` : ''}
+      <div class="opts" id="dlgM">${choices}</div>
+      <div class="note" style="margin-top:12px">
+        <div><b>同一个视频可以两种都训一次</b> —— 产物是两套独立素材，互不影响。
+            想对比效果就各训一遍。</div>
+      </div>
+    </div>
+    <div class="ft"><button class="btn" id="dlgNo">取消</button>
+      <button class="btn pri" id="dlgYes">开始训练</button></div>`);
+  const box = $('dlgM');
+  box.onclick = e => {
+    const l = e.target.closest('.opt'); if (!l) return;
+    [...box.children].forEach(x => x.classList.toggle('on', x === l));
+    const r = l.querySelector('input'); if (r) r.checked = true;
+  };
+  const getModel = () => {
+    const r = document.querySelector('input[name="dlgM"]:checked');
+    return r ? r.value : 'wav2lip';
+  };
+  $('dlgYes').onclick = async () => { $('dlgYes').disabled = true; await onOk(getModel()); closeDlg(); };
+  $('dlgNo').onclick = closeDlg;
+}
+
+/* ───── 预览 ───── */
+function previewClip(lib, name){
+  const L = S.libs.find(x=>x.name===lib);
+  const c = (L && L.clips || []).find(x=>x.name===name) || {};
+  const f = `/api/libs/${q(lib)}/clipframe?clip=${q(name)}&which=first`;
+  const l = `/api/libs/${q(lib)}/clipframe?clip=${q(name)}&which=last`;
+  openDlg(`<h3>${esc(name)}<span style="font-weight:500;color:#98a1b0;font-size:13.5px"> · ${esc(lib)}</span></h3>
+    <div class="bd"><div class="pvw">
+      <div class="shots">
+        <div class="shot2"><span>首帧</span><img src="${f}" alt=""></div>
+        <div class="shot2"><span>尾帧</span><img src="${l}" alt=""></div>
+      </div>
+      <div class="kv">
+        <span class="k">类型</span><span class="v">${esc(c.kind||'—')}</span>
+        <span class="k">帧数 / 时长</span><span class="v">${c.frames||'—'} 帧 · ${durS(c.duration_sec)} @25fps</span>
+        <span class="k">分辨率</span><span class="v">${c.width?c.width+' × '+c.height:'—'}</span>
+        <span class="k">段内首尾差异</span><span class="v">${c.tail_head_mae==null?'—':
+          `<span class="chip ${maeCls(c.tail_head_mae)}">${maeTxt(c.tail_head_mae)} · ${maeWord(c.tail_head_mae)}</span>`}</span>
+        <span class="k">目录</span><span class="v mono">data/avatars/${esc(lib)}/${esc(name)}</span>
+      </div>
+      <div class="hint" style="text-align:left;width:100%">
+        <b>首尾差异怎么用：</b>这个值越小，说明这段视频结尾和开头越像、越适合无缝循环。
+        ≤1.5 可忽略，&gt;3 循环播放时会看到明显跳变。
+      </div>
+    </div></div>
+    <div class="ft">
+      <button class="btn" onclick="copyId('${esc(name)}')">复制目录名</button>
+      <button class="btn pri" id="dlgNo">关闭</button></div>`);
+  $('dlgNo').onclick = closeDlg;
+}
+function previewSelf(lib){
+  const L = S.libs.find(x=>x.name===lib) || {};
+  const f = `/api/materials/${q(lib)}/frame?which=first`;
+  openDlg(`<h3>${esc(lib)}<span style="font-weight:500;color:#98a1b0;font-size:13.5px"> · 单目录素材</span></h3>
+    <div class="bd"><div class="pvw">
+      <img src="${f}" style="max-height:42vh;border-radius:12px;border:1px solid #e9eaf0">
+      <div class="kv">
+        <span class="k">类型</span><span class="v">单目录素材（库根目录就是一份素材）</span>
+        <span class="k">帧数 / 时长</span><span class="v">${L.self_frames||'—'} 帧 · ${durS((L.self_frames||0)/25)} @25fps</span>
+        <span class="k">目录</span><span class="v mono">data/avatars/${esc(lib)}</span>
+        <span class="k">怎么用</span><span class="v">直接当角色 ID —— 在
+          <a href="/index.html" target="_blank">直播页</a> 里填 <code>${esc(lib)}</code></span>
+      </div>
+      <div class="note" style="width:100%">${I.info}
+        <div>这种素材没有子片段，所以<b>不能编排素材链</b>（素材链需要多个片段）。
+        想用素材链，请新建一个库、上传视频后用「一键训练」生成片段。</div></div>
+    </div></div>
+    <div class="ft"><button class="btn" onclick="copyId('${esc(lib)}')">复制角色 ID</button>
+      <button class="btn pri" id="dlgNo">关闭</button></div>`);
+  $('dlgNo').onclick = closeDlg;
+}
+function copyId(t){
+  navigator.clipboard.writeText(t).then(
+    ()=>toast('已复制：' + t),
+    ()=>toast('角色 ID：' + t, 8000)
+  );
+}
+
+/* ══════════════════════════════════════════════════════════════
+   操作
+   ══════════════════════════════════════════════════════════════ */
+async function newLib(){
+  promptChoiceBox({
+    title:'新建数字人库',
+    sub:'库名就是以后在直播页要填的<b>角色 ID</b>（播放时在网页里填它即可，模型会自动匹配）。'
+      + '库内放很多「片段」，片段组成素材链。',
+    label:'库名称',
+    def:'',
+    okText:'创建',
+    choiceLabel:'默认训练类型（可留空，训练时再选）',
+    choices:[
+      {v:'', label:'不预设（每次训练时选）', desc:'适合刚开始、还想两种都试试的情况。'},
+      {v:'wav2lip', label:'wav2lip 256', desc:'口播直播首选：口型准、速度快。'},
+      {v:'musetalk', label:'musetalk v15', desc:'画质细腻、口型自然，速度略慢。'},
+    ],
+    choiceDef:'',
+    onOk: async (name, model) => {
+      const j = await jpost('/api/libs', {name, model});
+      if (j.code !== 0){ toast('创建失败：' + j.msg, 5000, true); return; }
+      toast(model ? `已创建库：${name}（默认 ${model}）` : `已创建库：${name}`);
+      S.expanded.add(name);
+      await loadAll(); goTo({kind:'lib', lib:name});
+    }
+  });
+}
+async function newClip(){
+  const lib = S.cur.lib;
+  if (!lib){ toast('请先进入一个库', 2600, true); return; }
+  promptBox('新建片段文件夹', '片段是库里的一个子文件夹，通常是<b>训练产物</b>落在的地方。<br>一般不用手动建 —— 上传视频后训练会自动生成。',
+    '片段名称', '', '创建', async name => {
+      const j = await jpost(`/api/libs/${q(lib)}/clips`, {name});
+      if (j.code !== 0){ toast('创建失败：' + j.msg, 5000, true); return; }
+      toast('已新建片段：' + name);
+      await loadAll();
+    });
+}
+function doUpload(){
+  const lib = S.cur.lib;
+  if (!lib){ toast('请先进入一个库再上传', 3000, true); return; }
+  const fp = $('filePick'); fp.value = '';
+  fp.onchange = () => uploadFiles(lib, fp.files);
+  fp.click();
+}
+
+/* ── 整理：重命名 / 移动 ─────────────────────────────────────────
+   库名 = 角色 ID（启动 --avatar_id 与网页里填的），改名后要提醒用户。
+   片段 = 训练产物目录，改名/移动都不用重新训练。 */
+function renameLib(lib){
+  promptBox('重命名库（数字人）',
+    `库名同时是<b>角色 ID</b>：网页连接时要填它，服务端启动参数 <code>--avatar_id</code> 也用它。<br>
+     改名后请把这两个地方一起改。`,
+    '新名称', lib, '重命名', async name => {
+      name = String(name || '').trim();
+      if (!name || name === lib){ return; }
+      const j = await jpost(`/api/libs/${q(lib)}/rename`, {name});
+      if (j.code !== 0){ toast('重命名失败：' + j.msg, 5000, true); return; }
+      toast('已重命名为「' + name + '」· 记得更新角色 ID', 5000);
+      if (S.expanded.has(lib)){ S.expanded.delete(lib); S.expanded.add(name); }
+      if (S.cur.lib === lib){ S.cur = {kind:'lib', lib:name}; location.hash = hashOf(S.cur); }
+      await loadAll();
+    });
+}
+function renameClip(lib, oldName){
+  promptBox('重命名片段',
+    `片段是训练产物目录（含 full_imgs / face_imgs / coords.pkl 等）。<br>
+     改名只动文件夹，<b>不需要重新训练</b>。`,
+    '新名称', oldName, '重命名', async name => {
+      name = String(name || '').trim();
+      if (!name || name === oldName){ return; }
+      const j = await jpost(`/api/libs/${q(lib)}/clips/${q(oldName)}/rename`, {name});
+      if (j.code !== 0){ toast('重命名失败：' + j.msg, 5000, true); return; }
+      toast('已重命名为「' + name + '」');
+      await loadAll();
+    });
+}
+function renameUpload(lib, oldName){
+  promptBox('重命名上传文件',
+    `只改 <code>uploads/</code> 里的原始视频文件名，<b>不影响</b>已训练出的片段。<br>
+     扩展名必须是视频格式（.mp4 等）。`,
+    '新文件名', oldName, '重命名', async name => {
+      name = String(name || '').trim();
+      if (!name || name === oldName){ return; }
+      const j = await jpost(`/api/libs/${q(lib)}/upload/${q(oldName)}/rename`, {name});
+      if (j.code !== 0){ toast('重命名失败：' + j.msg, 5000, true); return; }
+      toast('已重命名为「' + name + '」');
+      await loadAll();
+    });
+}
+function moveClip(lib, name){
+  const others = S.libs.filter(L => L.name !== lib);
+  if (!others.length){ toast('没有别的库可以移动', 3200, true); return; }
+  const opts = others.map(L =>
+    `<option value="${esc(L.name)}">${esc(L.name)}${L.clip_count ? '（' + L.clip_count + ' 段）' : ''}</option>`).join('');
+  openDlg(`<h3>移动片段到其他库</h3>
+    <div class="bd">
+      <div style="font-size:13.5px;line-height:1.75;margin-bottom:10px">
+        把片段 <b>${esc(name)}</b> 从库 <b>${esc(lib)}</b> 移到：
+      </div>
+      <select id="mvTo" class="inp">${opts}</select>
+      <div class="hint" style="margin-top:10px">
+        片段是训练产物，<b>移动后不需要重新训练</b>，直接进目标库就能用。<br>
+        两个库的素材链会自动同步（源库移除、目标库追加）。
+      </div>
+    </div>
+    <div class="ft"><button class="btn" id="dlgNo">取消</button>
+      <button class="btn pri" id="dlgYes">移动</button></div>`);
+  $('dlgNo').onclick = closeDlg;
+  $('dlgYes').onclick = async () => {
+    const to = $('mvTo').value;
+    $('dlgYes').disabled = true;
+    const j = await jpost(`/api/libs/${q(lib)}/clips/${q(name)}/move`, {to});
+    if (j.code !== 0){ toast('移动失败：' + j.msg, 5000, true); $('dlgYes').disabled = false; return; }
+    closeDlg();
+    toast(`已移动到「${to}」`);
+    S.expanded.add(to);
+    await loadAll();
+  };
+}
+async function uploadFiles(lib, files){
+  if (!files || !files.length) return;
+  const fd = new FormData();
+  for (const f of files) fd.append('video_file', f, f.name);
+  toast(`正在上传 ${files.length} 个文件…`, 60000);
+  try {
+    const r = await fetch(`/api/libs/${q(lib)}/upload`, {method:'POST', body:fd});
+    const j = await r.json();
+    if (j.code !== 0){ toast('上传失败：' + j.msg, 5000, true); return; }
+    const n = ((j.data||{}).files || (j.data||{}).saved || []).length;
+    toast(`上传完成 ${n} 个文件 · 现在可以去「更多 → 一键训练」`, 5000);
+    await loadAll();
+  } catch(e){ toast('上传异常：' + e.message, 5000, true); }
+}
+async function trainOne(lib, file){
+  const L0 = S.libs.find(x => x.name === lib) || {};
+  trainModelBox('训练这个视频', `文件：<b>${esc(file)}</b>`, L0.default_model, async model => {
+    const j = await jpost(`/api/libs/${q(lib)}/train`, {files:[file], model});
+    if (j.code !== 0){ toast('加入队列失败：' + j.msg, 5000, true); return; }
+    toast('已加入训练队列（' + model + '）');
+    await loadAll(); goTo({kind:'queue'});
+  });
+}
+async function doTrain(){
+  const lib = S.cur.lib;
+  if (!lib){ toast('请先进入一个库', 3000, true); return; }
+  const L = curLib();
+  const sel = selList().filter(x=>x.kind==='upload');
+  const n = sel.length || L.uploads.filter(u=>!u.trained_as).length;
+  if (!n){ toast('这个库没有待训练的视频', 3200, true); return; }
+
+  // 默认选中：库预设类型 > 该库已训出的类型 > wav2lip
+  let defModel = L.default_model || '';
+  if (!defModel){
+    const tk = L.trained_kinds || [];
+    defModel = tk.length === 1 ? tk[0] : 'wav2lip';
+  }
+  const scope = sel.length ? `选中的 ${sel.length} 个视频` : `全部 ${n} 个未训练视频`;
+  trainModelBox('加入训练队列',
+    `库：<b>${esc(lib)}</b><br>范围：<b>${scope}</b>` +
+    (L.mixed ? `<div class="note" style="margin-top:10px;background:#fdf1de;color:#8d6417">
+      <div>该库目前同时有 wav2lip 与 musetalk 片段。新训的片段会按上面选的类型生成，
+      两者可以在库里共存，但<b>编排素材链时只能选同一类型</b>。</div></div>` : ''),
+    defModel, async model => {
+      const body = {model};
+      if (sel.length) body.files = sel.map(x=>x.name);
+      const j = await jpost(`/api/libs/${q(lib)}/train`, body);
+      if (j.code !== 0){ toast('加入队列失败：' + j.msg, 5000, true); return; }
+      toast(`已加入训练队列（${n} 个 · ${model}）`);
+      await loadAll(); goTo({kind:'queue'});
+    });
+}
+function doChain(){
+  const sel = selList().filter(x=>x.kind==='clip');
+  if (sel.length >= 2){
+    S.chainDraft = sel.map(x=>x.name); S.chainDraftLib = sel[0].lib; S.chainLib = sel[0].lib;
+  } else { S.chainDraft = null; }
+  goTo({kind:'chain', lib:(sel[0]&&sel[0].lib) || S.cur.lib});
+}
+function doDelete(){
+  const sel = selList();
+  if (!sel.length){ toast('请先选中要删除的项目', 2800, true); return; }
+  const libs = sel.filter(x=>x.kind==='lib' || x.kind==='self');
+  const clips = sel.filter(x=>x.kind==='clip');
+  const ups = sel.filter(x=>x.kind==='upload');
+  const list = sel.map(x=>`<span class="chip ${x.kind==='lib'||x.kind==='self'?'r':''}">${x.kind==='lib'?'库':(x.kind==='self'?'单目录素材':(x.kind==='clip'?'片段':'上传'))}</span> ${esc(x.lib?x.lib+' / '+x.name:x.name)}`).join('<br>');
+  confirmBox('确认删除 ' + sel.length + ' 项？',
+    `<div style="max-height:220px;overflow:auto;line-height:2.1;font-size:13px">${list}</div>` +
+    (libs.length ? `<div class="note" style="margin-top:12px;background:#fdeceb;color:#b42318">
+      <div><b>注意：</b>删除「库」或「单目录素材」会连同它里面<b>所有片段和上传文件</b>一起删掉，不可恢复。</div></div>` : ''),
+    '删除', true, async () => {
+      let ok = 0; const fail = [];
+      for (const x of sel){
+        let j;
+        if (x.kind === 'lib')          j = await jpost(`/api/libs/${q(x.name)}`, null, 'DELETE');
+        else if (x.kind === 'self')    j = await jpost(`/api/libs/${q(x.lib)}`, null, 'DELETE');
+        else if (x.kind === 'clip')    j = await jpost(`/api/libs/${q(x.lib)}/clips/${q(x.name)}`, null, 'DELETE');
+        else if (x.kind === 'upload')  j = await jpost(`/api/libs/${q(x.lib)}/upload/${q(x.name)}`, null, 'DELETE');
+        else { fail.push(x.name + '（训练记录不能删）'); continue; }
+        if (j && j.code === 0) ok++; else fail.push(x.name + '：' + ((j&&j.msg)||'失败'));
+      }
+      toast(fail.length ? `已删除 ${ok} 项，${fail.length} 项失败：${fail.join('；')}` : `已删除 ${ok} 项`,
+        fail.length ? 7000 : 2800, !!fail.length);
+      S.sel.clear();
+      await loadAll();
+      // 删掉的正是当前打开的库 → 必须退回根视图。
+      // 否则 S.cur 仍指向已不存在的路径：curLib() 返回 undefined、内容区空白、面包屑残留死名字。
+      const gone = new Set(sel.filter(x => x.kind === 'lib' || x.kind === 'self').map(x => x.name));
+      if (S.cur.lib && gone.has(S.cur.lib)) goTo({kind:'root'});
+    });
+}
+function onQuickDel(kind, lib, name){
+  S.sel.clear();
+  S.sel.add(kind + ':' + (kind === 'lib' ? '' : lib + '/') + name);
+  renderContent();
+  doDelete();
+}
+
+/* 侧栏悬停按钮用的删除入口 —— 复用 doDelete 的确认框与批量逻辑，保证与卡片删除行为一致 */
+function delLib(lib){
+  S.sel.clear(); S.sel.add('lib:' + lib); doDelete();
+}
+function delClip(lib, name){
+  S.sel.clear(); S.sel.add('clip:' + lib + '/' + name); doDelete();
+}
+function delUpload(lib, file){
+  S.sel.clear(); S.sel.add('upload:' + lib + '/' + file); doDelete();
+}
+function onPreview(lib){
+  const L = S.libs.find(x=>x.name===lib);
+  if (L && L.clip_count) goTo({kind:'lib', lib});
+  else previewSelf(lib);
+}
+
+/* ══════════════════════════════════════════════════════════════
+   右键菜单
+   ══════════════════════════════════════════════════════════════ */
+function showCtx(x, y, items){
+  const el = $('ctx');
+  el.innerHTML = items.map((it,i) => it.hr ? '<div class="hr"></div>'
+    : `<div class="it${it.dis?' dis':''}" data-i="${i}">${it.l}</div>`).join('');
+  el.classList.add('on');
+  el.style.left = Math.min(x, innerWidth - el.offsetWidth - 10) + 'px';
+  el.style.top  = Math.min(y, innerHeight - el.offsetHeight - 10) + 'px';
+  el.onclick = e => {
+    const d = e.target.closest('.it'); if (!d) return;
+    const it = items[+d.getAttribute('data-i')]; hideCtx();
+    if (!it.dis && it.f) it.f();
+  };
+}
+function hideCtx(){ $('ctx').classList.remove('on'); }
+
+/* ══════════════════════════════════════════════════════════════
+   事件绑定
+   ══════════════════════════════════════════════════════════════ */
+function bind(){
+  // 顶部
+  $('btnNewLib').onclick = newLib;
+  $('btnUpload').onclick = doUpload;
+  $('btnMore').onclick = e => { e.stopPropagation(); updateMoreMenu(); $('moreMenu').classList.toggle('on'); };
+  $('moreMenu').onclick = e => {
+    const mi = e.target.closest('.mi'); if (!mi || mi.classList.contains('dis')) return;
+    $('moreMenu').classList.remove('on');
+    const a = mi.getAttribute('data-a');
+    if (a === 'newclip') newClip();
+    else if (a === 'train') doTrain();
+    else if (a === 'chain') doChain();
+    else if (a === 'del') doDelete();
+    else if (a === 'refresh') loadAll();
+  };
+  document.addEventListener('click', e => {
+    if (!e.target.closest('.menu-wrap')) $('moreMenu').classList.remove('on');
+    hideCtx();
+  });
+  // 批量操作条：动作全部复用已有函数，避免两套逻辑各自演化
+  if ($('selClear')) $('selClear').onclick = () => { S.sel.clear(); S.anchor = null; paintSelection(); updateBtns(); };
+  if ($('selDel'))   $('selDel').onclick   = () => doDelete();
+  if ($('selChain')) $('selChain').onclick = () => {
+    if (selList().filter(x => x.kind === 'clip').length < 2){
+      toast('至少勾选 2 个片段才能编排素材链', 3200, true); return;
+    }
+    doChain();                       // doChain 已处理 chainDraft / chainLib / 跳转
+  };
+  if ($('selTrain')) $('selTrain').onclick = async () => {
+    const ups = selList().filter(x => x.kind === 'upload' && !x.obj.trained_as);
+    if (!ups.length){ toast('勾选的内容里没有「待训练」的原始视频', 3200, true); return; }
+    // 勾选可能跨库，所以要按库分组提交（训练接口是「库 + 文件列表」）
+    const byLib = {};
+    for (const u of ups) (byLib[u.lib] = byLib[u.lib] || []).push(u.name);
+    const libs = Object.keys(byLib);
+    const def = (curLib() && curLib().default_model)
+      || ((S.libs.find(x => x.name === libs[0]) || {}).default_model) || 'wav2lip';
+    trainModelBox('加入训练队列',
+      `已勾选 <b>${ups.length}</b> 个原始视频` +
+      (libs.length > 1 ? `（分布在 ${libs.length} 个库）` : `，库：<b>${esc(libs[0])}</b>`) +
+      `<div class="note" style="margin-top:10px">训练是<b>串行队列</b>：一个完成再跑下一个。</div>`,
+      def, async model => {
+        let okn = 0;
+        for (const [lib, files] of Object.entries(byLib)){
+          const j = await jpost(`/api/libs/${q(lib)}/train`, { files, model });
+          if (j.code === 0) okn += files.length;
+          else toast('提交失败：' + j.msg, 5000, true);
+        }
+        if (okn){ toast(`${okn} 个视频已加入训练队列（${model}）`); await loadAll(); goTo({kind:'queue'}); }
+      });
+  };
+
+  $('selCount').onclick = () => { S.sel.clear(); S.anchor = null; paintSelection(); updateBtns(); };
+
+  // 搜索
+  const se = $('search');
+  se.addEventListener('input', () => {
+    S.q = se.value;
+    $('searchWrap').classList.toggle('has', !!se.value);
+    renderContent(); renderCrumb(); renderSide();
+  });
+  $('searchClr').onclick = () => { se.value=''; S.q=''; $('searchWrap').classList.remove('has'); renderContent(); renderCrumb(); renderSide(); se.focus(); };
+  $('sortBy').onchange = e => { S.sort = e.target.value; renderContent(); };
+  $('kindBy').onchange = e => { S.kind = e.target.value; S.sel.clear(); renderContent(); renderCrumb(); };
+  $('viewSeg').onclick = e => {
+    const b = e.target.closest('button[data-v]'); if (!b) return;
+    S.view = b.getAttribute('data-v');
+    [...$('viewSeg').children].forEach(x => x.classList.toggle('on', x === b));
+    renderContent();
+  };
+  $('mask').onclick = e => { if (e.target.id === 'mask') closeDlg(); };
+
+  // 侧边栏
+  $('side').onclick = e => {
+    // 悬停操作按钮（重命名 / 删除）—— 必须优先于行的跳转处理
+    const opEl = e.target.closest('[data-op]');
+    if (opEl){
+      e.preventDefault(); e.stopPropagation();
+      const op = opEl.getAttribute('data-op');
+      const lib = opEl.getAttribute('data-lib');
+      if (op === 'ren-lib') renameLib(lib);
+      else if (op === 'del-lib') delLib(lib);
+      else if (op === 'ren-clip') renameClip(lib, opEl.getAttribute('data-clip'));
+      else if (op === 'del-clip') delClip(lib, opEl.getAttribute('data-clip'));
+      else if (op === 'ren-up') renameUpload(lib, opEl.getAttribute('data-file'));
+      else if (op === 'del-up') delUpload(lib, opEl.getAttribute('data-file'));
+      return;
+    }
+    const tw = e.target.closest('[data-tw]');
+    if (tw){
+      const n = tw.getAttribute('data-tw');
+      S.expanded.has(n) ? S.expanded.delete(n) : S.expanded.add(n);
+      renderSide(); return;
+    }
+    const r = e.target.closest('.nitem'); if (!r) return;
+    const k = r.getAttribute('data-kind');
+    // 单击 = 只选中（Windows 资源管理器习惯：选中不等于打开）
+    // 双击 = 打开/进入（由下面的 ondblclick 处理）
+    // 注意：库行单击不导航，避免"想选中却跳走了"；进入靠双击或展开箭头。
+    if (k === 'clip' || k === 'upload' || k === 'lib' || k === 'self' || k === 'root'){
+      // 侧栏选中态与内容区选中态统一走 S.sel，保证"删除/编排"能拿到选择
+      const lib = r.getAttribute('data-lib');
+      const clip = r.getAttribute('data-clip');
+      let key = null;
+      if (k === 'lib')         key = 'lib:' + lib;
+      else if (k === 'clip')   key = 'clip:' + lib + '/' + clip;
+      else if (k === 'upload') key = 'upload:' + lib + '/' + clip;
+      if (key){
+        S.sel.clear(); S.sel.add(key); S.anchor = key;
+        paintSelection();
+      }
+      return;
+    }
+    if (k) goTo({kind:k});
+  };
+
+  // 双击进入（Windows 习惯：素材 = 打开，库 = 进入）
+  $('side').ondblclick = e => {
+    if (e.target.closest('[data-op]')) return;
+    const r = e.target.closest('.nitem'); if (!r) return;
+    const k = r.getAttribute('data-kind');
+    const lib = r.getAttribute('data-lib'), clip = r.getAttribute('data-clip');
+    if (k === 'lib'){ S.expanded.add(lib); goTo({kind:'lib', lib}); }
+    else if (k === 'clip'){ goTo({kind:'clip', lib, clip}); }
+    else if (k === 'upload'){
+      const L = S.libs.find(x => x.name === lib);
+      const u = ((L && L.uploads) || []).find(x => x.file === clip || x.stem === clip);
+      if (u && u.trained_as) goTo({kind:'clip', lib, clip:u.trained_as});
+      else toast('这个视频还没训练 —— 先选中它然后点「更多 → 一键训练」', 3600, true);
+    }
+    else if (k === 'self'){ goTo({kind:'lib', lib}); }
+    else if (k) goTo({kind:k});
+  };
+  // 面包屑
+  $('crumb').onclick = e => {
+    const s = e.target.closest('.seg2'); if (!s) return;
+    const k = s.getAttribute('data-kind'), lib = s.getAttribute('data-lib'), clip = s.getAttribute('data-clip');
+    if (k === 'root') goTo({kind:'root'});
+    else if (k === 'clip') goTo({kind:'clip', lib, clip});
+    else if (k === 'lib') goTo({kind:'lib', lib});
+    else goTo({kind:k});
+  };
+
+  // 内容区
+  const c = $('content');
+  c.addEventListener('click', e => {
+    if (e.target.closest('.qb')) return;
+    const card = e.target.closest('.card, .lrow');
+    if (!card || S.cur.kind === 'chain' || S.cur.kind === 'active') return;
+    const kind = card.getAttribute('data-kind'), name = card.getAttribute('data-name'),
+          lib = card.getAttribute('data-lib');
+    const it = viewItems().find(x => x.kind===kind && x.name===name && (!lib || x.lib===lib));
+    if (!it) return;
+    // 点勾选框 = 只切换这一项（可连续勾选多个）；点卡片其它位置 = 单选。
+    // 之前 .chk 只是个没有事件处理的 span，点击会落到下面走单选分支，
+    // 每次都 S.sel.clear() —— 所以"勾第二个就把第一个取消掉了"。
+    if (e.target.closest('.chk')){ toggleOne(it); return; }
+    selectItem(it, e);
+  });
+  c.addEventListener('dblclick', e => {
+    const card = e.target.closest('.card, .lrow'); if (!card) return;
+    const kind = card.getAttribute('data-kind'), name = card.getAttribute('data-name'),
+          lib = card.getAttribute('data-lib');
+    if (kind === 'lib') goTo({kind:'lib', lib:name});
+    else if (kind === 'clip') previewClip(lib, name);
+    else if (kind === 'self') previewSelf(lib);
+    else if (kind === 'upload'){
+      const L = S.libs.find(x=>x.name===lib);
+      const u = (L && L.uploads || []).find(x=>x.file===name);
+      if (u && u.trained_as) goTo({kind:'clip', lib, clip:u.trained_as});
+      else toast('这个视频还没训练 —— 先用「更多 → 一键训练」', 3400, true);
+    }
+  });
+  c.addEventListener('contextmenu', e => {
+    const card = e.target.closest('.card, .lrow');
+    e.preventDefault(); hideCtx();
+    if (!card) return;
+    const kind = card.getAttribute('data-kind'), name = card.getAttribute('data-name'),
+          lib = card.getAttribute('data-lib');
+    const found = viewItems().find(x => x.kind===kind && x.name===name && (!lib || x.lib===lib));
+    if (!found) return;
+    if (!S.sel.has(keyOf(found))){ S.sel.clear(); S.sel.add(keyOf(found)); paintSelection(); updateBtns(); }
+    const selClips = selList().filter(x=>x.kind==='clip');
+    const items = [];
+    if (kind === 'lib'){
+      items.push({l:'打开', f:()=>goTo({kind:'lib', lib:name})});
+      items.push({l:'重命名库…', f:()=>renameLib(name)});
+      items.push({l:'复制角色 ID', f:()=>copyId(name)});
+    }
+    if (kind === 'self'){
+      items.push({l:'预览', f:()=>previewSelf(lib)});
+      items.push({l:'复制角色 ID', f:()=>copyId(lib)});
+    }
+    if (kind === 'clip'){
+      items.push({l:'预览首尾帧', f:()=>previewClip(lib, name)});
+      items.push({l:'重命名片段…', f:()=>renameClip(lib, name)});
+      if (S.libs.length > 1) items.push({l:'移动到其他库…', f:()=>moveClip(lib, name)});
+      items.push({l:'查看所属库', f:()=>goTo({kind:'lib', lib})});
+      items.push({hr:true});
+      items.push({l:selClips.length>=2 ? `用选中的 ${selClips.length} 段编排素材链` : '编排素材链',
+        f:()=>{ if (selClips.length>=2){ S.chainDraft=selClips.map(x=>x.name); S.chainDraftLib=lib; } goTo({kind:'chain', lib}); }});
+    }
+    if (kind === 'upload'){
+      items.push({l:'训练这个视频', f:()=>trainOne(lib, name)});
+      items.push({l:'重命名文件…', f:()=>renameUpload(lib, name)});
+    }
+    items.push({hr:true});
+    items.push({l: selList().length>1 ? `删除选中的 ${selList().length} 项` : '删除', f:doDelete});
+    items.push({l:'重新扫描', f:()=>loadAll()});
+    showCtx(e.clientX, e.clientY, items);
+  });
+
+  // 键盘
+  document.addEventListener('keydown', e => {
+    if (e.key === 'Escape'){ hideCtx(); closeDlg(); $('moreMenu').classList.remove('on'); }
+    if (e.key === 'F5'){ e.preventDefault(); loadAll(); }
+    if (e.key === 'Delete' && S.sel.size) doDelete();
+    if (e.ctrlKey && e.key.toLowerCase() === 'a'){
+      if (['INPUT','TEXTAREA','SELECT'].includes(e.target.tagName)) return;
+      e.preventDefault();
+      S.sel.clear(); viewItems().forEach(x => S.sel.add(keyOf(x)));
+      paintSelection(); updateBtns();
+    }
+  });
+
+  // 拖拽上传
+  let dn = 0;
+  const canDrop = () => S.cur.kind === 'lib' || S.cur.kind === 'clip';
+  document.addEventListener('dragenter', e => {
+    if (!canDrop()) return;
+    e.preventDefault(); dn++; document.body.classList.add('dragging');
+    $('dragTarget').textContent = '上传到「' + S.cur.lib + '」';
+  });
+  document.addEventListener('dragover', e => { if (canDrop()) e.preventDefault(); });
+  document.addEventListener('dragleave', e => {
+    if (--dn <= 0){ dn = 0; document.body.classList.remove('dragging'); }
+  });
+  document.addEventListener('drop', e => {
+    e.preventDefault(); dn = 0; document.body.classList.remove('dragging');
+    if (!canDrop()){ toast('请先进入一个库再拖入视频', 3200, true); return; }
+    uploadFiles(S.cur.lib, e.dataTransfer.files);
+  });
+  window.addEventListener('hashchange', () => {
+    S.cur = parseHash();
+    if (S.cur.lib) S.chainLib = S.cur.lib;
+    S.sel.clear(); S.anchor = null;
+    renderAll();
+  });
+}
+
+/* ══════════════════════════════════════════════════════════════
+   启动
+   ══════════════════════════════════════════════════════════════ */
+(async function init(){
+  bind();
+  const qs = new URLSearchParams(location.search);
+  if (qs.get('view') === 'list'){
+    S.view = 'list';
+    [...$('viewSeg').children].forEach(x => x.classList.toggle('on', x.getAttribute('data-v') === 'list'));
+  }
+  if (qs.get('sort') === 'frames' || qs.get('sort') === 'name' || qs.get('sort') === 'name_d' || qs.get('sort') === 'mae'){
+    S.sort = qs.get('sort'); $('sortBy').value = S.sort;
+  }
+  if (qs.get('q')){ S.q = qs.get('q'); $('search').value = S.q; $('searchWrap').classList.add('has'); }
+
+  renderContent();                     // 先出骨架屏
+  await loadAll();
+  S.cur = parseHash();
+  if (S.cur.lib) S.chainLib = S.cur.lib;
+  if (S.libs.length && !S.expanded.size) S.expanded.add(S.libs[0].name);
+  renderAll();
+
+  // 轮询：只刷新「会变的东西」，不再整页重建 DOM。
+  //
+  // 之前的写法在训练中（busy）每 3 秒调一次 loadAll() → renderAll()，
+  // 把侧栏与内容区的 innerHTML 全部重建一遍 —— 所有 <img> 被销毁重建，
+  // 浏览器要重新解码/重绘缩略图，于是整个页面「闪烁得很厉害」。
+  // 现在拆开：侧栏/内容区只在数据指纹变化时才重建；否则只做局部增量更新。
+  setInterval(async () => {
+    let b, c;
+    try {
+      [b, c] = await Promise.all([jget('/api/libs/tasks'), jget('/api/materials/active')]);
+    } catch (e){
+      return;   // 网络抖动/服务重启时静默跳过本轮，不要弹错误、不要清空界面
+    }
+    if (b && b.code === 0) S.tasks = b.data.tasks || [];
+    if (c && c.code === 0) S.active = (c.data && c.data.active) || [];
+
+    const busy = S.tasks.some(t => t.status==='running' || t.status==='pending');
+    if (busy) await loadAll();
+    const tgt = pollTargetSig();
+    if (tgt !== S._pollSig){          // 只有「库/片段结构」真的变了才重建
+      S._pollSig = tgt;
+      renderSide(); renderCrumb();
+    }
+    if (S.cur.kind === 'queue') renderQueuePanel();
+    if (S.cur.kind === 'active') renderActive();
+    updateActiveBadge();
+  }, 3000);
+})();
+</script>
+</body>
+</html>

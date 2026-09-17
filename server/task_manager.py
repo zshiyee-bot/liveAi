@@ -119,9 +119,13 @@ class TaskManager:
             logger.info(f"Task {task_id} completed successfully")
         except Exception as e:
             task.status = "failed"
-            task.error_msg = str(e)
+            # 保留完整 traceback：只记 str(e) 会丢掉出错位置，
+            # 排查时只能看到 'NoneType' and 'int' 这种无上下文的信息。
+            import traceback as _tb
+            task.error_msg = f"{type(e).__name__}: {e}"
             self._notify(task)
-            logger.error(f"Task {task_id} failed: {e}")
+            logger.error(f"Task {task_id} failed: {type(e).__name__}: {e}\n"
+                         f"{_tb.format_exc()}")
         finally:
             task.end_time = time.time()
 

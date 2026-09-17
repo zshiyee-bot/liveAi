@@ -10,9 +10,17 @@ import numpy as np
 import torch
 from tqdm import tqdm
 
+# ⚠️ 顺序很重要：必须**先**从顶层 utils 导入 imwrite_u，再导入 avatars.musetalk.utils.*。
+#    原因：avatars/musetalk/utils/__init__.py 会执行
+#        sys.path.append(<avatars/musetalk>/utils)
+#    一旦这个包被导入，名为 "utils" 的兄弟目录就插进了 sys.path，
+#    之后 `from utils.image import ...` 会解析到 avatars/musetalk/utils/image.py
+#    （不存在）并报 `ModuleNotFoundError: No module named 'utils.image'; 'utils' is not a package`。
+#    所以先用绝对模块名把顶层 utils.image 拿到手，再导入 musetalk 的 utils。
+from utils.image import imwrite_u
+
 from avatars.musetalk.utils.preprocessing import get_landmark_and_bbox, read_imgs
 from avatars.musetalk.utils.blending import get_image_prepare_material
-from avatars.musetalk.utils.utils import load_all_model
 
 try:
     from utils.face_parsing import FaceParsing
@@ -28,8 +36,12 @@ def video2imgs(vid_path, save_path, ext='.png', cut_frame=10000000):
             break
         ret, frame = cap.read()
         if ret:
-            cv2.putText(frame, "LiveTalking", (10, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.3, (128,128,128), 1)
-            cv2.imwrite(f"{save_path}/{count:08d}.png", frame)
+            # 原上游在此处把水印烧进素材帧（不可逆）：
+            #     cv2.putText(frame, "LiveTalking", (10, 20),
+            #                 cv2.FONT_HERSHEY_SIMPLEX, 0.3, (128,128,128), 1)
+            # 已移除。老素材需重训才会变干净。
+            # 用 imwrite_u 替代 cv2.imwrite：中文路径下 cv2.imwrite 静默失败
+            imwrite_u(f"{save_path}/{count:08d}.png", frame)
             count += 1
         else:
             break
@@ -105,7 +117,13 @@ def generate_avatar(video_path, avatar_id, save_path='./data/avatars', bbox_shif
     coord_placeholder = (0.0, 0.0, 0.0, 0.0)
 
     device = torch.device(f"cuda" if torch.cuda.is_available() else "cpu")
-    vae_local, unet_local, pe_local = load_all_model(device=device)
+    # ⚠️ 只加载 VAE —— 训练（genavatar）阶段只用 VAE 编码帧，
+    #    unet / pe 在这个流程里**完全不参与计算**。
+    #    原实现调用 load_all_model(device=device) 会把 3.4GB 的 MuseTalk UNet
+    #    也一并搬到显存；本机 16GB 卡上叠加其他占用容易 OOM，
+    #    且白白多花十几秒加载。改成只建 VAE，显存占用从 ~4GB 降到 ~0.5GB。
+    from avatars.musetalk.models.vae import VAE
+    vae_local = VAE(model_path=os.path.join("models", "sd-vae"))
     vae_local.vae = vae_local.vae.half().to(device)
 
     if version == "v15":
@@ -134,12 +152,12 @@ def generate_avatar(video_path, avatar_id, save_path='./data/avatars', bbox_shif
     mask_coords_list_cycle = []
     mask_list_cycle = []
     for i, frame in enumerate(frame_list):
-        cv2.imwrite(f"{save_full_path}/{str(i).zfill(8)}.png", frame)
+        imwrite_u(f"{save_full_path}/{str(i).zfill(8)}.png", frame)
 
         x1, y1, x2, y2 = coord_list[i]
         mode = parsing_mode if version == "v15" else "raw"
         mask, crop_box = get_image_prepare_material(frame, [x1, y1, x2, y2], fp=fp_local, mode=mode)
-        cv2.imwrite(f"{mask_out_path}/{str(i).zfill(8)}.png", mask)
+        imwrite_u(f"{mask_out_path}/{str(i).zfill(8)}.png", mask)
 
         mask_coords_list_cycle += [crop_box]
         mask_list_cycle.append(mask)

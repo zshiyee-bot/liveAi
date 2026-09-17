@@ -7,6 +7,7 @@ from glob import glob
 import torch
 import pickle
 from avatars.wav2lip import face_detection
+from utils.image import imwrite_u, imread_u
 
 
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
@@ -24,8 +25,15 @@ def video2imgs(vid_path, save_path, ext = '.png',cut_frame = 10000000):
             break
         ret, frame = cap.read()
         if ret:
-            cv2.putText(frame, "LiveTalking", (10, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.3, (128,128,128), 1)
-            cv2.imwrite(f"{save_path}/{count:08d}.png", frame)
+            # 原上游在此处把水印烧进素材帧（不可逆，播放时永远带着）：
+            #     cv2.putText(frame, "LiveTalking", (10, 20),
+            #                 cv2.FONT_HERSHEY_SIMPLEX, 0.3, (128,128,128), 1)
+            # 已移除。注意：**已训练好的素材里水印是烧死的**，改这里只对"以后
+            # 新训练的素材"生效；老素材要重训才会变干净。
+            # 用 imwrite_u 而非 cv2.imwrite：后者在中文路径下静默失败返回 False，
+            # 会导致"训练显示成功但没有任何帧"（素材名含中文时必现）。
+            if not imwrite_u(f"{save_path}/{count:08d}.png", frame):
+                print(f'[WARN] 写图失败: {save_path}/{count:08d}.png')
             count += 1
         else:
             break
@@ -34,7 +42,11 @@ def read_imgs(img_list):
     frames = []
     print('reading images...')
     for img_path in tqdm(img_list):
-        frame = cv2.imread(img_path)
+        # 用 imread_u：cv2.imread 在中文路径下静默返回 None，
+        # 会让后面 face_detection 报 'NoneType' and 'int' 这种看不懂的错。
+        frame = imread_u(img_path)
+        if frame is None:
+            print(f'[WARN] 读图失败(路径可能含非 ASCII): {img_path}')
         frames.append(frame)
     return frames
 
@@ -84,24 +96,36 @@ def generate_avatar(video_path, avatar_id, save_path='./data/avatars', img_size=
     detector = face_detection.FaceAlignment(face_detection.LandmarksType._2D,
                                             flip_input=False, device=device)
 
-    batch_size = face_det_batch_size
+    batch_size = 1
+    _report_every = max(1, int(face_det_batch_size))
     predictions = []
 
-    while 1:
-        predictions = []
-        try:
-            for i in range(0, len(frames), batch_size):
-                predictions.extend(detector.get_detections_for_batch(np.array(frames[i:i + batch_size])))
-                if progress_callback:
-                    progress = 40 + int((i + batch_size) / len(frames) * 40)
-                    progress_callback(min(progress, 80))
-        except RuntimeError:
-            if batch_size == 1:
-                raise RuntimeError('Image too big to run face detection on GPU.')
-            batch_size //= 2
-            print('Recovering from OOM error; New batch size: {}'.format(batch_size))
-            continue
-        break
+    # ⚠️ 这里必须逐帧检测（batch_size=1），不能按 face_det_batch_size 真的批处理。
+    #
+    # 原因：SFDetector.get_detections_for_batch() 内部的 batch_detect() 是**伪批处理**
+    #   —— 它对每个 anchor 位置做 Python 循环，循环次数只由特征图尺寸决定、与 batch 无关，
+    #   但每轮迭代都构造带整个 batch 维度的 tensor 并单独调用一次 batch_decode()。
+    #   于是 batch 越大，总开销线性增长（实测 1080p / RTX 4060 Ti）：
+    #       batch=1 → 239 ms/帧      batch=2 → 2182 ms/帧（慢 9.1 倍）
+    #       batch=4 → 2670 ms/帧     batch=8 → 3722 ms/帧（慢 15.6 倍）
+    #   页面默认 face_det_batch_size=4 时，394 帧需 ~17 分钟且经常跑不完 →
+    #   这就是「训练从来没有成功过」的根因。
+    #
+    # 另外它还有**正确性**问题：循环里 `for Iindex, hindex, windex in poss` 取了
+    #   Iindex 却从未使用，把整个 batch 的检测结果混进同一个列表，
+    #   而后续 NMS 隐含假设各图 anchor 位置一致 → 部分图未激活的 anchor 会把
+    #   其他图的 score 计进来，导致框偏移。实测同一帧 batch=1 得 (356,477,840,1051)
+    #   而 batch=6 得 (343,495,881,1031)，最大偏差 40px。
+    #
+    # 所以固定 batch_size = 1；face_det_batch_size 仅保留为「进度上报粒度」，
+    # 让界面在长视频上仍有较平滑的百分比反馈（不再影响实际速度）。
+    #
+    # 注：因为恒为 1，原 OOM 降 batch 重试逻辑已不可能触发，故移除。
+    for i in range(0, len(frames), batch_size):
+        predictions.extend(detector.get_detections_for_batch(np.array(frames[i:i + batch_size])))
+        if progress_callback and (i % _report_every == 0):
+            progress = 40 + int((i + batch_size) / len(frames) * 40)
+            progress_callback(min(progress, 80))
 
     results = []
     pady1, pady2, padx1, padx2 = pads
@@ -126,7 +150,7 @@ def generate_avatar(video_path, avatar_id, save_path='./data/avatars', img_size=
     for idx, (rect, frame) in enumerate(zip(boxes, frames)):
         face_frame = frame[int(rect[1]):int(rect[3]), int(rect[0]):int(rect[2])]
         resized_crop_frame = cv2.resize(face_frame, (img_size, img_size))
-        cv2.imwrite(f"{face_imgs_path}/{idx:08d}.png", resized_crop_frame)
+        imwrite_u(f"{face_imgs_path}/{idx:08d}.png", resized_crop_frame)
         coord_list.append((int(rect[1]), int(rect[3]), int(rect[0]), int(rect[2])))
 
         if progress_callback:

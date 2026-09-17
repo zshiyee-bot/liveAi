@@ -76,16 +76,65 @@ class SessionManager:
         self.sessions[sessionid] = None
 
         # 在线程池中构建 session（加载模型非常耗时）
-        avatar_session = await asyncio.get_event_loop().run_in_executor(
-            None, self.build_session_fn, sessionid, params
-        )
+        # 注意：构建失败（例如素材不完整、模型切换被拒）时必须回收占位，
+        # 否则这个 None 会永久占住一个会话名额，后续连接全部报"已达上限"。
+        try:
+            avatar_session = await asyncio.get_event_loop().run_in_executor(
+                None, self.build_session_fn, sessionid, params
+            )
+        except Exception:
+            self.sessions.pop(sessionid, None)
+            logger.warning(f"Session {sessionid} 构建失败，已回收占位名额")
+            raise
         self.sessions[sessionid] = avatar_session
         return sessionid
         
     def add_session(self, sessionid: str, avatar_session: BaseAvatar):
         """同步添加静态或外部管理的会话（供非服务端入口调用）"""
         self.sessions[sessionid] = avatar_session
-        
+
+    def drop_stale_connecting(self, max_age_sec: float = 45.0) -> list:
+        """回收长时间停留在 connecting 状态的「僵尸会话」。
+
+        背景：`server/rtc_manager.py` 只在 connectionState 变成 failed/closed 时
+        才清理会话。但若客户端在 ICE 完成前就消失（关掉页面、崩溃、网络断开），
+        连接会永远停在 `connecting`，会话也就永远留在表里。
+
+        这不是新问题，但会带来一个实际后果：模型自动切换时会认为
+        「还有会话在用旧模型」而一直拒绝切换，用户就必须重启服务。
+
+        做法：把「从未 ready 且创建超过 max_age_sec」的会话清掉。
+        只处理 connecting/new 状态的会话 —— 已经 connected 的（哪怕暂时
+        无数据）不动，避免误杀正在推流的连接。
+
+        返回被回收的 sessionid 列表。
+        """
+        import time as _time
+        dropped = []
+        # 先快照，避免迭代中修改 dict
+        for sid, sess in list(self.sessions.items()):
+            if sess is None:
+                continue                      # 占位由 create_session 自己回收
+            pc = getattr(sess, '_rtc_pc', None)
+            if pc is None:
+                continue                      # 非 webrtc 会话（virtualcam 等）不管
+            state = getattr(pc, 'connectionState', None)
+            if state not in ('new', 'connecting'):
+                continue
+            created = getattr(sess, '_created_at', None)
+            if created is None:
+                continue
+            if _time.time() - created < max_age_sec:
+                continue
+            logger.warning("回收僵尸会话 %s（停留在 %s 超过 %.0fs）",
+                           sid[:8], state, max_age_sec)
+            try:
+                self.remove_session(sid)
+            except Exception:
+                logger.exception("回收僵尸会话 %s 出错", sid)
+            dropped.append(sid)
+        return dropped
+
     def remove_session(self, sessionid: str):
         """销毁会话资源：置位 quit_event，级联停掉 render/推理/合帧/TTS 线程"""
         if sessionid in self.sessions:

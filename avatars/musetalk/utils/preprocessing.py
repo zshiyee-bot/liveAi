@@ -37,7 +37,9 @@ def read_imgs(img_list):
     frames = []
     print('reading images...')
     for img_path in tqdm(img_list):
-        frame = cv2.imread(img_path)
+        # 用 imread_u：cv2.imread 在中文路径下静默返回 None（Windows/OpenCV 限制）
+        from utils.image import imread_u
+        frame = imread_u(img_path)
         frames.append(frame)
     return frames
 

@@ -269,4 +269,22 @@ def setup_routes(app):
     # 注册 avatar 生成相关的路由
     setup_avatar_routes(app)
 
+    # 注册素材管理路由（素材扫描 / 素材链 playlist.json 读写 / 首尾帧预览）
+    from server.materials_routes import setup_materials_routes
+    setup_materials_routes(app)
+
+    # 注册库管理路由（库→片段 两级组织 / 上传 / 训练队列 / 库级素材链）
+    from server import libs_routes
+    # 注入运行中的 app 模块（__main__），供素材链热重载访问 global_avatars / load_avatar。
+    # 注意：不能靠 `import app` —— app.py 以 __main__ 运行，再 import 会得到空白第二实例。
+    import sys as _sys
+    _main_mod = _sys.modules.get('__main__')
+    _app_mod = _main_mod if getattr(_main_mod, '__file__', ''
+                                    ).replace('\\', '/').endswith('/app.py') else None
+    if _app_mod is not None:
+        libs_routes.set_app_module(_app_mod)
+    else:
+        logger.warning("无法注入 app 模块到 libs_routes（热重载将不可用）")
+    libs_routes.setup_lib_routes(app)
+
     app.router.add_static('/', path='web')

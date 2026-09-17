@@ -19,3 +19,19 @@ workspace/log_ngp.txt
 models/
 *.log
 dist
+
+# ── 本仓库新增规则（本机运行环境 / 权重 / 临时备份，一律不入库）──────────
+# 虚拟环境：本机 5.7GB，里面还有硬链进来的 ffmpeg.exe，绝不能提交
+.venv/
+venv/
+
+# 模型权重：上游同样不入库（models/ 已忽略）。
+# 下面这两份 s3fd.pth 各 85.7MB，是 S3FD 人脸检测器的权重，
+# 代码在缺文件时会自动从 https://www.adrianbulat.com/downloads/python-fan/s3fd-619a316812.pth 下载，
+# 所以没有理由让它们进 git 历史（两份 = 171MB）。
+*.pth
+
+# 本地临时备份（原始文件都能从 git 历史取回）
+*.bak
+*.upstream.bak
+.backup_*
