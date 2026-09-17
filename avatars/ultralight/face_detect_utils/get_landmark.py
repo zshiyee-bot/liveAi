@@ -1,5 +1,7 @@
 import argparse
-from os import wait3
+# 原第 2 行 `from os import wait3` 已删除：
+#   wait3 是 Unix-only 接口，Windows 上 import 直接抛 ImportError，
+#   使 ultralight 关键点检测在 Windows 完全跑不起来；且全文从未使用它。
 
 import numpy as np
 import cv2

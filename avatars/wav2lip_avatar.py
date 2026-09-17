@@ -41,7 +41,7 @@ from avatars.base_avatar import BaseAvatar
 
 from tqdm import tqdm
 from utils.logger import logger
-from utils.image import read_imgs, mirror_index
+from utils.image import read_imgs, load_frames, probe_frames_bytes, mirror_index
 from utils.device import initialize_device
 from registry import register
 
@@ -84,18 +84,25 @@ def load_avatar(avatar_id):
     
     with open(coords_path, 'rb') as f:
         coord_list_cycle = pickle.load(f)
-    frame_list_cycle = None
-    input_img_list = glob.glob(os.path.join(full_imgs_path, '*.[jpJP][pnPN]*[gG]'))
-    input_img_list = sorted(input_img_list, key=lambda x: int(os.path.splitext(os.path.basename(x))[0]))
-    frame_list_cycle = read_imgs(input_img_list)
-    input_face_list = glob.glob(os.path.join(face_imgs_path, '*.[jpJP][pnPN]*[gG]'))
-    input_face_list = sorted(input_face_list, key=lambda x: int(os.path.splitext(os.path.basename(x))[0]))
-    face_list_cycle = read_imgs(input_face_list)
 
+    # 先看有没有素材链：有的话直接用链里的段，**不再单独加载一份单段素材**。
+    # 上游顺序是先加载单段再加载链，素材链头像会把同一份素材读两遍
+    # （1080p 长素材就是白读一份 7GB，而且那份立刻被丢弃）。
     segments = _load_segments(avatar_path, avatar_id, 'wav2lip')
     if segments:
         return segments[0][0], segments[0][1], segments[0][2], segments
+
+    input_img_list = _sorted_imgs(full_imgs_path)
+    frame_list_cycle = load_frames(input_img_list)
+    input_face_list = _sorted_imgs(face_imgs_path)
+    face_list_cycle = load_frames(input_face_list)
     return frame_list_cycle, face_list_cycle, coord_list_cycle, None
+
+
+def _sorted_imgs(d):
+    """取目录里的图片并按文件名数字排序（见 utils.image.sorted_imgs）。"""
+    from utils.image import sorted_imgs
+    return sorted_imgs(d)
 
 
 def _load_segments(avatar_path, avatar_id, kind):
@@ -117,7 +124,9 @@ def _load_segments(avatar_path, avatar_id, kind):
     if len(names) < 1:
         return None
 
-    segs = []
+    # 两阶段：先把各段的路径列表都探出来，用**整条链的总字节数**决定一次
+    # eager/lazy（load_frames_batch 里解释为什么不能每段各判各的），再统一加载。
+    resolved = []          # [(name, base, fl, fa, coords)]
     names_used = []
     for name in names:
         # 先看本 avatar 子目录，再退到 data/avatars/<name>
@@ -129,18 +138,42 @@ def _load_segments(avatar_path, avatar_id, kind):
         if kind == 'wav2lip':
             with open(os.path.join(base, 'coords.pkl'), 'rb') as f:
                 coords = pickle.load(f)
-            fl = glob.glob(os.path.join(base, 'full_imgs', '*.[jpJP][pnPN]*[gG]'))
-            fl = sorted(fl, key=lambda x: int(os.path.splitext(os.path.basename(x))[0]))
-            frames = read_imgs(fl)
-            fa = glob.glob(os.path.join(base, 'face_imgs', '*.[jpJP][pnPN]*[gG]'))
-            fa = sorted(fa, key=lambda x: int(os.path.splitext(os.path.basename(x))[0]))
-            faces = read_imgs(fa)
+            fl = _sorted_imgs(os.path.join(base, 'full_imgs'))
+            fa = _sorted_imgs(os.path.join(base, 'face_imgs'))
+            resolved.append((name, base, fl, fa, coords))
+        else:
+            resolved.append((name, base, None, None, None))
+        names_used.append(name)
+
+    if not resolved:
+        return None
+
+    # 一次性算出「整条链要占多少内存」：只解码每段首帧，不解码全部
+    probe_lists = []
+    for _n, base, fl, fa, _c in resolved:
+        if fl is not None:
+            probe_lists.append(fl)
+            probe_lists.append(fa)
+        else:
+            probe_lists.append(_sorted_imgs(os.path.join(base, 'full_imgs')))
+            probe_lists.append(_sorted_imgs(os.path.join(base, 'mask')))
+    budget = int(os.environ.get('LT_EAGER_BUDGET_MB', '') or 4096) * 1024 * 1024
+    total = sum(probe_frames_bytes(p)[1] for p in probe_lists)
+    mode = 'eager' if total <= budget else 'lazy'
+    if mode == 'lazy':
+        logger.info(f"素材链整体 {total / 2 ** 30:.2f}GB 超过 {budget / 2 ** 30:.2f}GB 预算"
+                    f" -> {len(probe_lists)} 个图片序列全部改用惰性加载")
+
+    segs = []
+    for name, base, fl, fa, coords in resolved:
+        if kind == 'wav2lip':
+            frames = load_frames(fl, mode=mode)
+            faces = load_frames(fa, mode=mode)
             n = min(len(frames), len(faces), len(coords))
             segs.append((frames[:n], faces[:n], coords[:n]))
         else:
             from avatars.musetalk_avatar import load_segment as _ms_seg
-            segs.append(_ms_seg(base))
-        names_used.append(name)
+            segs.append(_ms_seg(base, mode=mode))
         logger.info(f"素材链：已加载段 '{name}' -> {len(segs[-1][0])} 帧")
 
     if not segs:

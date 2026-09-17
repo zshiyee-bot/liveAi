@@ -282,8 +282,18 @@ class BaseAvatar:
         temp_aac = f"temp{self.opt.sessionid}.aac"
         temp_mp4 = f"temp{self.opt.sessionid}.mp4"
         
-        cmd_combine_audio = f"ffmpeg -y -i {temp_aac} -i {temp_mp4} -c:v copy -c:a copy {output_file}"
-        os.system(cmd_combine_audio)
+        # 用 subprocess 列表形式调用，不用 os.system + 字符串拼接：
+        #   ① 路径含空格/中文时字符串拼接会被 shell 撕碎（Windows 命令行走 ANSI 代码页）；
+        #   ② 列表形式由 CreateProcessW 以 UTF-16 传参，中文/空格/括号都安全；
+        #   ③ 顺带能拿到返回码，失败可落日志（原 os.system 失败是静默的）。
+        cmd_combine_audio = ['ffmpeg', '-y', '-i', temp_aac, '-i', temp_mp4,
+                             '-c:v', 'copy', '-c:a', 'copy', output_file]
+        try:
+            _rc = subprocess.run(cmd_combine_audio, check=False).returncode
+            if _rc != 0:
+                logger.error(f"合并音视频失败 (ffmpeg 返回 {_rc}): {output_file}")
+        except Exception as e:
+            logger.error(f"合并音视频失败（ffmpeg 不可用？）: {e}")
         
         # 删除临时文件
         try:

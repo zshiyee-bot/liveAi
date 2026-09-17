@@ -92,4 +92,12 @@ if __name__ == "__main__":
     print(f"写入数据到坐标文件:{coords_path}")
     with open(coords_path, 'wb') as f:
         pickle.dump(coord_list, f)
-    os.system(f"cp {args.checkpoint} {pth_path}")
+    # 原为 os.system(f"cp {args.checkpoint} {pth_path}")：
+    #   ① Windows 没有 cp 命令，必然失败（且静默）；
+    #   ② 字符串拼接对含空格/中文的路径不安全。
+    # 改用 shutil.copyfile：跨平台、中文/空格路径安全、失败可捕获。
+    try:
+        import shutil as _shutil
+        _shutil.copyfile(args.checkpoint, pth_path)
+    except Exception as _e:
+        print(f"[WARN] 复制权重失败: {args.checkpoint} -> {pth_path}: {_e}")

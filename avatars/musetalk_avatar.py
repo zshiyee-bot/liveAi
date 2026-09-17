@@ -47,7 +47,13 @@ from avatars.base_avatar import BaseAvatar
 
 from tqdm import tqdm
 from utils.logger import logger
-from utils.image import read_imgs, mirror_index
+from utils.image import read_imgs, load_frames, mirror_index
+
+
+def _sorted_imgs(d):
+    """取目录里的图片并按文件名数字排序（见 utils.image.sorted_imgs）。"""
+    from utils.image import sorted_imgs
+    return sorted_imgs(d)
 from utils.device import initialize_device
 from registry import register
 
@@ -66,23 +72,22 @@ def load_model():
     audio_processor = Audio2Feature(model_path="./models/whisper")
     return vae, unet, pe, timesteps, audio_processor
 
-def load_segment(base):
+def load_segment(base, mode=None):
     """加载单段 musetalk 素材，返回 5 元组（供素材链复用）。
     数组顺序与 load_avatar 一致：
       (frame_list_cycle, mask_list_cycle, coord_list_cycle,
        mask_coords_list_cycle, input_latent_list_cycle)
+    mode: None=按本段自己判断；'eager'/'lazy'=由素材链整体预算决定（见 _load_segments）
     """
     with open(os.path.join(base, 'coords.pkl'), 'rb') as f:
         coords = pickle.load(f)
     latents = torch.load(os.path.join(base, 'latents.pt'))
-    fl = glob.glob(os.path.join(base, 'full_imgs', '*.[jpJP][pnPN]*[gG]'))
-    fl = sorted(fl, key=lambda x: int(os.path.splitext(os.path.basename(x))[0]))
-    frames = read_imgs(fl)
+    fl = _sorted_imgs(os.path.join(base, 'full_imgs'))
+    frames = load_frames(fl, mode=mode)
     with open(os.path.join(base, 'mask_coords.pkl'), 'rb') as f:
         mask_coords = pickle.load(f)
-    ml = glob.glob(os.path.join(base, 'mask', '*.[jpJP][pnPN]*[gG]'))
-    ml = sorted(ml, key=lambda x: int(os.path.splitext(os.path.basename(x))[0]))
-    masks = read_imgs(ml)
+    ml = _sorted_imgs(os.path.join(base, 'mask'))
+    masks = load_frames(ml, mode=mode)
     n = min(len(frames), len(masks), len(coords), len(mask_coords), len(latents))
     return (frames[:n], masks[:n], coords[:n], mask_coords[:n], latents[:n])
 
@@ -104,23 +109,23 @@ def load_avatar(avatar_id):
     mask_coords_path =f"{avatar_path}/mask_coords.pkl"
     avatar_info_path = f"{avatar_path}/avator_info.json"
 
+    from avatars.wav2lip_avatar import _load_segments
     input_latent_list_cycle = torch.load(latents_out_path)
     with open(coords_path, 'rb') as f:
         coord_list_cycle = pickle.load(f)
-    frame_list_cycle = None
-    input_img_list = glob.glob(os.path.join(full_imgs_path, '*.[jpJP][pnPN]*[gG]'))
-    input_img_list = sorted(input_img_list, key=lambda x: int(os.path.splitext(os.path.basename(x))[0]))
-    frame_list_cycle = read_imgs(input_img_list)
-    with open(mask_coords_path, 'rb') as f:
-        mask_coords_list_cycle = pickle.load(f)
-    input_mask_list = glob.glob(os.path.join(mask_out_path, '*.[jpJP][pnPN]*[gG]'))
-    input_mask_list = sorted(input_mask_list, key=lambda x: int(os.path.splitext(os.path.basename(x))[0]))
-    mask_list_cycle = read_imgs(input_mask_list)
 
-    from avatars.wav2lip_avatar import _load_segments
+    # 先看素材链：有链就用链里的段，不再单独加载一份单段素材
+    # （上游会先加载单段再加载链，同一份素材读两遍）
     segments = _load_segments(avatar_path, avatar_id, 'musetalk')
     if segments:
         return segments[0][0], segments[0][1], segments[0][2], segments[0][3], segments[0][4], segments
+
+    input_img_list = _sorted_imgs(full_imgs_path)
+    frame_list_cycle = load_frames(input_img_list)
+    with open(mask_coords_path, 'rb') as f:
+        mask_coords_list_cycle = pickle.load(f)
+    input_mask_list = _sorted_imgs(mask_out_path)
+    mask_list_cycle = load_frames(input_mask_list)
     return frame_list_cycle,mask_list_cycle,coord_list_cycle,mask_coords_list_cycle,input_latent_list_cycle,None
 
 
