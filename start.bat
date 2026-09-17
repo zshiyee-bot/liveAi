@@ -1,19 +1,31 @@
-﻿@echo off
+@echo off
 rem ============================================================
-rem  LiveTalking 启动脚本 (D:\desk\新猜想\LiveTalking)
-rem  用法:
-rem    start.bat            -> wav2lip256 + wav2lip256_avatar1
-rem    start.bat 384        -> wav2lip384 + wav2lip384_avatar1
-rem    start.bat musetalk   -> musetalk  + musetalk_avatar1
-rem    start.bat long       -> wav2lip256 + test2  (4932 帧长素材)
-rem    start.bat test <id>  -> wav2lip256 + 指定 avatar_id
+rem  LiveTalking 启动脚本 ----- 库 / 素材链 模式
 rem ------------------------------------------------------------
-rem  设计说明:
-rem   - 控制流全部使用 ASCII + goto 标签, 中文只出现在 echo 中,
-rem     避免 cmd 在 chcp 生效前解析多字节字符导致乱码/逻辑被撕碎。
-rem   - 本脚本不改动项目源码, 仅设置环境变量并调用 app.py。
-rem   - ffmpeg 已硬链到 .venv\Scripts, venv 激活后即在 PATH 中,
-rem     因此无需修改任何源码中的 ffmpeg 调用。
+rem  用法:
+rem    start.bat                 启动服务 (默认端口 8010)
+rem    start.bat <额外参数...>   原样透传给 app.py, 例如:
+rem        start.bat --listenport 8020
+rem        start.bat --transport rtmp
+rem        start.bat --avatar_id 数字人1
+rem ------------------------------------------------------------
+rem  与旧版的区别 (重要):
+rem    旧版在启动时写死「模型 + 素材名」(wav2lip256 + wav2lip256_avatar1),
+rem    那些素材已删除, 且一次只能跑一种模型。
+rem    现在模型由服务在【连接时】按素材目录特征自动判定并懒加载
+rem    (avatars/auto_loader.py), 任意时刻只驻留一个模型:
+rem      · 启动快, 不占显存
+rem      · 网页里「角色 ID」填素材目录名或库名即可, 模型自动匹配
+rem    因此本脚本不再传 --model (代码里 opt.model 没有任何读取点)。
+rem ------------------------------------------------------------
+rem  两个已验证的坑:
+rem    ① 直接调 .venv\Scripts\python.exe 不会把该目录加进 PATH
+rem       (只有 activate 会), 而 ffmpeg/ffprobe 就硬链在那里,
+rem       不显式加 PATH 则录制合流 (stop_recording 调 ffmpeg) 必失败。
+rem       故下面显式 set PATH 并做一次自检打印。
+rem    ② 控制流全 ASCII (中文只出现在 echo); 文件必须 UTF-8 BOM + CRLF,
+rem       否则 cmd 在 chcp 生效前解析多字节字符会乱码/撕碎逻辑。
+rem  本脚本不修改任何源码, 只设环境变量并调用 app.py。
 rem ============================================================
 
 setlocal
@@ -21,11 +33,15 @@ chcp 65001 >nul 2>&1
 set PYTHONUTF8=1
 set PYTHONIOENCODING=utf-8
 set PORT=8010
+set PYEXE=%~dp0.venv\Scripts\python.exe
+
+rem ---- 把 venv\Scripts 放到 PATH 最前: ffmpeg / ffprobe 硬链在此 ----
+set PATH=%~dp0.venv\Scripts;%PATH%
 
 cd /d "%~dp0"
 
 rem ---- 检查 venv ----
-if not exist ".venv\Scripts\python.exe" (
+if not exist "%PYEXE%" (
     echo [ERROR] 未找到 .venv, 请先创建虚拟环境并安装依赖:
     echo         python -m venv .venv
     echo         .venv\Scripts\python.exe -m pip install -r requirements.txt
@@ -33,79 +49,55 @@ if not exist ".venv\Scripts\python.exe" (
     exit /b 1
 )
 
-rem ---- 检查模型权重 ----
-if not exist "models\wav2lip.pth" (
-    echo [WARN] 未找到 models\wav2lip.pth, wav2lip 模型将无法加载
-)
+echo ============================================================
+echo  环境自检
+echo ============================================================
+"%PYEXE%" -c "import sys,shutil;print('  python  :',sys.executable);print('  ffmpeg  :',shutil.which('ffmpeg'));print('  ffprobe :',shutil.which('ffprobe'))"
 
-rem ---- 清理 8010 端口占用 ----
+rem ---- 素材概览 + 自动挑选默认角色 ID ----
+set DEFAULT_AVATAR=
+echo ============================================================
+echo  素材 / 库 概览:  data\avatars
+echo ============================================================
+for /d %%d in ("data\avatars\*") do (
+    if exist "%%d\playlist.json" (
+        echo   [可播-素材链] %%~nxd
+        if not defined DEFAULT_AVATAR set DEFAULT_AVATAR=%%~nxd
+    ) else (
+        if exist "%%d\coords.pkl" (
+            echo   [可播-单素材] %%~nxd
+            if not defined DEFAULT_AVATAR set DEFAULT_AVATAR=%%~nxd
+        ) else (
+            echo   [未就绪] %%~nxd   ^<- 库需先在 materials.html 保存素材链
+        )
+    )
+)
+if not defined DEFAULT_AVATAR (
+    echo   [WARN] 没有可播素材。请先在 materials.html 上传并训练素材。
+)
+echo ============================================================
+
+rem ---- 清理 8010 端口占用 (按 PID 精确结束, 绝不用 taskkill /IM) ----
 for /f "tokens=5" %%p in ('netstat -ano -p tcp ^| findstr ":8010 " ^| findstr "LISTENING"') do (
     echo [INFO] 结束占用 8010 的进程 PID=%%p
     taskkill /F /PID %%p >nul 2>&1
 )
-timeout /t 2 /nobreak >nul
+ping -n 3 127.0.0.1 >nul 2>&1
 
-rem ---- 解析模式 ----
-set MODE=%~1
-if "%MODE%"==""      goto MODE256
-if /i "%MODE%"=="256"      goto MODE256
-if /i "%MODE%"=="384"      goto MODE384
-if /i "%MODE%"=="musetalk" goto MODEMUSE
-if /i "%MODE%"=="long"     goto MODELONG
-if /i "%MODE%"=="test"     goto MODETEST
-
-echo [ERROR] 未知模式: %MODE%
-echo         可用: 256 / 384 / musetalk / long / test ^<avatar_id^>
-pause
-exit /b 1
-
-:MODE256
-set AVATAR_ID=wav2lip256_avatar1
-set MODEL_NAME=wav2lip
-set EXTRA_ARGS=
-goto RUN
-
-:MODE384
-set AVATAR_ID=wav2lip384_avatar1
-set MODEL_NAME=wav2lip
-set EXTRA_ARGS=--modelfile ./models/wav2lip384.pth
-goto RUN
-
-:MODEMUSE
-set AVATAR_ID=musetalk_avatar1
-set MODEL_NAME=musetalk
-set EXTRA_ARGS=
-goto RUN
-
-:MODELONG
-set AVATAR_ID=test2
-set MODEL_NAME=wav2lip
-set EXTRA_ARGS=
-goto RUN
-
-:MODETEST
-set AVATAR_ID=%~2
-if "%AVATAR_ID%"=="" (
-    echo [ERROR] 用法: start.bat test ^<avatar_id^>
-    pause
-    exit /b 1
-)
-set MODEL_NAME=wav2lip
-set EXTRA_ARGS=
-goto RUN
-
-:RUN
-echo ============================================================
-echo  模型   : %MODEL_NAME%
-echo  角色   : %AVATAR_ID%
-echo  端口   : %PORT%
-echo  地址   : http://127.0.0.1:%PORT%/index.html
-echo ============================================================
+echo.
+echo   端口   : %PORT%
+echo   直播页 : http://127.0.0.1:%PORT%/index.html
+echo   素材页 : http://127.0.0.1:%PORT%/materials.html
+if defined DEFAULT_AVATAR echo   默认角色 ID（网页里留空时使用）: %DEFAULT_AVATAR%
 echo.
 echo [INFO] 保持本窗口打开, 关闭窗口即停止服务。
 echo.
 
-.venv\Scripts\python.exe app.py --transport webrtc --model %MODEL_NAME% --avatar_id %AVATAR_ID% --batch_size 16 %EXTRA_ARGS% --listenport %PORT%
+if defined DEFAULT_AVATAR (
+    "%PYEXE%" app.py --transport webrtc --avatar_id %DEFAULT_AVATAR% --batch_size 16 --listenport %PORT% %*
+) else (
+    "%PYEXE%" app.py --transport webrtc --batch_size 16 --listenport %PORT% %*
+)
 
 echo.
 echo [INFO] 服务已退出, 退出码 = %ERRORLEVEL%
