@@ -91,7 +91,10 @@ class DoubaoTTS(BaseTTS):
         }
 
         start = time.perf_counter()
-        logger.info(f"DoubaoTTS POST speaker={speaker} text={text[:60]}...")
+        # 原来打 text[:60]：用户连点 7 次会被合并成一条长文本 → 日志超长刷屏。只留摘要。
+        _txt = text.replace('\n', ' ')
+        logger.info("DoubaoTTS POST speaker=%s text_len=%d text=%s", speaker, len(text),
+                    _txt[:24] + ('...' if len(_txt) > 24 else ''))
 
         try:
             with self.session.post(

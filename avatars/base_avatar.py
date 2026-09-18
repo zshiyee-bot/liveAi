@@ -259,7 +259,10 @@ class BaseAvatar:
 
     def notify(self, eventpoint:dict):
         if eventpoint and eventpoint.get('status'):
-            logger.info("notify:%s", eventpoint)
+            # 只打「状态 + 文本长度」：原来整句文本进日志（说话时每句 2 条，长文本几十上百字），
+            # 既刷屏又把日志 I/O 叠在推流线程上。需要看内容时用 /sse 或前端显示。
+            _txt = eventpoint.get('text') or ''
+            logger.info("notify: status=%s text_len=%d", eventpoint.get('status'), len(_txt))
             self.send_msg(json.dumps(eventpoint))
 
     def start_recording(self):
@@ -938,7 +941,15 @@ class BaseAvatar:
 
     def render(self,quit_event):
         self.quit_event = quit_event
-        
+
+        # 输出队列背压参数（可用环境变量调）：
+        #   原来 buffer_size>=5 就 sleep(0.04*qsize*0.8)（qsize=8 时睡 256ms），
+        #   稳态缓冲只有 5~8 帧（200~320ms）→ 推理线程一旦因「静音↔说话」状态切换、
+        #   TTS 首块等待卡住 200~300ms，队列立刻被抽干 → 推流端无帧可发 = 观众看到的卡顿/掉档。
+        #   现在保留 _PACE_HEADROOM 帧的缓冲余量（默认 5 帧 = 200ms），稳态 qsize 抬到 ~10 帧，
+        #   用缓冲吸收抖动；只有缓冲吃满才 sleep（比例控制方向不变，仍防积压）。
+        _PACE_HEADROOM = int(os.getenv('LT_PACE_HEADROOM', '5'))
+        _PACE_HIGH = int(os.getenv('LT_PACE_HIGH', '40'))
         self.init_customindex()
         self.tts.render(quit_event)
 
@@ -959,9 +970,12 @@ class BaseAvatar:
             self.asr.run_step()
 
             buffer_size = self.output.get_buffer_size() if hasattr(self.output, 'get_buffer_size') else 0
-            if buffer_size >= 5:
-                logger.debug('sleep qsize=%d', buffer_size)
-                time.sleep(0.04 * buffer_size * 0.8)
+            # 每帧一条 DEBUG 会刷爆日志（稳态 qsize 5~8 几乎每帧命中）→ 只在明显积压时告警
+            if buffer_size >= _PACE_HIGH:
+                logger.warning('输出队列积压 qsize=%d（阈值 %d），节流中', buffer_size, _PACE_HIGH)
+            _pace = buffer_size - _PACE_HEADROOM
+            if _pace > 0:
+                time.sleep(0.04 * _pace * 0.8)
         logger.info('baseavatar render thread stop')
 
         infer_quit_event.set()
