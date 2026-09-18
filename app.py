@@ -135,11 +135,40 @@ async def download_record(request):
         return web.Response(status=404, text="Record not found")
 
 
+def _raise_priority():
+    """把本进程优先级提高一档，减少被其它程序抢占导致的掉帧。
+
+    背景（实测）：这台机器上 DSH Desktop(约 1.4 核)、火绒 HIPS(约 0.5 核)、dwm、
+    GameViewerServer 等长期占用 CPU；一旦它们瞬时抢占，渲染线程被换出，
+    日志里的 infer/final fps 会从 25 掉到 6~11（GPU 却只有 7% 利用率、30W）。
+    提到 ABOVE_NORMAL 后渲染线程被抢占的概率明显降低。
+    可用环境变量 LT_PRIORITY=normal|above|high 覆盖（默认 above）。
+    """
+    try:
+        import ctypes
+        mode = (os.environ.get('LT_PRIORITY') or 'above').strip().lower()
+        cls = {'normal': 0x20, 'idle': 0x40, 'below': 0x4000,
+               'above': 0x8000, 'high': 0x80}.get(mode, 0x8000)
+        k32 = ctypes.windll.kernel32
+        # 注意：ctypes 默认 restype=c_int，会把 64 位进程句柄截断成 32 位，
+        # 导致 SetPriorityClass 直接失败（实测返回 0）。必须显式声明句柄类型。
+        k32.GetCurrentProcess.restype = ctypes.c_void_p
+        k32.SetPriorityClass.argtypes = [ctypes.c_void_p, ctypes.c_uint32]
+        k32.SetPriorityClass.restype = ctypes.c_int
+        if k32.SetPriorityClass(k32.GetCurrentProcess(), cls):
+            logger.info("进程优先级已设为 %s（LT_PRIORITY 可改；用于抵抗其它程序抢占导致的掉帧）", mode)
+        else:
+            logger.warning("设置进程优先级失败，保持默认")
+    except Exception as e:
+        logger.warning("设置进程优先级出错（忽略）: %s", e)
+
+
 def main():
     global rtc_manager, opt, model
     # 解析命令行参数
     from config import parse_args
     opt = parse_args()
+    _raise_priority()
 
     # ─── 注册 avatar 插件（触发 @register），但**不加载任何权重** ────────
     # 依用户要求：启动时不确定用哪个模型，等用户连接时按素材目录自动判定。

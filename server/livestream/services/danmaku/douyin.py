@@ -103,6 +103,7 @@ class DouyinCollector(BaseDanmakuCollector):
     async def _ws_loop(self):
         """WebSocket 主循环"""
         retry_delay = 1
+        fails = 0                      # 连续失败次数：用于收敛日志，避免每 30s 刷屏
         while self._running:
             session = None
             try:
@@ -110,6 +111,7 @@ class DouyinCollector(BaseDanmakuCollector):
                 async with session.ws_connect(self._ws_url) as ws:
                     logger.info(f"Douyin collector connected to {self._ws_url}")
                     retry_delay = 1
+                    fails = 0
                     async for msg in ws:
                         if not self._running:
                             break
@@ -128,7 +130,20 @@ class DouyinCollector(BaseDanmakuCollector):
             except asyncio.CancelledError:
                 break
             except aiohttp.ClientError as e:
-                logger.warning(f"Douyin WS error: {e}")
+                fails += 1
+                if fails == 1:
+                    logger.warning(
+                        "抖音弹幕中继未连接（%s）：%s\n"
+                        "  → 抖音弹幕依赖第三方中继 DouyinBarrageGrab（默认监听 127.0.0.1:8888）。\n"
+                        "  → 它只影响「抖音弹幕 / 礼物 / 关注」的采集，**不影响数字人画面、素材轮换与声音**。\n"
+                        "  → 不需要弹幕时：直接用 index.html 连接即可（不要在运营后台点“开始直播”）；\n"
+                        "     需要弹幕时：先启动 DouyinBarrageGrab，再在运营后台点开始直播。\n"
+                        "  → 后续连接失败将静默重试（不再刷屏），每 20 次提示一次。",
+                        self._ws_url, e)
+                elif fails % 20 == 0:
+                    logger.info("抖音弹幕中继仍未连接（已失败 %d 次），继续静默重试中", fails)
+                else:
+                    logger.debug("Douyin WS error: %s", e)
             except Exception as e:
                 logger.error(f"Douyin unexpected error: {e}")
             finally:
@@ -136,7 +151,7 @@ class DouyinCollector(BaseDanmakuCollector):
                     await session.close()
 
             if self._running:
-                logger.info(f"Douyin reconnecting in {retry_delay}s...")
+                logger.debug("Douyin reconnecting in %ss...", retry_delay)
                 await asyncio.sleep(retry_delay)
                 retry_delay = min(retry_delay * 2, 30)
         logger.info("Douyin WS loop stopped")
