@@ -5,6 +5,7 @@
 import argparse
 import json
 import os
+import sys
 
 try:
     import yaml
@@ -132,6 +133,33 @@ def parse_args():
     if getattr(opt, 'tts', '') == 'doubao' and (not opt.REF_FILE
                                                or opt.REF_FILE == 'zh-CN-YunxiaNeural'):
         opt.REF_FILE = 'zh_female_vv_uranus_bigtts'
+
+    # ─── 让页面里的豆包配置成为唯一真源（start.bat 不再写死 resource_id）───
+    # 页面（素材页「音色」/ 运营后台「系统配置」）保存到 data/tts_config.json。
+    # 这里在启动时兜底读取：命令行显式传的参数优先，没传就用文件里的值。
+    # 否则会出现「页面上选了预置音色，start.bat 却仍按复刻资源发请求」→
+    # 火山报 500/55000000 resource ID is mismatched → 表现为没有声音。
+    if getattr(opt, 'tts', '') == 'doubao':
+        try:
+            _cfg_path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                     'data', 'tts_config.json')
+            if not os.path.exists(_cfg_path):
+                _cfg_path = os.path.join('data', 'tts_config.json')
+            if os.path.exists(_cfg_path):
+                with open(_cfg_path, 'r', encoding='utf-8') as _f:
+                    _tcfg = json.load(_f) or {}
+                if not os.environ.get('DOUBAO_API_KEY'):
+                    _k = str(_tcfg.get('doubao_api_key') or '').strip()
+                    if _k:
+                        os.environ['DOUBAO_API_KEY'] = _k
+                        print('[config] 已从 data/tts_config.json 载入豆包 API Key')
+                if '--doubao_resource_id' not in sys.argv:
+                    _rid = str(_tcfg.get('doubao_resource_id') or '').strip()
+                    if _rid:
+                        opt.doubao_resource_id = _rid
+                        print('[config] 豆包 resource_id = %s（来自 data/tts_config.json）' % _rid)
+        except Exception as _e:
+            print('[config] 读取 data/tts_config.json 失败（忽略）:', _e)
 
     opt.customopt = []
     if opt.customvideo_config:

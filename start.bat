@@ -1,4 +1,4 @@
-﻿@echo off
+@echo off
 rem ============================================================
 rem  LiveTalking 启动脚本 ----- 库 / 素材链 模式
 rem ------------------------------------------------------------
@@ -61,9 +61,12 @@ if not exist "%PYEXE%" (
     exit /b 1
 )
 
-rem ---- TTS 选择: 默认豆包 + 声音复刻音色; 没有 Key 则回退 edgetts ----
-set "TTSARGS=--tts doubao --doubao_resource_id seed-icl-2.0"
-set "TTSNAME=doubao 声音复刻 (seed-icl-2.0)"
+rem ---- TTS 选择: 默认豆包(音色类型/音色ID 由页面配置驱动); 没有 Key 则回退 edgetts ----
+rem    resource_id 不再写死: config.py 启动时读 data\tts_config.json 里的值。
+rem    否则页面选了「预置大模型音色」时仍按「声音复刻」资源发请求,
+rem    火山报 resource ID is mismatched -> 表现为没有声音。
+set "TTSARGS=--tts doubao"
+set "TTSNAME=doubao（音色类型见页面「语音」配置: 预置/复刻）"
 if defined DOUBAO_API_KEY goto tts_ready
 if exist "data\tts_key_ok.flag" goto tts_ready
 set "TTSARGS="
