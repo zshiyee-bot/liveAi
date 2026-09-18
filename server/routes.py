@@ -56,9 +56,13 @@ async def human(request):
         datainfo = {}
         if params.get('tts'):  # tts 参数透传（voice, emotion 等）
             datainfo['tts'] = params.get('tts')
+        if params.get('utt'):  # 话术编号：供「撤回未开播的那条」用（弹幕插队）
+            datainfo['utt'] = params.get('utt')
 
         if params['type'] == 'echo':
-            avatar_session.put_msg_txt(params['text'], datainfo)
+            # priority=True：插到「还没开始合成」的最前面（正在播的那条不受影响，不产生接缝）
+            avatar_session.put_msg_txt(params['text'], datainfo,
+                                       priority=bool(params.get('priority')))
         elif params['type'] == 'chat':
             llm_response = request.app.get("llm_response")
             if llm_response:
@@ -69,6 +73,26 @@ async def human(request):
         return json_ok()
     except Exception as e:
         logger.exception('human route exception:')
+        return json_error(str(e))
+
+
+async def drop_queued_talk(request):
+    """撤回「已入队、但还没开播」的某条话术（弹幕插队用），当前正在播的那条不受影响。
+
+    body: {"sessionid": "...", "utt": "<话术编号>"}
+    resp: {"code":0,"data":{"utt":..., "tts_dropped":N, "frames_dropped":N}}
+    """
+    try:
+        params = await request.json()
+        sessionid: str = params.get('sessionid', '')
+        avatar_session = get_session(request, sessionid)
+        if avatar_session is None:
+            return json_error("session not found")
+        data = avatar_session.drop_queued_talk(params.get('utt', ''))
+        logger.info('drop_queued_talk: %s', data)
+        return json_ok(data=data)
+    except Exception as e:
+        logger.exception('drop_queued_talk route exception:')
         return json_error(str(e))
 
 
@@ -249,6 +273,7 @@ def setup_routes(app):
     app.router.add_post("/set_audiotype", set_audiotype)
     app.router.add_post("/record", record)
     app.router.add_post("/interrupt_talk", interrupt_talk)
+    app.router.add_post("/drop_queued_talk", drop_queued_talk)
     app.router.add_post("/is_speaking", is_speaking)
     app.router.add_get("/api/admin/config", admin_config)
     app.router.add_get("/api/admin/sessions", admin_sessions)
@@ -286,5 +311,14 @@ def setup_routes(app):
     else:
         logger.warning("无法注入 app 模块到 libs_routes（热重载将不可用）")
     libs_routes.setup_lib_routes(app)
+
+    # 注册 LiveStream 运营层路由（话术 / 弹幕 / 知识库 / 直播控制），统一前缀 /ls
+    # —— 原 LiveStream 是独立进程（8020），现已合并进本进程：单项目、单端口。
+    # 注意必须在 add_static('/', path='web') 之前注册，否则静态兜底会抢走 /ls/* 请求。
+    try:
+        from server.livestream.routes import setup_livestream_routes
+        setup_livestream_routes(app)
+    except Exception as e:
+        logger.exception(f"[ls] 注册 LiveStream 路由失败（其余功能不受影响）: {e}")
 
     app.router.add_static('/', path='web')

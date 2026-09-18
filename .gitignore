@@ -35,3 +35,12 @@ venv/
 *.bak
 *.upstream.bak
 .backup_*
+
+# ── LiveStream 合并层 ──
+frontend-ls/node_modules/
+frontend-ls/dist/
+frontend-ls/dist-electron/
+data/livestream.db
+data/livestream/uploads/
+data/knowledge/
+data/chroma_db/

@@ -124,9 +124,43 @@ class BaseAvatar:
             logger.error(f"Output transport {opt.transport} not found in map.")
 
     # 如果系统没有使用 pipeline，或者为了向后兼容原来的 ttsreal.py
-    def put_msg_txt(self, msg, datainfo:dict={}):
+    def put_msg_txt(self, msg, datainfo:dict={}, priority:bool=False):
         if hasattr(self, 'tts'):
-            self.tts.put_msg_txt(msg, datainfo)
+            self.tts.put_msg_txt(msg, datainfo, priority=priority)
+
+    def drop_queued_talk(self, utt:str) -> dict:
+        """撤回某条「已发来、但还没开播」的话术（弹幕插队用）。
+        ① 从 TTS 待合成队列里抽掉它；
+        ② 从 asr 播放队列里抽掉它已经灌入、但还没被消费的音频帧。
+        正在播的那条不受影响 —— 它的帧早已进入推理管线，不在这两个队列里。"""
+        res = {'utt': utt, 'tts_dropped': 0, 'frames_dropped': 0}
+        if not utt:
+            return res
+        try:
+            if hasattr(self, 'tts'):
+                res['tts_dropped'] = self.tts.drop_msg(utt)
+        except Exception as e:
+            logger.warning('drop_queued_talk: tts.drop_msg 失败: %s', e)
+        try:
+            q = getattr(getattr(self, 'asr', None), 'queue', None)
+            if q is not None:
+                dq = q.queue
+                keep = []
+                while True:
+                    try:
+                        fr = dq.popleft()
+                    except IndexError:
+                        break
+                    ud = getattr(fr, 'userdata', None) or {}
+                    if ud.get('utt') == utt:
+                        res['frames_dropped'] += 1
+                    else:
+                        keep.append(fr)
+                for fr in keep:
+                    dq.append(fr)
+        except Exception as e:
+            logger.warning('drop_queued_talk: asr 队列清理失败: %s', e)
+        return res
     
     def put_audio_frame(self, audio_chunk:NDArray[np.float32], datainfo:dict={}): # 16khz 20ms pcm
         if hasattr(self, 'asr'):
