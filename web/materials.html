@@ -722,6 +722,7 @@ const S = {
   cur: {kind:'root'}, detail: null,
   sel: new Set(), anchor: null, expanded: new Set(),
   chainDraft: null, chainLib: null, chainMode: 'shuffle', chainDraftLib: null,
+  voiceCache: {}, engName: null,
   chainItems: null,
   q: '', sort: 'name', view: 'icons', kind: '',
   showDone: false,          // 是否显示「已训练的上传」原始视频（默认隐藏，训练完不再占画面）
@@ -1435,6 +1436,99 @@ function addClipToLibItem(libName, clipName){
   S.chainDraftLib = S.chainLib;
 }
 
+/* ── 素材链音色：一个链 = 一个音色（豆包/火山引擎）─────────────────────
+   为什么这样做：火山引擎**没有**"列出我全部复刻音色"的接口
+   （只有按 speaker_id 查单个的 /api/v3/tts/get_voice），所以这里是
+   "你从控制台复制音色ID → 我们校验状态 + 给官方试听音频 → 绑定到这条链"。
+   绑定后由后端写进 playlist.json 的 voice 字段，建会话时自动套用，
+   直播端（index.html / 运营后台）不需要任何额外动作。 */
+function vreq(method, url, body){
+  return fetch(url, {method, headers:{'Content-Type':'application/json'},
+    body: body ? JSON.stringify(body) : undefined})
+    .then(r => r.json().catch(() => ({code:-1, msg:'响应不是 JSON'})))
+    .catch(e => ({code:-1, msg:'网络错误：' + e.message}));
+}
+
+async function syncVoiceBox(lib){
+  const msg = $('voiceMsg');
+  if (!lib || !$('voiceRef')) return;
+  if (!S.voiceCache) S.voiceCache = {};
+  if (S.engName == null){
+    const rc = await vreq('GET', '/api/tts/config');
+    S.engName = (rc && rc.code === 0 && rc.data && rc.data.engine) || '';
+  }
+  let v = S.voiceCache[lib];
+  if (v === undefined){
+    const r = await vreq('GET', `/api/libs/${q(lib)}/voice`);
+    if (r.code !== 0){ if (msg) msg.textContent = '读音色失败：' + r.msg; return; }
+    v = r.data || {};
+    S.voiceCache[lib] = v;
+  }
+  const cur = v.voice || null;
+  $('voiceRef').value = cur ? (cur.ref_file || '') : '';
+  if ($('voiceRid')) $('voiceRid').value = (cur && cur.resource_id) || v.saved_resource_id || 'seed-tts-2.0';
+  if (msg){
+    const eng = S.engName || '';
+    msg.innerHTML =
+      (cur ? `本链音色：<b>${esc(cur.ref_file)}</b> · ${cur.resource_id || '-'}`
+           : '本链未绑定音色（用启动参数的默认音色）')
+      + (v.has_key ? ' · 豆包 Key 已配置' : ' · <b style="color:#d97706">豆包 Key 未配置</b>（右侧填入后保存）')
+      + ((eng && eng !== 'doubao') ? ` · <b style="color:#b45309">注意：当前 TTS 引擎是 ${esc(eng)}，只有 doubao 引擎会读这里的音色</b>` : '')
+      + (v.has_playlist ? '' : ' · <b style="color:#b45309">本库还没有素材链，请先保存一次链</b>');
+  }
+}
+
+async function voiceSave(){
+  const lib = S.voiceLib, ref = ($('voiceRef').value || '').trim(), rid = $('voiceRid').value;
+  if (!ref){ toast('请先填音色ID（火山控制台音色列表里复制）', 3200, true); return; }
+  const j = await vreq('PUT', `/api/libs/${q(lib)}/voice`, {ref_file: ref, resource_id: rid, engine: 'doubao'});
+  if (j.code !== 0){ toast('保存失败：' + j.msg, 5000, true); return; }
+  const n = ((j.data || {}).applied_sessions || []).length;
+  toast(n ? `音色已绑定到「${lib}」并对 ${n} 个活跃会话立即生效` : `音色已绑定到「${lib}」· 下次连接即生效`, 4600);
+  S.voiceCache[lib] = undefined;
+  await syncVoiceBox(lib);
+}
+
+async function voiceCheck(){
+  const ref = ($('voiceRef').value || '').trim();
+  if (!ref){ toast('请先填音色ID', 2600, true); return; }
+  const msg = $('voiceMsg');
+  if (msg) msg.innerHTML = '正在向火山查询音色状态…';
+  const j = await vreq('POST', '/api/tts/voice_check', {ref_file: ref});
+  if (j.code !== 0){ if (msg) msg.innerHTML = '<b style="color:#b91c1c">查询失败</b>：' + esc(j.msg); return; }
+  const d = j.data || {}, ok = !!d.usable;
+  if (msg) msg.innerHTML =
+    `音色 <b>${esc(d.ref_file || ref)}</b>：<b style="color:${ok ? '#15803d' : '#b45309'}">${esc(d.status_text || '未知')}</b>`
+    + ` · 语言 ${esc(d.language_text || '-')}`
+    + (d.model_type ? ` · model_type ${d.model_type}` : '')
+    + (ok ? '' : '（状态不是「成功/可用」时合成会失败，请回控制台确认）')
+    + (d.demo_audio
+        ? `<br><audio controls preload="none" style="margin-top:6px;height:32px" src="${esc(d.demo_audio)}"></audio>`
+          + `<a href="${esc(d.demo_audio)}" target="_blank" style="margin-left:8px;font-size:12px">官方试听音频（1 小时有效）</a>`
+        : '<br><span style="font-size:12px">该音色没有官方试听音频（预置音色无 demo_audio）→ 保存后直接在直播里听</span>');
+}
+
+async function voiceClear(){
+  const lib = S.voiceLib;
+  const j = await vreq('DELETE', `/api/libs/${q(lib)}/voice`);
+  if (j.code !== 0){ toast('清除失败：' + j.msg, 4500, true); return; }
+  toast('已清除本链音色（重建会话后回落启动参数默认）', 4200);
+  S.voiceCache[lib] = undefined;
+  await syncVoiceBox(lib);
+}
+
+async function voiceKeySave(){
+  const key = ($('voiceKey').value || '').trim();
+  if (!key){ toast('请先粘贴豆包 API Key', 2800, true); return; }
+  const j = await vreq('PUT', '/api/tts/config', {doubao_api_key: key});
+  if (j.code !== 0){ toast('保存失败：' + j.msg, 4500, true); return; }
+  $('voiceKey').value = '';
+  toast('豆包 Key 已保存并立即生效（无需重启，下次建会话即用）', 4600);
+  const lib = S.voiceLib;
+  S.voiceCache[lib] = undefined;
+  await syncVoiceBox(lib);
+}
+
 function renderChain(){
   const g = $('grid'); g.className = 'grid';
   const usables = S.libs.filter(L => L.clip_count > 0);
@@ -1562,6 +1656,22 @@ function renderChain(){
           「重复」= 这一项播几轮再走；「权重」= 项间随机时被抽中的相对概率。</div>
       </div>
       ${kindTip}${mixedTip}
+      <!-- 音色：一个素材链 = 一个音色（豆包/火山引擎；连接即用，无需额外操作） -->
+      <div id="voiceBar" style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;padding:10px 12px;margin-bottom:12px;background:rgba(99,102,241,.06);border:1px solid rgba(99,102,241,.18);border-radius:12px">
+        <span style="font-weight:650;font-size:13px;color:#4b5563">🎙 本链音色</span>
+        <input class="inp" id="voiceRef" placeholder="音色ID（火山控制台 → 音色列表里复制）" style="min-width:270px">
+        <div class="sel-wrap"><select class="sel" id="voiceRid">
+          <option value="seed-tts-2.0">预置大模型音色</option>
+          <option value="seed-icl-2.0">声音复刻音色（克隆）</option>
+        </select></div>
+        <button class="btn pri" id="voiceSave">保存到本链</button>
+        <button class="btn" id="voiceCheck">校验 / 试听</button>
+        <button class="btn" id="voiceClear">清除</button>
+        <span style="flex:1"></span>
+        <input class="inp" id="voiceKey" type="password" placeholder="豆包 API Key（只存本机 data/）" style="min-width:210px">
+        <button class="btn" id="voiceKeySave">保存Key</button>
+      </div>
+      <div id="voiceMsg" class="hint" style="margin:0 0 14px 0;font-size:12.5px;line-height:1.7"></div>
       <div class="chain2">
         <div class="col2">
           <div class="hd"><span>可用片段（可跨库）</span><span class="chip i">${candN} 个未入链</span></div>
@@ -1642,6 +1752,13 @@ function renderChain(){
     renderChain();
   };
   $('chainClear').onclick = () => { S.chainItems = []; renderChain(); };
+  // ── 本链音色（一个链 = 一个音色）──
+  S.voiceLib = L.name;
+  if ($('voiceSave')) $('voiceSave').onclick = voiceSave;
+  if ($('voiceCheck')) $('voiceCheck').onclick = voiceCheck;
+  if ($('voiceClear')) $('voiceClear').onclick = voiceClear;
+  if ($('voiceKeySave')) $('voiceKeySave').onclick = voiceKeySave;
+  syncVoiceBox(L.name);
   $('chainSave').onclick = async () => {
     const groups = itemsToGroups(S.chainItems);
     const segN = groups.reduce((a, g) => a + g.clips.length, 0);

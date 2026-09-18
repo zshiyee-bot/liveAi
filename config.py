@@ -77,6 +77,12 @@ def parse_args():
                         help="参考文件名或语音模型ID")
     parser.add_argument('--REF_TEXT', type=str, default=None)
     parser.add_argument('--TTS_SERVER', type=str, default='http://127.0.0.1:9880')
+    # 豆包(火山引擎)专用：X-Api-Resource-Id
+    #   seed-tts-2.0 = 预置「大模型音色」（默认）
+    #   seed-icl-2.0 = 你自己「声音复刻」出来的音色（配合 --REF_FILE <复刻音色ID>）
+    # 注：素材链（playlist.json）里绑定的音色会覆盖此处的默认值，且不用重启。
+    parser.add_argument('--doubao_resource_id', type=str, default='seed-tts-2.0',
+                        help="doubao TTS resource id: seed-tts-2.0(预置音色) / seed-icl-2.0(声音复刻)")
 
     # ─── LLM ──────────────────────────────────────────────────────────
     parser.add_argument('--llm_provider', type=str, default='dashscope',

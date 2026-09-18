@@ -376,7 +376,41 @@ class BaseAvatar:
     #   段列表长度为 1 时（官方单段素材），pick_next 恒返回 0，
     #   行为与改动前完全一致（见 self._seg_cursor 的注释）。
 
-    def init_playlist(self, segments, mode=None, groups=None):
+    def _apply_tts_voice(self, voice):
+        """把「素材链绑定的音色」套用到本会话的 TTS（一个素材链 = 一个音色）。
+
+        voice 形如 {"engine": "doubao", "ref_file": "S_xxx", "resource_id": "seed-icl-2.0"}
+        对支持 voice / resource_id 的云引擎（豆包 tts/doubao.py:56-67）生效：
+        直接改 TTS 实例的默认值 —— 等价于启动参数 --REF_FILE，但可以按链区分，
+        且**改完不用重启**（TTS 每条消息都读 self.voice / self.resource_id）。
+        """
+        if not voice:
+            return
+        if isinstance(voice, str):
+            voice = {'ref_file': voice}
+        if not isinstance(voice, dict):
+            return
+        ref = str(voice.get('ref_file') or voice.get('voice') or '').strip()
+        rid = str(voice.get('resource_id') or '').strip()
+        tts = getattr(self, 'tts', None)
+        if tts is None or not (ref or rid):
+            return
+        try:
+            if ref and hasattr(tts, 'voice'):
+                tts.voice = ref
+            if rid and hasattr(tts, 'resource_id'):
+                tts.resource_id = rid
+            self.playlist_voice = {
+                'engine': str(voice.get('engine') or '') or type(tts).__name__.replace('TTS', '').lower(),
+                'ref_file': ref or getattr(tts, 'voice', ''),
+                'resource_id': rid or getattr(tts, 'resource_id', ''),
+            }
+            logger.info("素材链音色已套用：ref_file=%s, resource_id=%s",
+                        self.playlist_voice['ref_file'], self.playlist_voice['resource_id'])
+        except Exception:
+            logger.warning("套用素材链音色失败（当前 TTS 引擎可能不支持按链换音色）", exc_info=True)
+
+    def init_playlist(self, segments, mode=None, groups=None, voice=None):
         """注册素材段列表。segments: list，元素为「一段的全部数组元组」。
         每个段必须自带自己的 frame_list_cycle / face_list_cycle / coord_list_cycle
         （musetalk 另有 mask_list_cycle / input_latent_list_cycle），
@@ -413,13 +447,14 @@ class BaseAvatar:
                 except Exception:
                     names = None
             self.playlist_names = names
+            self._apply_tts_voice(voice)
             _gd = (f"，组数={len(self.playlist_groups)}（组间模式={self.playlist_mode}）"
                    if self.playlist_groups else "")
             logger.info(f"素材链已启用：共 {len(self.playlist)} 段{_gd}，"
                         f"各段帧数={[self._seg_len(i) for i in range(len(self.playlist))]}")
 
 
-    def reload_playlist(self, segments, mode=None, groups=None):
+    def reload_playlist(self, segments, mode=None, groups=None, voice=None):
         """热重载素材链（免重启、不断音频）。
 
         只替换「素材段数组 + 播放头 + 模式」，**不重建** ASR / TTS / 输出管线，
@@ -434,6 +469,8 @@ class BaseAvatar:
         # 分组（两级链）也一起换；groups=None 表示"本次不带分组信息"，则退化为 v1 单组
         self.playlist_groups = self._norm_groups(groups)
         self._played_groups = set()
+        # 链音色也一起换（voice=None 时保持原样，避免"没传"被误当成"清空"）
+        self._apply_tts_voice(voice)
         self._enter_group(0)
         self._prime_group(0)         # 播放头重置到段0 = 首项入口段
         # 播放头重置到入口段第 0 帧（接着播新链）

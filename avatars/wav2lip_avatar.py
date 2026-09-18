@@ -271,10 +271,14 @@ def _load_segments(avatar_path, avatar_id, kind):
     out.names = names_used
     out.mode = cfg.get('mode') or 'shuffle'
     out.groups = groups_meta
+    # 一个素材链 = 一个音色：链自己的 voice 配置（写进 playlist.json），
+    # 建会话时自动套用到该会话的 TTS，直播端不需要再做任何动作。
+    out.voice = cfg.get('voice') or None
     try:
         _load_segments.last_names = names_used
         _load_segments.last_mode = out.mode
         _load_segments.last_groups = groups_meta
+        _load_segments.last_voice = out.voice
     except Exception:
         pass
     return out
@@ -310,7 +314,10 @@ class LipReal(BaseAvatar):
             _groups = getattr(segs, 'groups', None)
             if _groups is None:
                 _groups = getattr(_load_segments, 'last_groups', None)
-            self.init_playlist(segs, mode=_mode, groups=_groups)
+            _voice = getattr(segs, 'voice', None)
+            if _voice is None:
+                _voice = getattr(_load_segments, 'last_voice', None)
+            self.init_playlist(segs, mode=_mode, groups=_groups, voice=_voice)
         else:
             self.frame_list_cycle, self.face_list_cycle, self.coord_list_cycle = avatar
             self.init_playlist(None)

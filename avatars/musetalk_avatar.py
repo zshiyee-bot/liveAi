@@ -169,16 +169,19 @@ class MuseReal(BaseAvatar):
             # 表现为 groups 跨度只覆盖段0，播放头永远回段0（已复现的线上 bug）。
             _mode = getattr(segs, 'mode', None)
             _groups = getattr(segs, 'groups', None)
-            if _mode is None or _groups is None:
+            _voice = getattr(segs, 'voice', None)
+            if _mode is None or _groups is None or _voice is None:
                 try:
                     from avatars.wav2lip_avatar import _load_segments
                     if _mode is None:
                         _mode = getattr(_load_segments, 'last_mode', None)
                     if _groups is None:
                         _groups = getattr(_load_segments, 'last_groups', None)
+                    if _voice is None:
+                        _voice = getattr(_load_segments, 'last_voice', None)
                 except Exception:
                     pass
-            self.init_playlist(segs, mode=_mode, groups=_groups)
+            self.init_playlist(segs, mode=_mode, groups=_groups, voice=_voice)
         else:
             (self.frame_list_cycle, self.mask_list_cycle, self.coord_list_cycle,
              self.mask_coords_list_cycle, self.input_latent_list_cycle) = avatar
@@ -190,10 +193,10 @@ class MuseReal(BaseAvatar):
         self.asr = WhisperASR(opt,self,self.audio_processor)
         self.asr.warm_up()
 
-    def reload_playlist(self, segments, mode=None, groups=None):
+    def reload_playlist(self, segments, mode=None, groups=None, voice=None):
         """热重载素材链（musetalk 版：需要同步 5 个数组，base 版只同步 3 个）。
-        逐项分组信息（groups）一并透传给基类，否则热重载会退化成单组。"""
-        super().reload_playlist(segments, mode=mode, groups=groups)
+        逐项分组信息（groups）与链音色（voice）一并透传给基类，否则热重载会退化成单组/丢音色。"""
+        super().reload_playlist(segments, mode=mode, groups=groups, voice=voice)
         try:
             if self.playlist:
                 (self.frame_list_cycle, self.mask_list_cycle, self.coord_list_cycle,

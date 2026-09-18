@@ -312,6 +312,13 @@ def setup_routes(app):
         logger.warning("无法注入 app 模块到 libs_routes（热重载将不可用）")
     libs_routes.setup_lib_routes(app)
 
+    # 注册素材链音色路由（一个素材链 = 一个音色：/api/libs/{lib}/voice + /api/tts/*）
+    try:
+        from server.tts_routes import setup_tts_routes
+        setup_tts_routes(app)
+    except Exception as e:
+        logger.warning(f"注册音色路由失败（不影响播放，仅无法按链设音色）: {e}")
+
     # 注册 LiveStream 运营层路由（话术 / 弹幕 / 知识库 / 直播控制），统一前缀 /ls
     # —— 原 LiveStream 是独立进程（8020），现已合并进本进程：单项目、单端口。
     # 注意必须在 add_static('/', path='web') 之前注册，否则静态兜底会抢走 /ls/* 请求。
