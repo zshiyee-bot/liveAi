@@ -118,6 +118,10 @@ if defined DEFAULT_AVATAR echo   默认角色 ID（网页里留空时使用）: 
 echo.
 echo [INFO] 保持本窗口打开, 关闭窗口即停止服务。
 echo.
+echo [INFO] 本窗口可以看日志, 但请不要在窗口里拖选文字(点了拖动也算):
+echo        那会让窗口进入「选择」态, 日志会停止滚动 —— 但服务本身不受影响,
+echo        按一下 Esc 立即恢复; 完整日志一直写在 livetalking.log。
+echo.
 
 if defined DEFAULT_AVATAR (
     "%PYEXE%" app.py --transport webrtc --avatar_id %DEFAULT_AVATAR% --batch_size 16 --listenport %PORT% %TTSARGS% %*
