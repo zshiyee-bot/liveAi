@@ -1,4 +1,4 @@
-@echo off
+﻿@echo off
 rem ============================================================
 rem  LiveTalking 启动脚本 ----- 库 / 素材链 模式
 rem ------------------------------------------------------------
@@ -7,7 +7,19 @@ rem    start.bat                 启动服务 (默认端口 8010)
 rem    start.bat <额外参数...>   原样透传给 app.py, 例如:
 rem        start.bat --listenport 8020
 rem        start.bat --transport rtmp
+rem        start.bat --tts edgetts                临时改回微软 TTS
 rem        start.bat --avatar_id 数字人1
+rem ------------------------------------------------------------
+rem  TTS (默认豆包 + 声音复刻音色):
+rem    默认追加: --tts doubao --doubao_resource_id seed-icl-2.0
+rem    · 想换音色: 素材页 - 素材链编排 - 本链音色 里按【素材链】绑定音色,
+rem      写进 <库>\playlist.json 的 voice 字段, 连接该库时自动生效, 不用重启。
+rem    · 素材链没绑音色时, 用豆包自己的默认音色 (config.py 会把 edgetts 的
+rem      默认音色名自动换成豆包的, 避免把 edge 音色名发给豆包导致没声音)。
+rem    · 未配豆包 API Key 时自动回退 edgetts (保证有声音), 见下面 [WARN]。
+rem      配置: 素材页 - 素材链编排 - 本链音色 - 粘贴 Key - 点「保存Key」
+rem      (保存后生成 data\tts_key_ok.flag, 下次双击本脚本即用豆包复刻音色)
+rem    · 显式传参会覆盖默认值 (argparse 后者优先): start.bat --tts edgetts
 rem ------------------------------------------------------------
 rem  与旧版的区别 (重要):
 rem    旧版在启动时写死「模型 + 素材名」(wav2lip256 + wav2lip256_avatar1),
@@ -49,6 +61,18 @@ if not exist "%PYEXE%" (
     exit /b 1
 )
 
+rem ---- TTS 选择: 默认豆包 + 声音复刻音色; 没有 Key 则回退 edgetts ----
+set "TTSARGS=--tts doubao --doubao_resource_id seed-icl-2.0"
+set "TTSNAME=doubao 声音复刻 (seed-icl-2.0)"
+if defined DOUBAO_API_KEY goto tts_ready
+if exist "data\tts_key_ok.flag" goto tts_ready
+set "TTSARGS="
+set "TTSNAME=edgetts 回退 (未检测到豆包 Key)"
+echo [WARN] 未检测到豆包 API Key, 本次以 edgetts 启动: 有声音, 但不是你的复刻音色。
+echo [WARN] 配置方法: 打开素材页 - 素材链编排 - 本链音色 - 粘贴豆包 API Key
+echo [WARN]          - 点「保存Key」, 然后重新双击本脚本, 即自动切换到豆包复刻音色。
+:tts_ready
+
 echo ============================================================
 echo  环境自检
 echo ============================================================
@@ -77,15 +101,17 @@ if not defined DEFAULT_AVATAR (
 )
 echo ============================================================
 
-rem ---- 清理 8010 端口占用 (按 PID 精确结束, 绝不用 taskkill /IM) ----
-for /f "tokens=5" %%p in ('netstat -ano -p tcp ^| findstr ":8010 " ^| findstr "LISTENING"') do (
-    echo [INFO] 结束占用 8010 的进程 PID=%%p
+rem ---- 清理监听端口占用 (按 PID 精确结束, 绝不用 taskkill /IM) ----
+for /f "tokens=5" %%p in ('netstat -ano -p tcp ^| findstr ":%PORT% " ^| findstr "LISTENING"') do (
+    echo [INFO] 结束占用 %PORT% 的进程 PID=%%p
     taskkill /F /PID %%p >nul 2>&1
 )
 ping -n 3 127.0.0.1 >nul 2>&1
 
 echo.
 echo   端口   : %PORT%
+echo   TTS    : %TTSNAME%
+if not "%*"=="" echo   手动参数 : %*   （命令行覆盖默认 TTS）
 echo   直播页 : http://127.0.0.1:%PORT%/index.html
 echo   素材页 : http://127.0.0.1:%PORT%/materials.html
 if defined DEFAULT_AVATAR echo   默认角色 ID（网页里留空时使用）: %DEFAULT_AVATAR%
@@ -94,9 +120,9 @@ echo [INFO] 保持本窗口打开, 关闭窗口即停止服务。
 echo.
 
 if defined DEFAULT_AVATAR (
-    "%PYEXE%" app.py --transport webrtc --avatar_id %DEFAULT_AVATAR% --batch_size 16 --listenport %PORT% %*
+    "%PYEXE%" app.py --transport webrtc --avatar_id %DEFAULT_AVATAR% --batch_size 16 --listenport %PORT% %TTSARGS% %*
 ) else (
-    "%PYEXE%" app.py --transport webrtc --batch_size 16 --listenport %PORT% %*
+    "%PYEXE%" app.py --transport webrtc --batch_size 16 --listenport %PORT% %TTSARGS% %*
 )
 
 echo.

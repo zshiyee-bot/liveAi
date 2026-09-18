@@ -124,6 +124,15 @@ def parse_args():
     opt = parser.parse_args()
 
     # ─── 后处理 ────────────────────────────────────────────────────────
+    # 选了豆包但没指定音色时：把 edgetts 的默认值（zh-CN-YunxiaNeural）换成豆包自己的默认音色。
+    # 原因：start.bat 现在默认 --tts doubao，若不换，就会把 edge 的音色名发给豆包 →
+    # 语音合成报错 → 表现为"没有声音"。
+    # 素材链里绑定的音色（<库>/playlist.json 的 voice 字段）会再覆盖这里，
+    # 见 avatars/base_avatar.py::_apply_tts_voice()。
+    if getattr(opt, 'tts', '') == 'doubao' and (not opt.REF_FILE
+                                               or opt.REF_FILE == 'zh-CN-YunxiaNeural'):
+        opt.REF_FILE = 'zh_female_vv_uranus_bigtts'
+
     opt.customopt = []
     if opt.customvideo_config:
         with open(opt.customvideo_config, 'r') as f:

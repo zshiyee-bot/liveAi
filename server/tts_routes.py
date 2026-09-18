@@ -107,6 +107,17 @@ def _write_tts_config(patch):
     key = str(cur.get('doubao_api_key') or '').strip()
     if key:
         os.environ['DOUBAO_API_KEY'] = key
+    # 给 start.bat 用的标记：有这个文件说明"Key 已配好"，双击启动就直接用豆包，
+    # 否则回退 edgetts（保证有声音）。cmd 里解析 JSON 不可靠，所以用标记文件。
+    flag = os.path.join(os.path.dirname(TTS_CONFIG_PATH) or '.', 'tts_key_ok.flag')
+    try:
+        if key:
+            with open(flag, 'w', encoding='utf-8') as f:
+                f.write('doubao key configured\n')
+        elif os.path.isfile(flag):
+            os.remove(flag)
+    except Exception:
+        logger.warning(f"写/删豆包 Key 标记文件失败：{flag}", exc_info=True)
     return cur
 
 
