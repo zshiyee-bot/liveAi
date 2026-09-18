@@ -105,6 +105,23 @@ def _sorted_imgs(d):
     return sorted_imgs(d)
 
 
+class SegmentList(list):
+    """素材段列表 + **它自己那份**链元数据（段名 / 段间模式 / 分组）。
+
+    ⚠️ 为什么不用模块级函数属性传参（曾经的 bug，已复现）：
+    `_load_segments.last_names/.last_mode/.last_groups` 是全局可变状态，
+    同一进程里任何一次并发/交错的素材加载都会覆盖它 —— 于是
+    `MuseReal.__init__` 可能拿到「A 的 segments + B 的 groups」，
+    分组跨度只覆盖段0 → 播放头永远回段0（用户看到"1→2 顺序播放"其实只播段1，
+    每个循环点一次跳变）。实测该污染会让 pick_next 恒为 [0,0,0,...]。
+    把元数据挂在返回对象上，调用方拿到的永远是配套的那一份。
+    """
+
+    names = None    # 段名列表（与 self.playlist 平行，跨库段名形如 "库B/片段"）
+    mode = None     # 项间模式
+    groups = None   # 分组元数据（含 start/end/mode/repeat/weight）
+
+
 def _load_segments(avatar_path, avatar_id, kind):
     """读取 playlist.json 并加载各段素材，返回段列表或 None。
 
@@ -248,15 +265,19 @@ def _load_segments(avatar_path, avatar_id, kind):
             groups_meta.append(meta)
         groups_meta.sort(key=lambda x: x['start'])
 
-    # 段名 / 项信息挂在函数属性上，供 init_playlist 取用
+    # 段名 / 项信息**挂在返回对象上**（消费方优先读它，避免全局状态被别的加载覆盖）；
+    # 同时仍写一份函数属性，兼容可能存在的旧读取点。
+    out = SegmentList(segs)
+    out.names = names_used
+    out.mode = cfg.get('mode') or 'shuffle'
+    out.groups = groups_meta
     try:
         _load_segments.last_names = names_used
-        # 顶层 mode = 项间模式（v1 时它就是唯一模式）
-        _load_segments.last_mode = cfg.get('mode') or 'shuffle'
+        _load_segments.last_mode = out.mode
         _load_segments.last_groups = groups_meta
     except Exception:
         pass
-    return segs
+    return out
 
 
 
@@ -284,9 +305,12 @@ class LipReal(BaseAvatar):
         # avatar 可能是 3 元组（单段，向后兼容）或 4 元组（末位是素材链 segments）
         if len(avatar) == 4:
             self.frame_list_cycle, self.face_list_cycle, self.coord_list_cycle, segs = avatar
-            _mode = getattr(_load_segments, 'last_mode', None)
-            self.init_playlist(segs, mode=_mode,
-                               groups=getattr(_load_segments, 'last_groups', None))
+            # ⚠️ 元数据优先取「返回对象自带的那份」（thread-safe），函数属性仅作兜底
+            _mode = getattr(segs, 'mode', None) or getattr(_load_segments, 'last_mode', None)
+            _groups = getattr(segs, 'groups', None)
+            if _groups is None:
+                _groups = getattr(_load_segments, 'last_groups', None)
+            self.init_playlist(segs, mode=_mode, groups=_groups)
         else:
             self.frame_list_cycle, self.face_list_cycle, self.coord_list_cycle = avatar
             self.init_playlist(None)

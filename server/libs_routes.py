@@ -1040,19 +1040,39 @@ def _reload_sessions_for_lib(lib):
         return []
 
     gv = getattr(_APP, 'global_avatars', None)
-    loader = getattr(_APP, 'load_avatar', None)
-    if gv is None or loader is None:
-        logger.warning("素材链热重载跳过：app 模块缺少 global_avatars / load_avatar")
+    if gv is None:
+        logger.warning("素材链热重载跳过：app 模块缺少 global_avatars")
         return []
 
-    if lib not in gv:
+    # 缓存键是 "模型:素材"（app.py:101 cache_key = f"{kind}:{avatar_id}"），
+    # 旧版本是裸 avatar_id —— 两种都认，否则永远命中不了、热重载静默失效。
+    kind = None
+    hit = None
+    for k in ('musetalk', 'wav2lip'):
+        if f"{k}:{lib}" in gv:
+            kind, hit = k, f"{k}:{lib}"
+            break
+    if hit is None and lib in gv:            # 兼容旧键（裸名）
+        hit = lib
+        kind = getattr(getattr(gv[lib], 'opt', None), 'model', None) or 'musetalk'
+    if hit is None:
         # 没有被加载过 -> 没有活跃会话在用，无需热重载
         logger.info(f"素材链热重载跳过：库「{lib}」不在 global_avatars 缓存中 "
                     f"（现有键={list(gv.keys())}）")
         return []
 
-    new_avatar = loader(lib)
-    gv[lib] = new_avatar
+    # 直接调对应 avatar 模块的 load_avatar —— 不依赖 app 模块里是否有 load_avatar
+    # （app.py 里叫 build_avatar_session，且它需要 params，不是纯加载器）
+    if kind == 'wav2lip':
+        from avatars import wav2lip_avatar as _mod
+    elif kind == 'musetalk':
+        from avatars import musetalk_avatar as _mod
+    else:
+        logger.warning(f"素材链热重载跳过：缓存键 {hit} 的模型种类无法识别")
+        return []
+    new_avatar = _mod.load_avatar(lib)
+    gv[hit] = new_avatar                       # 新会话立刻用上新链
+    logger.info(f"素材链热重载：已刷新缓存 global_avatars['{hit}']")
 
     # wav2lip 的 load_avatar 返回 4 元组（末位=segments）；musetalk 返回 6 元组（末位=segments）。
     # 以前只处理 len==4 → **musetalk 的素材链热重载一直是空转**（segs=None）。
@@ -1063,16 +1083,19 @@ def _reload_sessions_for_lib(lib):
     else:
         segs = None
 
-    # 逐项链的分组信息与模式挂在加载器函数属性上（_load_segments.last_*），
-    # 必须一起热重载，否则新会话与旧会话的项内/项间语义会不一致。
-    _mode = None
-    _groups = None
-    try:
-        from avatars.wav2lip_avatar import _load_segments
-        _mode = getattr(_load_segments, 'last_mode', None)
-        _groups = getattr(_load_segments, 'last_groups', None)
-    except Exception:
-        pass
+    # 逐项链的「项间模式 / 分组」优先取 **segments 对象自带**的那份（thread-safe）；
+    # _load_segments.last_* 是全局可变状态，并发加载会串味（曾导致播放头永远回段0）
+    _mode = getattr(segs, 'mode', None)
+    _groups = getattr(segs, 'groups', None)
+    if _mode is None or _groups is None:
+        try:
+            from avatars.wav2lip_avatar import _load_segments
+            if _mode is None:
+                _mode = getattr(_load_segments, 'last_mode', None)
+            if _groups is None:
+                _groups = getattr(_load_segments, 'last_groups', None)
+        except Exception:
+            pass
 
     done = []
     logger.info(f"素材链热重载：库「{lib}」开始，会话数={len(session_manager.sessions)}，"

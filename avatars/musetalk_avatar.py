@@ -164,13 +164,21 @@ class MuseReal(BaseAvatar):
         if len(avatar) == 6:
             (self.frame_list_cycle, self.mask_list_cycle, self.coord_list_cycle,
              self.mask_coords_list_cycle, self.input_latent_list_cycle, segs) = avatar
-            try:
-                from avatars.wav2lip_avatar import _load_segments
-                _mode = getattr(_load_segments, 'last_mode', None)
-            except Exception:
-                _mode = None
-            self.init_playlist(segs, mode=_mode,
-                               groups=getattr(_load_segments, 'last_groups', None))
+            # ⚠️ 元数据优先取「返回对象自带的那份」（thread-safe）；
+            # 曾经用 _load_segments.last_* 全局属性 → 并发/交错加载会串味，
+            # 表现为 groups 跨度只覆盖段0，播放头永远回段0（已复现的线上 bug）。
+            _mode = getattr(segs, 'mode', None)
+            _groups = getattr(segs, 'groups', None)
+            if _mode is None or _groups is None:
+                try:
+                    from avatars.wav2lip_avatar import _load_segments
+                    if _mode is None:
+                        _mode = getattr(_load_segments, 'last_mode', None)
+                    if _groups is None:
+                        _groups = getattr(_load_segments, 'last_groups', None)
+                except Exception:
+                    pass
+            self.init_playlist(segs, mode=_mode, groups=_groups)
         else:
             (self.frame_list_cycle, self.mask_list_cycle, self.coord_list_cycle,
              self.mask_coords_list_cycle, self.input_latent_list_cycle) = avatar

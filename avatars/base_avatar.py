@@ -369,12 +369,16 @@ class BaseAvatar:
         self._enter_group(0)
         self._prime_group(0)         # 起点段=首项入口段，必须计入本轮
         if self.playlist:
-            # 段名列表（供界面显示"当前正在播哪一段"）
-            try:
-                from avatars.wav2lip_avatar import _load_segments
-                self.playlist_names = getattr(_load_segments, 'last_names', None)
-            except Exception:
-                self.playlist_names = None
+            # 段名优先取本次 segments **自带**的那份（thread-safe）；
+            # 函数属性 _load_segments.last_names 仅兜底（并发加载会串味）
+            names = getattr(segments, 'names', None)
+            if names is None:
+                try:
+                    from avatars.wav2lip_avatar import _load_segments
+                    names = getattr(_load_segments, 'last_names', None)
+                except Exception:
+                    names = None
+            self.playlist_names = names
             _gd = (f"，组数={len(self.playlist_groups)}（组间模式={self.playlist_mode}）"
                    if self.playlist_groups else "")
             logger.info(f"素材链已启用：共 {len(self.playlist)} 段{_gd}，"
@@ -473,6 +477,22 @@ class BaseAvatar:
                 # 保留未知扩展字段（将来嵌套子组等），A 阶段不解释
                 'cfg': {k: v for k, v in g.items() if k not in ('start', 'end', 'mode')},
             })
+        # ⚠️ 防御：分组必须覆盖**全部**段。若没覆盖（groups 与 segments 不是同一次加载、
+        # /或手工改过 playlist.json），绝不能静默卡死在段0 —— 那会表现为
+        # 「编排了 1→2 却在无限循环段1，每次循环一次跳变」。
+        # 未覆盖的段各自补一个单段组，并留下告警便于排查。
+        covered = set()
+        for g in out:
+            covered.update(range(g['start'], g['end']))
+        missing = [i for i in range(n) if i not in covered]
+        if missing:
+            logger.warning(f"素材链分组未覆盖全部段：缺失 {missing}（共 {n} 段），"
+                           f"已自动补成单项组（常见原因：groups 与 segments 不配套）")
+            for i in missing:
+                out.append({'start': i, 'end': i + 1, 'mode': 'sequence', 'lib': '',
+                            'name': '', 'repeat': 1, 'weight': 1.0, 'round': 0,
+                            'played': set(), 'count': 0, 'cfg': {}})
+            out.sort(key=lambda x: x['start'])
         return out
 
     def _group_of(self, idx):
