@@ -342,7 +342,7 @@ class BaseAvatar:
     #   段列表长度为 1 时（官方单段素材），pick_next 恒返回 0，
     #   行为与改动前完全一致（见 self._seg_cursor 的注释）。
 
-    def init_playlist(self, segments, mode=None):
+    def init_playlist(self, segments, mode=None, groups=None):
         """注册素材段列表。segments: list，元素为「一段的全部数组元组」。
         每个段必须自带自己的 frame_list_cycle / face_list_cycle / coord_list_cycle
         （musetalk 另有 mask_list_cycle / input_latent_list_cycle），
@@ -360,8 +360,14 @@ class BaseAvatar:
         self._seg_cursor = 0         # 段内帧号，只前进不回退
         self._last_seg = None        # 刚播过的段号，下一轮随机时排除
         self._cycle_count = 0        # 完整播完的段数（仅用于日志/统计）
-        self._played_round = set()   # 本轮已播过的段号（weight 模式用）
-        self.playlist_mode = mode or 'shuffle'
+        self._played_round = set()   # 本轮已播过的段号（v1 单组模式用）
+        self.playlist_mode = mode or 'shuffle'      # v2 时它是「组间模式」
+        # 两级分组链（组 = 一个库/文件夹）。groups=None/[] = v1 单组，
+        # pick_next 走原平铺逻辑，行为与改动前**完全一致**。
+        self.playlist_groups = self._norm_groups(groups)
+        self._played_groups = set()  # 组间 weight：本轮已进过的组号
+        self._enter_group(0)
+        self._prime_group(0)         # 起点段=首项入口段，必须计入本轮
         if self.playlist:
             # 段名列表（供界面显示"当前正在播哪一段"）
             try:
@@ -369,11 +375,13 @@ class BaseAvatar:
                 self.playlist_names = getattr(_load_segments, 'last_names', None)
             except Exception:
                 self.playlist_names = None
-            logger.info(f"素材链已启用：共 {len(self.playlist)} 段，模式={self.playlist_mode}，"
-                        f"入口=段0，各段帧数={[self._seg_len(i) for i in range(len(self.playlist))]}")
+            _gd = (f"，组数={len(self.playlist_groups)}（组间模式={self.playlist_mode}）"
+                   if self.playlist_groups else "")
+            logger.info(f"素材链已启用：共 {len(self.playlist)} 段{_gd}，"
+                        f"各段帧数={[self._seg_len(i) for i in range(len(self.playlist))]}")
 
 
-    def reload_playlist(self, segments, mode=None):
+    def reload_playlist(self, segments, mode=None, groups=None):
         """热重载素材链（免重启、不断音频）。
 
         只替换「素材段数组 + 播放头 + 模式」，**不重建** ASR / TTS / 输出管线，
@@ -385,6 +393,11 @@ class BaseAvatar:
             self.playlist = list(segments)
         if mode:
             self.playlist_mode = mode
+        # 分组（两级链）也一起换；groups=None 表示"本次不带分组信息"，则退化为 v1 单组
+        self.playlist_groups = self._norm_groups(groups)
+        self._played_groups = set()
+        self._enter_group(0)
+        self._prime_group(0)         # 播放头重置到段0 = 首项入口段
         # 播放头重置到入口段第 0 帧（接着播新链）
         self.playlist_index = 0
         self._seg_cursor = 0
@@ -400,10 +413,12 @@ class BaseAvatar:
                     f"模式={getattr(self, 'playlist_mode', 'shuffle')}")
 
     def set_playlist_mode(self, mode):
-        """切换播放模式（sequence / shuffle / weight），立即生效。"""
+        """切换「项间模式」（sequence / shuffle / weight），立即生效。
+        v2 下这是项与项之间的走法；每一项自己的 mode 由该项决定，不在此处改。"""
         if mode in ('sequence', 'shuffle', 'weight'):
             self.playlist_mode = mode
             self._played_round = set()
+            self._played_groups = set()      # 项间 weight 的一轮重开
             return True
         return False
 
@@ -418,39 +433,200 @@ class BaseAvatar:
     def use_playlist(self):
         return bool(getattr(self, 'playlist', None))
 
-    def pick_next(self, cur):
-        """按 self.playlist_mode 挑下一段。
+    # ── 两级分组链（组内模式 × 组间模式）──────────────────────────────
+    # 组 = 一个库（文件夹）。组内模式决定「这个文件夹里的片段怎么轮」，
+    # 组间模式决定「一个组播完一轮后进哪个组」，两者独立可任意组合。
+    # groups 为 None/[] 时退化为 v1 单组，pick_next 走原平铺逻辑。
+    def _norm_groups(self, groups):
+        """规范成 [{start,end,mode,lib,name,cfg,played,count}]，丢弃空组/越界组。"""
+        out = []
+        if not groups:
+            return out
+        n = len(getattr(self, 'playlist', []) or [])
+        for g in groups:
+            if not isinstance(g, dict):
+                continue
+            try:
+                s = int(g.get('start', 0)); e = int(g.get('end', 0))
+            except Exception:
+                continue
+            s = max(0, min(s, n)); e = max(0, min(e, n))
+            if e <= s:
+                continue
+            try:
+                rp = max(1, min(999, int(g.get('repeat') or 1)))
+            except Exception:
+                rp = 1
+            try:
+                wt = max(0.0, float(g.get('weight') if g.get('weight') is not None else 1.0))
+            except Exception:
+                wt = 1.0
+            out.append({
+                'start': s, 'end': e,
+                'mode': g.get('mode') or 'sequence',
+                'lib': g.get('lib') or '',
+                'name': g.get('name') or g.get('lib') or '',
+                'repeat': rp,        # 逐项可调：该项重复几轮才进入下一项
+                'weight': wt,        # 逐项可调：项间随机时被抽中的相对权重
+                'round': 0,          # 已完成的轮数
+                'played': set(), 'count': 0,
+                # 保留未知扩展字段（将来嵌套子组等），A 阶段不解释
+                'cfg': {k: v for k, v in g.items() if k not in ('start', 'end', 'mode')},
+            })
+        return out
 
-        sequence : (cur+1) % n —— 顺序循环，永不越界（"走到尽头"= 回到第一段）
-        shuffle  : 在「非 cur」里等概率随机（无记忆）
-        weight   : 在「非 cur」里随机，但优先挑本轮还没播过的段 ——
-                   等价于「播得越少、概率越大」，保证一轮内每段都出现一次
-        段数==1 时恒返回 0（单段素材：行为等价于原来的顺序循环）。
+    def _group_of(self, idx):
+        for k, g in enumerate(getattr(self, 'playlist_groups', None) or []):
+            if g['start'] <= idx < g['end']:
+                return k
+        return -1
+
+    def _enter_group(self, gi):
+        """进入某组：重置该组本轮状态。"""
+        gs = getattr(self, 'playlist_groups', None) or []
+        if not gs or gi < 0 or gi >= len(gs):
+            return None
+        g = gs[gi]
+        g['played'] = set()
+        g['count'] = 0
+        return g
+
+    def _prime_group(self, idx=0):
+        """把「引擎起点段」计入所在项的本轮计数。
+
+        起点段（playlist_index=0）本身就是该项的入口段，如果不计入，
+        该项的 count 会少 1 → 会多播一段才切换到下一项（实测过）。
+        """
+        gs = getattr(self, 'playlist_groups', None) or []
+        if not gs:
+            return
+        gi = self._group_of(idx)
+        if gi >= 0:
+            gs[gi]['played'] = {idx}
+            gs[gi]['count'] = 1
+
+    def _group_weights(self, pool):
+        """把 pool 里各项的 weight 归一化成概率数组；全 0 时返回 None（等概率）。"""
+        ws = []
+        for k in pool:
+            try:
+                w = float(self.playlist_groups[k].get('weight') or 1.0)
+            except Exception:
+                w = 1.0
+            ws.append(max(0.0, w))
+        tot = sum(ws)
+        if tot <= 0:
+            return None
+        return [w / tot for w in ws]
+
+    def _pick_group(self, gi, outer):
+        """按【项间模式】挑下一个项。随机时按各项 weight 加权。"""
+        gs = self.playlist_groups
+        n = len(gs)
+        if n <= 1:
+            return 0
+        if outer == 'sequence':
+            k = (gi + 1) % n
+            self._played_groups.add(k)
+            return k
+        cand = [k for k in range(n) if k != gi]
+        if not cand:
+            return gi
+        if outer == 'weight':
+            fresh = [k for k in cand if k not in self._played_groups]
+            pool = fresh if fresh else cand
+            if not fresh:
+                self._played_groups = {gi}      # 一轮走完 -> 重开一轮
+        else:
+            pool = cand                          # shuffle：随机（按 weight 加权）
+        k = int(np.random.choice(pool, p=self._group_weights(pool)))
+        self._played_groups.add(k)
+        return k
+
+    def _group_entry_frame(self, gi):
+        """新组的入口段：sequence 取组首；shuffle/weight 在组内随机。"""
+        g = self.playlist_groups[gi]
+        pool = list(range(g['start'], g['end']))
+        idx = pool[0] if (g['mode'] == 'sequence' or len(pool) == 1) else int(np.random.choice(pool))
+        g['played'] = {idx}
+        g['count'] = 1
+        return idx
+
+    def _pick_in_group(self, cur, g):
+        """组内推进。返回下一段号；None 表示「本组顺序播到尾」。"""
+        pool = list(range(g['start'], g['end']))
+        if g['mode'] == 'sequence':
+            nxt = cur + 1
+            return nxt if nxt < g['end'] else None
+        cand = [i for i in pool if i != cur] or pool
+        if g['mode'] == 'weight':
+            fresh = [i for i in cand if i not in g['played']]
+            return int(np.random.choice(fresh if fresh else cand))
+        return int(np.random.choice(cand))       # shuffle：等概率、可重复
+
+    def _switch_group(self, gi):
+        """一项播完一轮：若该项 repeat>1 则原地再播一轮；否则按项间模式挑下一项。"""
+        outer = getattr(self, 'playlist_mode', 'shuffle')
+        g = self.playlist_groups[gi]
+        rp = int(g.get('repeat') or 1)
+        g['round'] = int(g.get('round') or 0) + 1
+        if g['round'] < rp:
+            # 该项还要重复：重置本轮状态，从该项入口重新播
+            self._enter_group(gi)
+            return self._group_entry_frame(gi)
+        g['round'] = 0
+        ngi = self._pick_group(gi, outer)
+        self._enter_group(ngi)
+        return self._group_entry_frame(ngi)
+
+    def pick_next(self, cur):
+        """挑下一段（返回段号，供播放头使用）。
+
+        v1（无 groups）—— 与原实现逐字等价：
+          sequence : (cur+1) % n（顺序循环）
+          shuffle  : 在「非 cur」里等概率随机（无记忆）
+          weight   : 在「非 cur」里随机，但本轮没播过的优先（保证一轮内每段出现一次）
+        段数==1 时恒返回 0。
+
+        v2（两级分组链）—— 组内模式 × 组间模式：
+          · 组内这一轮还没播满 → 按【组内模式】在组内推进
+              sequence：组内顺序（1→2→3，播到尾就换组）
+              shuffle ：组内等概率随机（可重复），播满 N 段算一轮
+              weight  ：组内随机但本轮未播过的优先（一轮内每段必出现）
+          · 组内播满一轮 → 按【组间模式】挑下一个组，再取该组入口段
         """
         n = len(self.playlist)
         if n <= 1:
             return 0
+        groups = getattr(self, 'playlist_groups', None) or []
+        outer = getattr(self, 'playlist_mode', 'shuffle')
 
-        mode = getattr(self, 'playlist_mode', 'shuffle')
+        if not groups:                          # ── v1：平铺逻辑（原样）
+            if outer == 'sequence':
+                return (cur + 1) % n
+            cand = [i for i in range(n) if i != cur]
+            if not cand:
+                return cur
+            if outer == 'weight':
+                fresh = [i for i in cand if i not in self._played_round]
+                pool = fresh if fresh else cand
+                if not fresh:
+                    self._played_round = {cur}
+                return int(np.random.choice(pool))
+            return int(np.random.choice(cand))
 
-        if mode == 'sequence':
-            return (cur + 1) % n
-
-        cand = [i for i in range(n) if i != cur]
-        if not cand:            # 理论不可达（n>=2 时 cand 非空）
-            return cur
-
-        if mode == 'weight':
-            # 本轮还没播过的优先
-            fresh = [i for i in cand if i not in self._played_round]
-            pool = fresh if fresh else cand
-            if not fresh:
-                # 一轮播完 -> 重开一轮（把当前段记为已播，避免立刻回到它）
-                self._played_round = {cur}
-            return int(np.random.choice(pool))
-
-        # shuffle：等概率、无记忆
-        return int(np.random.choice(cand))
+        gi = self._group_of(cur)                # ── v2：两级
+        if gi < 0:
+            return 0
+        g = groups[gi]
+        if g['count'] >= (g['end'] - g['start']):    # 组内一轮已播满 -> 换组
+            return self._switch_group(gi)
+        g['count'] += 1
+        g['played'].add(cur)
+        nxt = self._pick_in_group(cur, g)
+        if nxt is None:                              # 顺序模式播到组尾 -> 换组
+            return self._switch_group(gi)
+        return nxt
 
     def get_frame_index(self):
         """取当前帧的 (段号, 段内帧号)，并推进播放头。

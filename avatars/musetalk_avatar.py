@@ -169,7 +169,8 @@ class MuseReal(BaseAvatar):
                 _mode = getattr(_load_segments, 'last_mode', None)
             except Exception:
                 _mode = None
-            self.init_playlist(segs, mode=_mode)
+            self.init_playlist(segs, mode=_mode,
+                               groups=getattr(_load_segments, 'last_groups', None))
         else:
             (self.frame_list_cycle, self.mask_list_cycle, self.coord_list_cycle,
              self.mask_coords_list_cycle, self.input_latent_list_cycle) = avatar
@@ -181,9 +182,10 @@ class MuseReal(BaseAvatar):
         self.asr = WhisperASR(opt,self,self.audio_processor)
         self.asr.warm_up()
 
-    def reload_playlist(self, segments, mode=None):
-        """热重载素材链（musetalk 版：需要同步 5 个数组，base 版只同步 3 个）。"""
-        super().reload_playlist(segments, mode=mode)
+    def reload_playlist(self, segments, mode=None, groups=None):
+        """热重载素材链（musetalk 版：需要同步 5 个数组，base 版只同步 3 个）。
+        逐项分组信息（groups）一并透传给基类，否则热重载会退化成单组。"""
+        super().reload_playlist(segments, mode=mode, groups=groups)
         try:
             if self.playlist:
                 (self.frame_list_cycle, self.mask_list_cycle, self.coord_list_cycle,

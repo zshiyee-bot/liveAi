@@ -495,6 +495,34 @@ body.dragging .dragov{display:grid}
 .col2 .li .act.del:hover{background:var(--bad-soft);color:var(--bad)}
 .col2 .ft{padding:9px 12px;border-top:1px solid var(--line-2);display:flex;gap:8px;background:#f7f8fa}
 .col2 .ft .btn{height:30px;padding:0 12px;font-size:12.5px}
+/* 逐项链：项卡片（每项一个库，项内可配 模式/重复/权重） */
+.lgh{font-size:11px;font-weight:700;color:var(--ink-3);letter-spacing:.05em;
+  padding:7px 6px 3px;display:flex;align-items:center;gap:6px}
+.item{border:1px solid var(--line);border-radius:12px;background:#fff;overflow:hidden;box-shadow:var(--sh-1)}
+.item-h{display:flex;align-items:center;gap:7px;padding:8px 10px;background:#f7f8fa;
+  border-bottom:1px solid var(--line-2);flex-wrap:wrap}
+.item-h .idx{min-width:38px;height:22px;border-radius:7px;background:#f1f2f6;color:var(--ink-2);
+  font-size:11px;font-weight:700;display:grid;place-items:center;padding:0 6px}
+.item-h .idx.entry{background:var(--grad);color:#fff}
+.item-h .libnm{font-weight:650;font-size:12.5px;max-width:130px;overflow:hidden;
+  text-overflow:ellipsis;white-space:nowrap;color:var(--accent)}
+.item-h .rn{display:inline-flex;align-items:center;gap:4px;font-size:11.5px;color:var(--ink-2);
+  background:#fff;border:1px solid var(--line-2);border-radius:8px;padding:3px 7px}
+.item-h .rn input{width:46px;border:0;background:transparent;font-size:12px;text-align:center;
+  color:var(--ink);outline:none}
+.item-h .act{width:24px;height:24px;border-radius:7px;display:grid;place-items:center;
+  cursor:pointer;color:var(--ink-3);font-size:13px;transition:background .12s,color .12s}
+.item-h .act:hover{background:#eef0f4;color:var(--ink)}
+.item-h .act.del:hover{background:var(--bad-soft);color:var(--bad)}
+.item .clips{display:flex;flex-wrap:wrap;gap:6px;padding:9px 10px;align-items:center}
+.cchip{display:inline-flex;align-items:center;gap:6px;font-size:12px;font-weight:550;
+  background:#f4f5f9;border:1px solid var(--line-2);border-radius:9px;padding:4px 7px;max-width:100%}
+.cchip>b{min-width:20px;height:18px;border-radius:6px;background:#fff;border:1px solid var(--line-2);
+  font-size:10.5px;display:grid;place-items:center;padding:0 4px;color:var(--ink-2)}
+.cchip .x{cursor:pointer;color:var(--ink-3);font-style:normal;font-size:11px;padding:0 2px}
+.cchip .x:hover{color:var(--bad)}
+.sel.sm{height:28px;font-size:12px;padding-right:22px;max-width:150px}
+.sel.addc{height:28px;font-size:12px;align-self:center}
 /* 接缝表 */
 table.tb{width:100%;border-collapse:collapse;font-size:13px}
 table.tb th{
@@ -614,12 +642,17 @@ table.tb tbody tr:hover{background:#fbfbfd}
       <button class="clr" id="searchClr" title="清空">✕</button>
     </div>
     <div class="spacer"></div>
-    <div class="sel-wrap"><select class="sel" id="kindBy" title="按模型筛选片段">
-      <option value="">全部模型</option>
+    <div class="sel-wrap"><select class="sel" id="kindBy" title="按训练状态 / 模型类型筛选">
+      <option value="">全部</option>
+      <option value="untrained">未训练 / 未就绪</option>
       <option value="wav2lip">wav2lip（口型对齐）</option>
       <option value="musetalk">musetalk（更像真人）</option>
-      <option value="unknown">未识别</option>
     </select></div>
+    <label style="display:inline-flex;align-items:center;gap:6px;font-size:12.5px;color:#475569;white-space:nowrap;cursor:pointer;user-select:none"
+           title="训练完成后原始视频默认不再显示（数据不会删除，勾选即可看回）">
+      <input type="checkbox" id="showDone" style="accent-color:#6366f1;width:14px;height:14px;margin:0">
+      已训练的上传<span id="doneN" style="color:#94a3b8"></span>
+    </label>
     <div class="sel-wrap"><select class="sel" id="sortBy" title="排序">
       <option value="name">名称 A→Z</option>
       <option value="name_d">名称 Z→A</option>
@@ -689,7 +722,9 @@ const S = {
   cur: {kind:'root'}, detail: null,
   sel: new Set(), anchor: null, expanded: new Set(),
   chainDraft: null, chainLib: null, chainMode: 'shuffle', chainDraftLib: null,
+  chainItems: null,
   q: '', sort: 'name', view: 'icons', kind: '',
+  showDone: false,          // 是否显示「已训练的上传」原始视频（默认隐藏，训练完不再占画面）
   loaded: false,
 };
 
@@ -859,7 +894,7 @@ function renderSide(){
       h.push('<div class="sub">');
       for (const c of L.clips){
         if (kw && !c.name.toLowerCase().includes(kw) && !L.name.toLowerCase().includes(kw)) continue;
-        if (S.kind && c.kind !== S.kind) continue;   // 跟随顶栏模型筛选
+        if (!kindPass({kind:'clip', obj:c})) continue;   // 与内容区同一套筛选语义
         const ktag = c.kind === 'musetalk' ? '<span class="kt m">muse</span>'
                    : c.kind === 'wav2lip'  ? '<span class="kt w">wav</span>' : '';
         h.push(
@@ -874,6 +909,7 @@ function renderSide(){
         );
       }
       for (const u of L.uploads){
+        if (!uploadVisible({kind:'upload', obj:u})) continue;   // 已训练的上传默认隐藏
         if (kw && !u.file.toLowerCase().includes(kw) && !L.name.toLowerCase().includes(kw)) continue;
         h.push(
           `<div class="nitem" data-kind="upload" data-lib="${esc(L.name)}" data-clip="${esc(u.stem)}" title="${esc(u.file)}">` +
@@ -951,7 +987,7 @@ function renderKindWarn(){
   const parts = [];
   if (k.wav2lip) parts.push(`wav2lip <b>${k.wav2lip}</b> 段`);
   if (k.musetalk) parts.push(`musetalk <b>${k.musetalk}</b> 段`);
-  if (k.unknown) parts.push(`未识别 <b>${k.unknown}</b> 段`);
+  if (k.unknown) parts.push(`未就绪 <b>${k.unknown}</b> 段`);
   el.style.display = 'flex';
   el.innerHTML =
     `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:18px;height:18px;flex:0 0 18px;margin-top:1px"><path d="M12 9v4M12 17h.01M10.3 3.9L1.8 18a2 2 0 001.7 3h17a2 2 0 001.7-3L13.7 3.9a2 2 0 00-3.4 0z"/></svg>` +
@@ -995,30 +1031,48 @@ function itemFrames(it){
   return null;
 }
 function itemMae(it){ return it.kind === 'clip' ? it.obj.tail_head_mae : null; }
+// ── 顶栏筛选的唯一判定入口（内容区与侧栏共用，避免两处逻辑各自演化）──
+// 三档语义（用户要求把这三者彻底分开）：
+//   ''        全部：片段 + 上传 + 库
+//   untrained 未训练 / 未就绪：还没产出可用片段的东西
+//             （没训练的上传视频、缺文件的片段目录、空库）
+//   wav2lip / musetalk：只留已训练且类型匹配的片段（+ 含该类型的库）
+// 上传是「原始视频」，本身没有模型类型，所以模型档一律不显示它 ——
+// 以前这里是 `if (x.kind === 'upload') return true;`，
+// 导致筛 musetalk 时未训练视频与同源上传全都混在里面。
+function kindPass(x){
+  const f = S.kind; if (!f) return true;
+  const o = x.obj || {};
+  const work = (f === 'untrained' || f === 'unknown');   // unknown 为旧值，兼容
+  if (x.kind === 'clip')   return work ? !o.trained : (!!o.trained && o.kind === f);
+  if (x.kind === 'upload') return work ? !o.trained_as : false;
+  if (x.kind === 'self')   return work ? false : (o.self_kind === f);   // 单目录素材=已成品
+  if (x.kind === 'lib'){
+    if (work){
+      return (o.uploads || []).some(u => !u.trained_as)
+          || (o.clips || []).some(c => !c.trained)
+          || (!o.clip_count && !o.self_ready && !(o.uploads || []).length);   // 空库
+    }
+    const ks = (o.trained_kinds && o.trained_kinds.length)
+      ? o.trained_kinds
+      : Object.keys(o.kinds || {}).filter(k => k !== 'unknown');
+    return ks.length ? ks.includes(f) : true;   // 还没训练出任何片段 → 保留（否则没法继续训练）
+  }
+  return true;
+}
+// 「已训练的上传」默认隐藏：训练完原始视频就不再占画面（数据仍在，勾选即可看回）
+function uploadVisible(x){
+  if (x.kind !== 'upload') return true;
+  if (S.kind) return kindPass(x);
+  return S.showDone || !(x.obj && x.obj.trained_as);
+}
 function viewItems(){
   let it = currentItems();
   const kw = S.q.trim().toLowerCase();
   if (kw) it = it.filter(x => String(x.name).toLowerCase().includes(kw));
-  // 按模型类型筛选，方便把 wav2lip 与 musetalk 分开看、分开编排。
-  //   - 片段：按片段自身 kind 过滤
-  //   - 库  ：若库里含有该类型的片段就保留（根视图下列表全是库，必须这样过滤才有意义）
-  //   - 上传：无法预知训练成什么，始终显示（否则用户会以为文件丢了）
-  if (S.kind){
-    it = it.filter(x => {
-      if (x.kind === 'clip') return (x.obj && x.obj.kind) === S.kind;
-      if (x.kind === 'upload') return true;
-      if (x.kind === 'lib' || x.kind === 'self'){
-        const L = x.obj; if (!L) return false;
-        const kinds = (L.trained_kinds && L.trained_kinds.length)
-          ? L.trained_kinds
-          : Object.keys(L.kinds || {}).filter(k => k !== 'unknown');
-        // 库还没训练出任何片段时无从判断，保留（否则新建的库会"消失"）
-        if (!kinds.length) return true;
-        return kinds.includes(S.kind);
-      }
-      return true;
-    });
-  }
+  // 筛选：先按三档语义过滤，再把「已训练的上传」按开关隐藏
+  if (S.kind) it = it.filter(kindPass);
+  it = it.filter(uploadVisible);
   const s = S.sort;
   const cmp = (a,b) => String(a.name).localeCompare(String(b.name), 'zh', {numeric:true});
   return it.slice().sort((a,b)=>{
@@ -1037,6 +1091,13 @@ function viewItems(){
    ══════════════════════════════════════════════════════════════ */
 function renderContent(){
   const g = $('grid');
+  // 「已训练的上传」当前被隐藏了几个：显示在勾选框旁，免得用户以为文件丢了
+  const _dn = $('doneN');
+  if (_dn){
+    const _L = (S.cur.kind === 'lib' || S.cur.kind === 'clip') ? curLib() : null;
+    const _n = _L ? (_L.uploads || []).filter(u => u.trained_as).length : 0;
+    _dn.textContent = _n ? ' (' + _n + ')' : '';
+  }
   if (S.cur.kind === 'chain'){ renderChain(); return; }
   if (S.cur.kind === 'active'){ renderActive(); return; }
 
@@ -1126,7 +1187,12 @@ function cardHTML(it){
   else if (it.kind === 'clip'){
     const c = it.obj;
     const src = `/api/libs/${q(it.lib)}/clipframe?clip=${q(c.name)}&which=first`;
-    media = `<div class="media"><img class="cover" loading="lazy" src="${src}" alt=""><img class="shot" loading="lazy" src="${src}" alt=""></div>`;
+    // 空片段（手动新建的文件夹 / 训练中断）没有帧可取 → 用渐变占位，避免 <img> 裂图
+    media = c.empty
+      ? `<div class="media grad" style="background:${gradFor(c.name)}">` +
+        `<div class="glyph" style="opacity:.28;width:78px;height:78px">${I.box}</div>` +
+        `<div class="glyph" style="position:absolute">${I.film}</div></div>`
+      : `<div class="media"><img class="cover" loading="lazy" src="${src}" alt=""><img class="shot" loading="lazy" src="${src}" alt=""></div>`;
     title = `<div class="ttl">${esc(c.name)}</div>`;
     info = [c.kind === 'musetalk' ? 'musetalk' : (c.kind === 'wav2lip' ? 'wav2lip' : '未就绪'),
             `${c.frames} 帧`,
@@ -1135,7 +1201,7 @@ function cardHTML(it){
     pill = `<span class="pill">${durS(c.duration_sec)}</span>`;
     if (c.tail_head_mae != null)
       pill += `<span class="pill mae ${maeCls(c.tail_head_mae)}" title="段内首尾帧差异 MAE：结尾帧与开头帧的像素差，越小越能无缝循环播放（≤1.5 优秀 / 1.5~3 可接受 / &gt;3 不可用）">首尾 ${maeTxt(c.tail_head_mae)}</span>`;
-    act = qb('预览首尾帧', I.play, `previewClip('${esc(it.lib)}','${esc(c.name)}')`) +
+    act = (c.empty ? '' : qb('预览首尾帧', I.play, `previewClip('${esc(it.lib)}','${esc(c.name)}')`)) +
           qb('删除', I.trash, `onQuickDel('clip','${esc(it.lib)}','${esc(c.name)}')`);
   }
   else if (it.kind === 'upload'){
@@ -1312,6 +1378,63 @@ function renderActive(){
 /* ══════════════════════════════════════════════════════════════
    素材链编排
    ══════════════════════════════════════════════════════════════ */
+/* ── 逐项链（v2）数据模型 ───────────────────────────────────────────
+   一条链 = 有序列项；每项 = {lib, mode(项内), clips[], repeat, weight}
+     · 项内模式：这个库里的片段怎么轮（顺序 / 随机 / 不重复）
+     · 重复次数：这一项播几轮才进下一项
+     · 权重    ：项与项之间随机时被抽中的相对概率
+   入口 = 第一项的第一个片段（保存时 entry 由它决定）。
+   旧格式 v1（单组扁平 segments）会被读成「一个项」，行为逐字等价。 */
+function playlistToItems(pl, L){
+  if (pl && Array.isArray(pl.groups) && pl.groups.length){
+    return pl.groups.map(g => ({
+      lib: g.lib || L.name,
+      mode: ['sequence','shuffle','weight'].includes(g.mode) ? g.mode : 'sequence',
+      clips: (g.clips || []).map(String).filter(Boolean),
+      repeat: Math.min(999, Math.max(1, parseInt(g.repeat, 10) || 1)),
+      weight: Math.max(0, Number(g.weight == null ? 1 : g.weight) || 0),
+    })).filter(it => it.clips.length);
+  }
+  const segs = (pl && pl.segments) || [];
+  if (!segs.length) return [];
+  return [{lib: L.name, mode: (pl.mode || 'shuffle'), clips: segs.slice(), repeat: 1, weight: 1}];
+}
+function itemsToGroups(items){
+  return (items || []).filter(it => it.clips.length).map(it => ({
+    lib: it.lib, mode: it.mode, clips: it.clips.slice(),
+    repeat: it.repeat, weight: it.weight,
+  }));
+}
+// (库, 片段名) → 片段元数据（S.libs 里已带 kind / frames / tail_head_mae 等）
+function clipMeta(libName, name){
+  const LB = S.libs.find(x => x.name === libName);
+  return LB ? ((LB.clips || []).find(c => c.name === name) || null) : null;
+}
+function itemKind(it){
+  for (const n of (it.clips || [])){
+    const c = clipMeta(it.lib, n);
+    if (c && c.kind && c.kind !== 'unknown') return c.kind;
+  }
+  return null;
+}
+function draftKind(items){
+  for (const it of (items || [])){ const k = itemKind(it); if (k) return k; }
+  return null;
+}
+function draftNameSet(items){
+  const s = new Set();
+  (items || []).forEach(it => (it.clips || []).forEach(n => s.add(it.lib + '/' + n)));
+  return s;
+}
+// 把片段加进「它所属库」的那一项；没有这一项就新建（追加在最后）
+function addClipToLibItem(libName, clipName){
+  if (!S.chainItems) S.chainItems = [];
+  let it = S.chainItems.find(x => x.lib === libName);
+  if (!it){ it = {lib: libName, mode: 'sequence', clips: [], repeat: 1, weight: 1}; S.chainItems.push(it); }
+  if (!it.clips.includes(clipName)) it.clips.push(clipName);
+  S.chainDraftLib = S.chainLib;
+}
+
 function renderChain(){
   const g = $('grid'); g.className = 'grid';
   const usables = S.libs.filter(L => L.clip_count > 0);
@@ -1327,74 +1450,124 @@ function renderChain(){
     S.chainLib = (S.cur.lib && usables.find(L=>L.name===S.cur.lib) ? S.cur.lib : usables[0].name);
   const L = S.libs.find(x => x.name === S.chainLib);
   const pl = L.playlist || {};
-  if (!S.chainDraft || S.chainDraftLib !== L.name){
-    S.chainDraft = (pl.segments || []).slice();
+  if (!S.chainItems || S.chainDraftLib !== L.name){
+    S.chainItems = playlistToItems(pl, L);
     S.chainDraftLib = L.name;
     S.chainMode = pl.mode || 'shuffle';
   }
   const trained = L.clips.filter(c => c.trained);
-  const avail = trained.filter(c => !S.chainDraft.includes(c.name));
-  // 模型一致性：一条素材链只能有一种模型（服务一次只加载一种）。
-  // 若库里混着两种，只让同一模型的片段可加入 —— 从「已选的第一段」定下本条链的模型。
+  // 模型一致性：一条链只能有一种模型（服务一次只驻留一种）。
+  // 链的模型 = 草稿里第一个有 kind 的片段；草稿空时退到本库第一个已训练片段。
   const KNAME = {wav2lip:'wav2lip', musetalk:'musetalk', unknown:'未识别'};
-  const firstSeg = S.chainDraft.length
-    ? trained.find(c => c.name === S.chainDraft[0]) : null;
-  const chainKind = firstSeg ? firstSeg.kind : null;
-  const kindOf = n => { const c = trained.find(x=>x.name===n); return c ? c.kind : null; };
-  const mixedSelected = new Set(S.chainDraft.map(kindOf).filter(Boolean)).size > 1;
-  // 可加入的候选：若已定模型，则只留同模型
-  const availOk = chainKind ? avail.filter(c => c.kind === chainKind) : avail;
-  const blockedByKind = chainKind ? avail.length - availOk.length : 0;
+  const chainKind = draftKind(S.chainItems)
+    || ((trained.find(c => c.kind && c.kind !== 'unknown') || {}).kind) || null;
+  const setName = draftNameSet(S.chainItems);
+  const segCount = S.chainItems.reduce((a, it) => a + it.clips.length, 0);
+  const itemCount = S.chainItems.filter(it => it.clips.length).length;
+  const mixedSelected = new Set(S.chainItems.map(itemKind).filter(Boolean)).size > 1;
+  const modeOpts = [['sequence','顺序循环'],['shuffle','随机（等概率）'],
+                    ['weight','随机 · 不重复']];
   const modeHint = {
     shuffle:'每段播完随机挑一段（不会连续重复同一段）。<b>所有段等概率</b>，与段时长无关。',
     weight:'随机，但<b>本轮还没播过的段优先</b> —— 播得越少概率越大，一轮内每段必然出现一次。',
-    sequence:'严格按下面的顺序 1→2→3→…→1 循环，完全可预测。',
+    sequence:'严格按顺序 1→2→3→…→1 循环，完全可预测。',
+  };
+  const outerHint = {
+    sequence:'播完一项，就轮到下一项（按下面的项序循环）。',
+    shuffle:'播完一项，随机挑另一项（排除刚播过的那项）。等概率，可用「权重」倾斜。',
+    weight:'播完一项，在<b>本轮还没播过的项</b>里随机挑 —— 保证每个项都会轮到，长项不会被反复抽到。',
   };
   const kindTip = chainKind
     ? `<div class="note" style="margin-bottom:12px;background:#eef2ff;border-color:#c7d2fe">
          ${I.info}<div>本条素材链锁定为 <b>${KNAME[chainKind] || chainKind}</b> 模型
-         ${blockedByKind ? `· 另有 ${blockedByKind} 个其他模型的片段已灰掉（不能混编）` : ''}。
-         若要编排另一种模型，先「清空」再从那个模型的片段开始。</div></div>`
+         （跨库拼接也只能拼同模型）。</div></div>`
     : '';
   const mixedTip = mixedSelected
     ? `<div class="note" style="margin-bottom:12px;background:#fef2f2;border-color:#fecaca">
          ${I.info}<div style="color:#b91c1c"><b>当前链里混了不同模型的片段，保存会被拒绝。</b>
-         请移除后再保存，或清空重来。</div></div>`
+         请移除后再保存。</div></div>`
     : '';
+  // 可加入候选：按库分组；只列与本链同模型的片段
+  const candHTML = S.libs.filter(x => x.clip_count > 0).map(LB => {
+    const cs = (LB.clips || []).filter(c => c.trained
+      && (!chainKind || c.kind === chainKind)
+      && !setName.has(LB.name + '/' + c.name));
+    if (!cs.length) return '';
+    return `<div class="lgh">${esc(LB.name)}${LB.name === L.name
+      ? ' <span class="chip i">本库</span>' : ' <span class="chip">跨库</span>'}</div>`
+      + cs.map(c => `<div class="li add" data-addlib="${esc(LB.name)}" data-addclip="${esc(c.name)}">
+          <span class="idx">+</span><span class="nm2">${esc(c.name)}</span>
+          <span class="chip k${c.kind==='musetalk'?' m':' w'}">${KNAME[c.kind] || c.kind}</span>
+          <span class="chip ${maeCls(c.tail_head_mae)}">首尾 ${maeTxt(c.tail_head_mae)}</span>
+          <span class="chip">${c.frames} 帧</span></div>`).join('');
+  }).join('');
+  const candN = S.libs.filter(x => x.clip_count > 0).reduce((a, LB) => a
+    + (LB.clips || []).filter(c => c.trained && (!chainKind || c.kind === chainKind)
+        && !setName.has(LB.name + '/' + c.name)).length, 0);
+  const itemsHTML = S.chainItems.length ? S.chainItems.map((it, i) => {
+    const clipsHTML = it.clips.map((n, j) => {
+      const c = clipMeta(it.lib, n) || {};
+      return `<span class="cchip" title="${esc(n)} · ${c.frames || '?'} 帧">
+        <b>${(i === 0 && j === 0) ? '入口' : (j + 1)}</b>${esc(n)}
+        <span class="chip ${maeCls(c.tail_head_mae)}">${maeTxt(c.tail_head_mae)}</span>
+        <i class="x" data-irm="${i}:${j}" title="移出本项">✕</i></span>`;
+    }).join('');
+    const LB2 = S.libs.find(x => x.name === it.lib) || {};
+    const addOpts = ((LB2.clips) || []).filter(c => c.trained && !it.clips.includes(c.name))
+      .map(c => `<option value="${esc(c.name)}">${esc(c.name)} · ${c.frames} 帧</option>`).join('');
+    return `<div class="item">
+      <div class="item-h">
+        <span class="idx ${i === 0 ? 'entry' : ''}">项 ${i + 1}</span>
+        <span class="libnm" title="${esc(it.lib)}">${esc(it.lib)}</span>
+        <select class="sel sm" data-imode="${i}">
+          ${modeOpts.map(([v, t]) => `<option value="${v}"${it.mode === v ? ' selected' : ''}>项内：${t}</option>`).join('')}
+        </select>
+        <label class="rn">重复<input type="number" min="1" max="999" value="${it.repeat}" data-irepeat="${i}">轮</label>
+        <label class="rn">权重<input type="number" min="0" step="0.5" value="${it.weight}" data-iweight="${i}"></label>
+        <span style="flex:1"></span>
+        ${it.clips.length > 1 ? `<span class="act" data-isplit="${i}" title="拆成单项（每段各自成一项，可分别设参数）">⧉</span>` : ''}
+        <span class="act" data-iup="${i}" title="上移">▲</span>
+        <span class="act" data-idown="${i}" title="下移">▼</span>
+        <span class="act del" data-idel="${i}" title="删除该项">✕</span>
+      </div>
+      <div class="clips">${clipsHTML}
+        ${addOpts ? `<select class="sel sm addc" data-iadd="${i}">
+          <option value="">＋ 加片段</option>${addOpts}</select>` : ''}
+      </div></div>`;
+  }).join('') : `<div style="padding:26px;text-align:center;color:#98a1b0;font-size:13px">
+        还没有项。<br><span style="font-size:12px">从左边点片段加进来会自动按库建项；
+        每个片段单独成项时，就能逐项设播放方式/重复/权重。</span></div>`;
 
   g.innerHTML = `
   <div class="panel" style="grid-column:1/-1">
     <div class="panel-h">
       <h3>${I.link} 素材链编排</h3>
-      <span class="sub2">把多个片段拼成一条循环播放的长素材</span>
+      <span class="sub2">逐项配置：每项一个库，项内怎么轮 × 项间怎么走</span>
       <div class="spacer" style="flex:1"></div>
       <div class="sel-wrap"><select class="sel" id="chainLib">
         ${usables.map(x=>`<option value="${esc(x.name)}"${x.name===L.name?' selected':''}>${esc(x.name)}（${x.clip_count} 段）</option>`).join('')}
       </select></div>
       <div class="sel-wrap"><select class="sel" id="chainMode">
-        <option value="shuffle"${S.chainMode==='shuffle'?' selected':''}>随机（等概率）</option>
-        <option value="weight"${S.chainMode==='weight'?' selected':''}>随机 · 不重复</option>
-        <option value="sequence"${S.chainMode==='sequence'?' selected':''}>顺序循环</option>
+        <option value="shuffle"${S.chainMode==='shuffle'?' selected':''}>项之间：随机（等概率）</option>
+        <option value="weight"${S.chainMode==='weight'?' selected':''}>项之间：随机 · 不重复</option>
+        <option value="sequence"${S.chainMode==='sequence'?' selected':''}>项之间：顺序</option>
       </select></div>
       <button class="btn pri" id="chainSave">保存并实时生效</button>
       <button class="btn" id="chainVerify">校验接缝</button>
     </div>
     <div class="panel-b">
-      <div class="note" style="margin-bottom:16px">${I.info}
-        <div>${modeHint[S.chainMode]}</div></div>
+      <div class="note" style="margin-bottom:14px">${I.info}
+        <div><b>项之间</b>：${outerHint[S.chainMode]}</div>
+        <div style="margin-top:5px"><b>项内部</b>：由每一项自己的「项内」下拉决定；
+          「重复」= 这一项播几轮再走；「权重」= 项间随机时被抽中的相对概率。</div>
+      </div>
       ${kindTip}${mixedTip}
       <div class="chain2">
         <div class="col2">
-          <div class="hd"><span>可用片段</span><span class="chip i">${availOk.length} 个未使用</span></div>
-          <div class="ls" id="avail">${availOk.length ? availOk.map(c=>`
-            <div class="li add" data-add="${esc(c.name)}">
-              <span class="idx">+</span><span class="nm2">${esc(c.name)}</span>
-              <span class="chip k${c.kind==='musetalk'?' m':' w'}">${KNAME[c.kind] || c.kind}</span>
-              <span class="chip ${maeCls(c.tail_head_mae)}">首尾 ${maeTxt(c.tail_head_mae)}</span>
-              <span class="chip">${c.frames} 帧</span>
-            </div>`).join('')
+          <div class="hd"><span>可用片段（可跨库）</span><span class="chip i">${candN} 个未入链</span></div>
+          <div class="ls" id="avail">${candN ? candHTML
             : '<div style="padding:26px;text-align:center;color:#98a1b0;font-size:13px">'
-              + (chainKind ? (blockedByKind ? '其他模型的片段不能加进这条链（见上方提示）' : '这个库的片段已经全部在右边了') : '这个库的片段已经全部在右边了')
+              + (chainKind ? '同模型的片段都已经在右边了' : '还没有已训练的片段')
               + '</div>'}
           </div>
           <div class="ft">
@@ -1403,22 +1576,10 @@ function renderChain(){
           </div>
         </div>
         <div class="col2">
-          <div class="hd"><span>播放顺序</span><span class="chip i">${S.chainDraft.length} 段</span></div>
-          <div class="ls" id="chain">${S.chainDraft.length ? S.chainDraft.map((n,i)=>{
-            const c = trained.find(x=>x.name===n) || {};
-            return `<div class="li">
-              <span class="idx ${i===0?'entry':''}">${i===0?'入口':i+1}</span>
-              <span class="nm2">${esc(n)}</span>
-              <span class="chip k${c.kind==='musetalk'?' m':' w'}">${KNAME[c.kind] || (c.kind||'—')}</span>
-              <span class="chip ${maeCls(c.tail_head_mae)}">首尾 ${maeTxt(c.tail_head_mae)}</span>
-              <span class="act" data-up="${i}" title="上移">▲</span>
-              <span class="act" data-down="${i}" title="下移">▼</span>
-              <span class="act del" data-del="${i}" title="移除">✕</span>
-            </div>`;}).join('')
-            : `<div style="padding:26px;text-align:center;color:#98a1b0;font-size:13px">
-                 从左边点片段加进来。<br><span style="font-size:12px">建议第一段选动作最中性的（如深呼吸/微点头）</span></div>`}
-          </div>
-          <div class="ft"><span class="hint" style="font-size:12px">顺序就是实际播放顺序，可上移/下移调整</span></div>
+          <div class="hd"><span>项 · 播放顺序</span><span class="chip i">${itemCount} 项 · ${segCount} 段</span></div>
+          <div class="ls" id="chain">${itemsHTML}</div>
+          <div class="ft"><span class="hint" style="font-size:12px">
+            项序 = 播放顺序；项内片段顺序 = 项内顺序；第一项第一段 = 入口</span></div>
         </div>
       </div>
       <div id="seamBox" style="margin-top:18px"></div>
@@ -1426,72 +1587,108 @@ function renderChain(){
   </div>`;
 
   $('chainMode').onchange = e => { S.chainMode = e.target.value; renderChain(); };
-  $('chainLib').onchange = e => { S.chainLib = e.target.value; S.chainDraft = null; renderChain(); };
+  $('chainLib').onchange = e => { S.chainLib = e.target.value; S.chainItems = null; renderChain(); };
+  // 项控制：上移/下移/删除【整项】、把片段移出本项
   $('chain').onclick = e => {
-    const up = e.target.getAttribute('data-up'), dn = e.target.getAttribute('data-down'),
-          dl = e.target.getAttribute('data-del'), a = S.chainDraft;
-    if (up != null){ const i = +up; if (i>0){ [a[i-1],a[i]]=[a[i],a[i-1]]; renderChain(); } }
-    else if (dn != null){ const i = +dn; if (i<a.length-1){ [a[i+1],a[i]]=[a[i],a[i+1]]; renderChain(); } }
-    else if (dl != null){ a.splice(+dl,1); renderChain(); }
+    const t = e.target, a = S.chainItems;
+    const irm = t.getAttribute('data-irm'), iup = t.getAttribute('data-iup'),
+          idn = t.getAttribute('data-idown'), idl = t.getAttribute('data-idel'),
+          isp = t.getAttribute('data-isplit');
+    if (isp != null){
+      // 把「一项多段」拆成「每段一项」，继承同一份项内模式/重复/权重
+      const i = +isp, it = a[i];
+      const repl = it.clips.map(n => ({lib: it.lib, mode: it.mode, repeat: it.repeat,
+                                       weight: it.weight, clips: [n]}));
+      a.splice(i, 1, ...repl);
+      renderChain(); return;
+    }
+    if (irm != null){
+      const p = irm.split(':'), i = Number(p[0]), j = Number(p[1]);
+      a[i].clips.splice(j, 1);
+      if (!a[i].clips.length) a.splice(i, 1);      // 项空了就自动删项
+      renderChain(); return;
+    }
+    if (iup != null){ const i = +iup; if (i > 0){ [a[i-1],a[i]]=[a[i],a[i-1]]; renderChain(); } return; }
+    if (idn != null){ const i = +idn; if (i < a.length-1){ [a[i+1],a[i]]=[a[i],a[i+1]]; renderChain(); } return; }
+    if (idl != null){ a.splice(+idl, 1); renderChain(); return; }
   };
+  // 逐项参数：项内模式 / 重复次数 / 权重 / 项内加片段
+  $('chain').onchange = e => {
+    const t = e.target, a = S.chainItems;
+    const im = t.getAttribute('data-imode'), ir = t.getAttribute('data-irepeat'),
+          iw = t.getAttribute('data-iweight'), ia = t.getAttribute('data-iadd');
+    if (im != null){ a[+im].mode = t.value; renderChain(); return; }
+    if (ir != null){ a[+ir].repeat = Math.min(999, Math.max(1, parseInt(t.value, 10) || 1)); renderChain(); return; }
+    if (iw != null){ a[+iw].weight = Math.max(0, Number(t.value) || 0); renderChain(); return; }
+    if (ia != null && t.value){ addClipToLibItem(a[+ia].lib, t.value); renderChain(); return; }
+  };
+  // 左侧候选：点片段 → 加进它所属库的那一项（没有这一项就新建，追加在最后）
   $('avail').onclick = e => {
-    const li = e.target.closest('[data-add]'); if (!li) return;
-    S.chainDraft.push(li.getAttribute('data-add')); renderChain();
-  };
-  // 「全部加入」也必须遵守单模型约束：混着加进去保存会被服务端拒绝
-  $('chainAll').onclick = () => {
-    const k0 = S.chainDraft.length
-      ? (trained.find(c=>c.name===S.chainDraft[0]) || {}).kind : null;
-    const kk = k0 || (trained[0] || {}).kind;
-    let skipped = 0;
-    trained.forEach(c=>{
-      if (S.chainDraft.includes(c.name)) return;
-      if (kk && c.kind !== kk){ skipped++; return; }   // 不同模型：跳过
-      S.chainDraft.push(c.name);
-    });
-    if (skipped) toast(`已跳过 ${skipped} 个不同模型的片段（不能混编）`, 4200);
+    const li = e.target.closest('[data-addclip]'); if (!li) return;
+    addClipToLibItem(li.getAttribute('data-addlib'), li.getAttribute('data-addclip'));
     renderChain();
   };
-  $('chainClear').onclick = () => { S.chainDraft = []; renderChain(); };
+  // 「全部加入」也遵守单模型约束：混着加进去保存会被服务端拒绝
+  $('chainAll').onclick = () => {
+    const kk = draftKind(S.chainItems);
+    let added = 0, skipped = 0;
+    S.libs.filter(x => x.clip_count > 0).forEach(LB => {
+      (LB.clips || []).filter(c => c.trained).forEach(c => {
+        if (kk && c.kind !== kk){ skipped++; return; }   // 不同模型：跳过
+        addClipToLibItem(LB.name, c.name); added++;
+      });
+    });
+    toast(`已加入 ${added} 个片段` + (skipped ? `，跳过 ${skipped} 个其他模型的片段（不能混编）` : ''), 4200);
+    renderChain();
+  };
+  $('chainClear').onclick = () => { S.chainItems = []; renderChain(); };
   $('chainSave').onclick = async () => {
-    if (!S.chainDraft.length){ toast('素材链至少要有一段', 2600, true); return; }
-    const j = await jpost(`/api/libs/${q(L.name)}/playlist`, {clips:S.chainDraft, mode:S.chainMode});
+    const groups = itemsToGroups(S.chainItems);
+    const segN = groups.reduce((a, g) => a + g.clips.length, 0);
+    if (!segN){ toast('素材链至少要有一段', 2600, true); return; }
+    const j = await jpost(`/api/libs/${q(L.name)}/playlist`, {groups, mode: S.chainMode});
     if (j.code !== 0){ toast('保存失败：' + j.msg, 5000, true); return; }
     const n = ((j.data||{}).reloaded_sessions||[]).length;
-    toast(n ? `已保存，并实时生效到 ${n} 个正在运行的会话` : '已保存（当前无活跃会话，下次连接即生效）', 4200);
+    toast(n ? `已保存（${groups.length} 项 / ${segN} 段），并实时生效到 ${n} 个正在运行的会话`
+            : `已保存（${groups.length} 项 / ${segN} 段）· 当前无活跃会话，下次连接即生效`, 4600);
     await loadAll();
   };
-  $('chainVerify').onclick = async () => {
-    const j = await jget(`/api/libs/${q(L.name)}`);
-    if (j.code !== 0){ toast('读取失败：' + j.msg, 4000, true); return; }
-    const clips = j.data.clips || [];
-    const map = {}; clips.forEach(c => map[c.name] = c);
-    const order = S.chainDraft.length ? S.chainDraft : clips.map(c=>c.name);
-    let worstAll = 0;
-    let rows = '';
-    order.forEach((n,i)=>{
-      const c = map[n] || {};
-      const v = c.tail_head_mae, sv = c.seam_from_prev_mae;
-      const w = Math.max(v==null?0:v, sv==null?0:sv);
-      if (i>0) worstAll = Math.max(worstAll, w);
+  $('chainVerify').onclick = () => {
+    // 直接用手上的 S.libs 元数据（已带 tail_head_mae / seam_from_prev_mae），不多打接口
+    const flat = [];
+    S.chainItems.forEach((it, ii) => it.clips.forEach((n, jj) =>
+      flat.push({lib: it.lib, name: n, item: ii + 1, idx: jj + 1})));
+    if (!flat.length){ toast('先往链里加片段，再校验接缝', 3000, true); return; }
+    let worstAll = 0, rows = '';
+    flat.forEach((o, i) => {
+      const c = clipMeta(o.lib, o.name) || {};
+      const v = c.tail_head_mae;
+      // 接缝 MAE 是按【同库内相邻】算的；跨项/跨库的接缝没有实测数据 → 只在本项内非首段显示
+      const sv = (o.idx > 1) ? c.seam_from_prev_mae : null;
+      const w = Math.max(v == null ? 0 : v, sv == null ? 0 : sv);
+      if (i > 0) worstAll = Math.max(worstAll, w);
       rows += `<tr>
-        <td><span class="chip ${i===0?'i':''}">${i===0?'入口':i+1}</span></td>
-        <td style="font-weight:600">${esc(n)}</td>
+        <td><span class="chip ${i===0?'i':''}">${i===0?'入口':'#'+(i+1)}</span></td>
+        <td><span class="chip">项${o.item}.${o.idx}</span></td>
+        <td style="font-weight:600">${esc(o.name)}
+          <span style="color:#98a1b0;font-size:12px">${esc(o.lib)}</span></td>
         <td>${v==null?'—':`<span class="chip ${maeCls(v)}">${maeTxt(v)}</span>`}</td>
-        <td>${sv==null?'<span style="color:#98a1b0">第一段</span>':`<span class="chip ${maeCls(sv)}">${maeTxt(sv)}</span>`}</td>
-        <td>${w===0 && v==null ? '—' : `<span class="chip ${maeCls(w)}">${maeWord(w)}</span>`}</td></tr>`;
+        <td>${sv==null?'<span style="color:#98a1b0">—</span>':`<span class="chip ${maeCls(sv)}">${maeTxt(sv)}</span>`}</td>
+        <td>${v==null?'—':`<span class="chip ${maeCls(w)}">${maeWord(w)}</span>`}</td></tr>`;
     });
     $('seamBox').innerHTML = `<div class="panel" style="box-shadow:none">
       <div class="panel-h"><h3>接缝质量校验</h3>
-        <span class="sub2">段内首尾差异 与 上一段尾→本段头 的像素差（越小越无缝）</span>
+        <span class="sub2">段内首尾差异 与 同项内上一段尾→本段头 的像素差（越小越无缝）</span>
         <div class="spacer" style="flex:1"></div>
         <span class="chip ${maeCls(worstAll)}">整条链最差 ${maeTxt(worstAll)} · ${maeWord(worstAll)}</span></div>
       <div class="panel-b" style="padding:0">
-        <table class="tb"><thead><tr><th>#</th><th>片段</th><th>段内首尾差异</th>
-          <th>接缝（上段尾→本段头）</th><th>结论</th></tr></thead><tbody>${rows}</tbody></table>
+        <table class="tb"><thead><tr><th>#</th><th>位置</th><th>片段</th>
+          <th>段内首尾差异</th><th>接缝（同项上一段）</th><th>结论</th></tr></thead>
+          <tbody>${rows}</tbody></table>
         <div style="padding:14px 18px;border-top:1px solid var(--line-2)" class="hint">
           判定标准：<b>≤1.5 优秀</b>（几乎看不出切换）· <b>1.5~3 可接受</b> · <b>&gt;3 不可用</b>（会看到明显跳变）。<br>
-          想做到无缝，最稳的办法是让每段视频的<b>首帧和尾帧是同一张图</b>（生成工具里指定首尾帧），这样段内和接缝都会接近 0。
+          接缝一列只对「同一项内相邻的两段」有实测值（跨项/跨库的切换点是硬切，没有预计算值）。<br>
+          想做到无缝，最稳的办法是让每段视频的<b>首帧和尾帧是同一张图</b>（生成工具里指定首尾帧）。
         </div>
       </div></div>`;
   };
@@ -1646,9 +1843,10 @@ function updateSelCount(){
   const sel = selList();
   const cl = sel.filter(x => x.kind === 'clip');
   const up = sel.filter(x => x.kind === 'upload');
-  // 「编排素材链」至少要 2 个片段才有意义
+  // 「编排素材链」：≥2 个片段，或者「只选 1 个库/单目录素材」（= 把整个文件夹入链）
   const bc = $('selChain');
-  if (bc) bc.classList.toggle('dis', cl.length < 2);
+  const folderOnly = !cl.length && sel.filter(x => x.kind === 'lib' || x.kind === 'self').length === 1;
+  if (bc) bc.classList.toggle('dis', !(cl.length >= 2 || folderOnly));
   // 「一键训练」只对原始视频（未训练的）有意义
   const bt = $('selTrain');
   if (bt) bt.classList.toggle('dis', !up.some(u => !u.obj.trained_as));
@@ -1912,7 +2110,9 @@ async function newLib(){
 async function newClip(){
   const lib = S.cur.lib;
   if (!lib){ toast('请先进入一个库', 2600, true); return; }
-  promptBox('新建片段文件夹', '片段是库里的一个子文件夹，通常是<b>训练产物</b>落在的地方。<br>一般不用手动建 —— 上传视频后训练会自动生成。',
+  promptBox('新建片段文件夹', '片段 = 库里的一个子文件夹，用来放<b>训练产物</b>（full_imgs / coords.pkl / mask / latents.pt）。<br>' +
+    '空文件夹会显示成<b>未训练 / 未就绪</b>，可以往里放产物；<b>但通常不用手动建</b>：<br>' +
+    '上传视频后「一键训练」会自动生成<b>同名</b>片段 —— 想让片段叫 <b>片段一</b>，把视频命名成 <code>片段一.mp4</code> 再上传即可（支持中文，≤48 字）。',
     '片段名称', '', '创建', async name => {
       const j = await jpost(`/api/libs/${q(lib)}/clips`, {name});
       if (j.code !== 0){ toast('创建失败：' + j.msg, 5000, true); return; }
@@ -2054,12 +2254,74 @@ async function doTrain(){
       await loadAll(); goTo({kind:'queue'});
     });
 }
+// 「编排素材链」入口 —— 支持两种选法：
+//   ① 选中 ≥2 个片段 → 用这些片段作草稿（必须同一个库）
+//   ② 只选中 1 个库（文件夹）→ 打开该库的链页面，并把库里**已训练片段全部预填**
+//      （= 用户要的「文件夹直接选进去」）。库内混了多种模型时不预填：
+//      混编会被服务端拒绝（一次只加载一种模型），留空让用户筛选后自己「全部加入」。
 function doChain(){
-  const sel = selList().filter(x=>x.kind==='clip');
-  if (sel.length >= 2){
-    S.chainDraft = sel.map(x=>x.name); S.chainDraftLib = sel[0].lib; S.chainLib = sel[0].lib;
-  } else { S.chainDraft = null; }
-  goTo({kind:'chain', lib:(sel[0]&&sel[0].lib) || S.cur.lib});
+  const sel = selList();
+  const clips = sel.filter(x => x.kind === 'clip');
+  const libs  = sel.filter(x => x.kind === 'lib' || x.kind === 'self');
+  const openChain = (lib) => { S.chainLib = lib; goTo({kind:'chain', lib}); };
+
+  if (libs.length > 1){
+    toast('一条素材链只能属于一个库：请只选中一个库（或只选片段）', 4600, true); return;
+  }
+
+  // ② 文件夹（库）整体入链 → 「一项 = 一个库」
+  if (!clips.length && libs.length === 1){
+    const libName = libs[0].name;
+    const L = S.libs.find(x => x.name === libName);
+    const trained = ((L && L.clips) || []).filter(c => c.trained);
+    S.chainDraftLib = libName;
+    if (!trained.length){
+      S.chainItems = [];
+      openChain(libName);
+      toast(`库「${libName}」还没有已训练好的片段 —— 请先上传视频并「一键训练」`, 5200, true);
+      return;
+    }
+    const kinds = [...new Set(trained.map(c => c.kind))];
+    if (kinds.length > 1){
+      // 混模型库：先按数量最多的那种建一项（另一种请另建一条链），不让用户面对一个必然被拒的草稿
+      const cnt = {};
+      trained.forEach(c => { cnt[c.kind] = (cnt[c.kind] || 0) + 1; });
+      const kk = Object.keys(cnt).sort((a, b) => cnt[b] - cnt[a])[0];
+      S.chainItems = [{lib: libName, mode: 'sequence', repeat: 1, weight: 1,
+                       clips: trained.filter(c => c.kind === kk).map(c => c.name)}];
+      openChain(libName);
+      toast(`库「${libName}」里混着两种模型：已先加入 ${kk} 的 ${cnt[kk]} 个片段`
+            + `（${Object.keys(cnt).filter(k => k !== kk).join('/')} 请另建一条链）`, 6000, true);
+      return;
+    }
+    S.chainItems = [{lib: libName, mode: 'sequence', repeat: 1, weight: 1,
+                     clips: trained.map(c => c.name)}];
+    openChain(libName);
+    toast(`已把「${libName}」的 ${trained.length} 个片段做成 1 项（项内顺序）`
+          + `· 可再设项内模式 / 重复轮数 / 权重`, 5000);
+    return;
+  }
+
+  // ① 片段入链（同一库内 ≥2 个）→ **每个片段单独成一项**（这样才能逐项设参数）
+  if (clips.length >= 2){
+    const libset = [...new Set(clips.map(x => x.lib))];
+    if (libset.length > 1){
+      toast('请只选同一个库里的片段 —— 一条素材链只能属于一个库（跨库请进链页面用左边候选加）', 5000, true);
+      return;
+    }
+    S.chainItems = clips.map(x => ({lib: libset[0], mode: 'sequence', repeat: 1, weight: 1,
+                                    clips: [x.name]}));
+    S.chainDraftLib = libset[0];
+    openChain(libset[0]);
+    toast(`已加入 ${clips.length} 个片段，每个单独成一项 —— 可逐项设「项内模式 / 重复 / 权重」`, 5000);
+    return;
+  }
+
+  // 兜底：混选 / 只选 1 个片段 → 打开目标库的链页面（草稿留空，由它加载已保存的链）
+  const useLib = (libs[0] && libs[0].name) || S.cur.lib || (S.libs[0] && S.libs[0].name);
+  if (!useLib){ toast('还没有任何库 —— 先点右上角「新建库」', 4000, true); return; }
+  S.chainItems = null;
+  openChain(useLib);
 }
 function doDelete(){
   const sel = selList();
@@ -2159,12 +2421,7 @@ function bind(){
   // 批量操作条：动作全部复用已有函数，避免两套逻辑各自演化
   if ($('selClear')) $('selClear').onclick = () => { S.sel.clear(); S.anchor = null; paintSelection(); updateBtns(); };
   if ($('selDel'))   $('selDel').onclick   = () => doDelete();
-  if ($('selChain')) $('selChain').onclick = () => {
-    if (selList().filter(x => x.kind === 'clip').length < 2){
-      toast('至少勾选 2 个片段才能编排素材链', 3200, true); return;
-    }
-    doChain();                       // doChain 已处理 chainDraft / chainLib / 跳转
-  };
+  if ($('selChain')) $('selChain').onclick = () => doChain();   // 内部处理「文件夹整体入链」与各提示
   if ($('selTrain')) $('selTrain').onclick = async () => {
     const ups = selList().filter(x => x.kind === 'upload' && !x.obj.trained_as);
     if (!ups.length){ toast('勾选的内容里没有「待训练」的原始视频', 3200, true); return; }
@@ -2200,7 +2457,8 @@ function bind(){
   });
   $('searchClr').onclick = () => { se.value=''; S.q=''; $('searchWrap').classList.remove('has'); renderContent(); renderCrumb(); renderSide(); se.focus(); };
   $('sortBy').onchange = e => { S.sort = e.target.value; renderContent(); };
-  $('kindBy').onchange = e => { S.kind = e.target.value; S.sel.clear(); renderContent(); renderCrumb(); };
+  $('kindBy').onchange = e => { S.kind = e.target.value; S.sel.clear(); renderContent(); renderCrumb(); renderSide(); };
+  $('showDone').onchange = e => { S.showDone = e.target.checked; renderContent(); renderCrumb(); renderSide(); };
   $('viewSeg').onclick = e => {
     const b = e.target.closest('button[data-v]'); if (!b) return;
     S.view = b.getAttribute('data-v');
@@ -2337,7 +2595,7 @@ function bind(){
       items.push({l:'查看所属库', f:()=>goTo({kind:'lib', lib})});
       items.push({hr:true});
       items.push({l:selClips.length>=2 ? `用选中的 ${selClips.length} 段编排素材链` : '编排素材链',
-        f:()=>{ if (selClips.length>=2){ S.chainDraft=selClips.map(x=>x.name); S.chainDraftLib=lib; } goTo({kind:'chain', lib}); }});
+        f:()=>{ if (selClips.length>=2){ S.chainItems = selClips.map(x=>({lib, mode:'sequence', repeat:1, weight:1, clips:[x.name]})); S.chainDraftLib=lib; } goTo({kind:'chain', lib}); }});
     }
     if (kind === 'upload'){
       items.push({l:'训练这个视频', f:()=>trainOne(lib, name)});

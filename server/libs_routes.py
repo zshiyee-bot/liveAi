@@ -111,6 +111,15 @@ def list_clips(lib):
         has_latents = os.path.isfile(os.path.join(p, 'latents.pt'))
         frames = _count_png(os.path.join(p, 'full_imgs'))
         if not has_full:
+            # 「更多 → 新建片段」建的空文件夹 / 训练中断留下的空目录。
+            # 以前这里直接 continue —— 界面上完全看不到，用户建完以为没生效（静默无效）。
+            # 保留成「未就绪」条目：会出现在「全部」与「未训练/未就绪」档里，
+            # 但 trained=False，所以进不了素材链（api_lib_playlist 会拒绝）。
+            out.append({
+                'name': nm, 'kind': 'unknown', 'frames': 0, 'duration_sec': 0.0,
+                'width': None, 'height': None, 'trained': False,
+                'tail_head_mae': None, 'empty': True,
+            })
             continue
         if has_face and has_coords:
             kind = 'wav2lip'
@@ -868,28 +877,75 @@ async def api_lib_playlist(request):
             return json_error(f"库「{lib}」不存在", code=404)
 
         p = await request.json()
-        mode = p.get('mode')
-        if mode == 'all':
+        mode_in = p.get('mode')
+        groups_in = p.get('groups')          # v2：逐项/分组链（本库内的片段可以拆成多项）
+        if mode_in == 'all':
             clips = [c['name'] for c in list_clips(lib) if c['trained']]
+            groups_in = None
+        elif groups_in:
+            # v2：逐项链。每一项 = {lib, mode(项内), clips[], repeat, weight}
+            #     · 不写 lib 时默认本库
+            #     · 平铺段名：本库片段用裸名（与 v1 逐字一致），跨库用 "库/片段"
+            norm = []
+            for g in (groups_in or []):
+                if not isinstance(g, dict):
+                    continue
+                glib = str(g.get('lib') or lib).strip() or lib
+                gclips = [str(c or '').strip() for c in (g.get('clips') or [])
+                          if str(c or '').strip()]
+                if not gclips:
+                    continue
+                item = {
+                    'lib': glib,
+                    'mode': g.get('mode') if g.get('mode') in
+                            ('sequence', 'shuffle', 'weight') else 'sequence',
+                    'clips': gclips,
+                }
+                for k in ('repeat', 'weight'):          # 逐项可调参数
+                    if g.get(k) is not None:
+                        item[k] = g[k]
+                norm.append(item)
+            if not norm:
+                return json_error("分组链里没有有效片段（每一项至少要有 1 个片段）")
+            groups_in = norm
+            clips = []
+            for it in norm:
+                for c in it['clips']:
+                    clips.append(c if it['lib'] == lib else f"{it['lib']}/{c}")
         else:
             clips = p.get('clips') or []
         if not clips:
             return json_error("没有可用的片段（请先训练）")
 
-        # 校验都在库内且已训练
-        avail = {c['name']: c for c in list_clips(lib)}
-        bad = [c for c in clips if c not in avail or not avail[c]['trained']]
+        # 校验：每段必须是「本库片段」或「别的库/片段」，且已训练。
+        # 跨库片段引擎层本就支持（avatars/wav2lip_avatar.py:133 会回退到
+        # ./data/avatars/<name>），这里只是把校验范围从「本库」放宽到「跨库」。
+        seg_kind = {}
+        bad = []
+        for c in clips:
+            if '/' in c:
+                l2, c2 = c.split('/', 1)
+                c2 = c2.strip('/')
+                if not _safe(l2)[0] or not _safe(c2)[0]:
+                    bad.append(c)
+                    continue
+                hit = next((x for x in list_clips(l2) if x['name'] == c2), None)
+            else:
+                hit = next((x for x in list_clips(lib) if x['name'] == c), None)
+            if not (hit and hit['trained']):
+                bad.append(c)
+                continue
+            seg_kind[c] = hit['kind']
         if bad:
             return json_error(f"以下片段不存在或未训练完成：{bad}")
 
-        # ⚠️ 关键校验：同一个素材链里的片段必须**同一种模型**。
-        #    原因：--model 是服务启动时的单选全局参数，一次只能加载一种模型
-        #    （wav2lip 与 musetalk 显存相加 7.2+7.1=14.3GB > 16GB 装不下）。
-        #    wav2lip 的片段只有 full_imgs/face_imgs，musetalk 只有 full_imgs/mask/latents，
-        #    混在一条链里播放会在切换段时找不到 face_imgs 或 latents.pt 而崩帧。
+        # ⚠️ 关键校验：同一条素材链里的片段必须**同一种模型**。
+        #    原因：模型是全局单选、一次只驻留一种（wav2lip 与 musetalk 显存相加
+        #    7.2+7.1=14.3GB > 16GB 装不下）。wav2lip 的片段只有 full_imgs/face_imgs，
+        #    musetalk 只有 full_imgs/mask/latents，混在一条链里播放会崩帧。
         kinds = {}
         for c in clips:
-            kinds.setdefault(avail[c]['kind'], []).append(c)
+            kinds.setdefault(seg_kind[c], []).append(c)
         if len(kinds) > 1:
             parts = []
             for k, names in kinds.items():
@@ -899,24 +955,26 @@ async def api_lib_playlist(request):
             return json_error(
                 "同一条素材链不能混用不同模型的片段，请分开编排。<br>"
                 + "<br>".join(parts)
-                + f"<br><br>提示：库内既有 wav2lip 又有 musetalk 片段时，"
-                  f"先在片段列表里按类型筛选，再勾选同一类型的片段编排。")
+                + f"<br><br>提示：跨库拼接也必须是同一种模型（wav2lip 库只能拼 wav2lip 库）。"
+                  f"库内既有 wav2lip 又有 musetalk 片段时，先按模型筛选，再勾选同类型的片段。")
 
         entry = int(p.get('entry', 0))
         if entry < 0 or entry >= len(clips):
             return json_error(f"entry 越界：{entry}")
 
-        # 播放模式：
-        #   sequence = 顺序循环（按 clips 列表顺序，播完最后一段回到第一段）
-        #   shuffle  = 随机（每段播完随机挑一段，排除刚播过的那段）
-        #   weight   = 随机但「本轮还没播过的段优先」= 时间点越靠后的段概率越大，
-        #              保证一轮内每段都出现一次（避免长段被反复抽到、短段饿死）
-        mode = p.get('mode')
-        mode = mode if mode in ('sequence', 'shuffle', 'weight') else 'shuffle'
-        if len(clips) <= 1:
+        # 播放模式（v2 下这是**项与项之间**的走法；每一项自己的 mode 由该项决定）：
+        #   sequence = 顺序循环（按列表顺序，播完最后一个回到第一个）
+        #   shuffle  = 随机（排除刚播过的那个）
+        #   weight   = 随机但「本轮还没播过的优先」，保证一轮内每个都出现一次
+        mode = mode_in if mode_in in ('sequence', 'shuffle', 'weight') else 'shuffle'
+        if len(clips) <= 1 and not groups_in:
             mode = 'sequence'   # 单段时顺序/随机等价
 
-        cfg = {"segments": clips, "entry": entry, "mode": mode, "_lib": lib}
+        if groups_in:
+            cfg = {"version": 2, "groups": groups_in, "entry": entry,
+                   "mode": mode, "_lib": lib}
+        else:
+            cfg = {"segments": clips, "entry": entry, "mode": mode, "_lib": lib}
         pl_path = os.path.join(base, PLAYLIST_NAME)
         with open(pl_path, 'w', encoding='utf-8') as f:
             json.dump(cfg, f, ensure_ascii=False, indent=2)
@@ -996,11 +1054,30 @@ def _reload_sessions_for_lib(lib):
     new_avatar = loader(lib)
     gv[lib] = new_avatar
 
-    segs = new_avatar[3] if isinstance(new_avatar, (tuple, list)) and len(new_avatar) == 4 else None
+    # wav2lip 的 load_avatar 返回 4 元组（末位=segments）；musetalk 返回 6 元组（末位=segments）。
+    # 以前只处理 len==4 → **musetalk 的素材链热重载一直是空转**（segs=None）。
+    if isinstance(new_avatar, (tuple, list)) and len(new_avatar) == 4:
+        segs = new_avatar[3]
+    elif isinstance(new_avatar, (tuple, list)) and len(new_avatar) == 6:
+        segs = new_avatar[5]
+    else:
+        segs = None
+
+    # 逐项链的分组信息与模式挂在加载器函数属性上（_load_segments.last_*），
+    # 必须一起热重载，否则新会话与旧会话的项内/项间语义会不一致。
+    _mode = None
+    _groups = None
+    try:
+        from avatars.wav2lip_avatar import _load_segments
+        _mode = getattr(_load_segments, 'last_mode', None)
+        _groups = getattr(_load_segments, 'last_groups', None)
+    except Exception:
+        pass
 
     done = []
     logger.info(f"素材链热重载：库「{lib}」开始，会话数={len(session_manager.sessions)}，"
-                f"segs={len(segs) if segs else 0} 段")
+                f"segs={len(segs) if segs else 0} 段，模式={_mode}，"
+                f"项数={len(_groups) if _groups else 0}")
     for sid, sess in list(session_manager.sessions.items()):
         if sess is None:
             logger.info(f"  会话 {sid}: None，跳过")
@@ -1012,9 +1089,10 @@ def _reload_sessions_for_lib(lib):
         if not hasattr(sess, 'reload_playlist'):
             logger.info(f"  会话 {sid}: 无 reload_playlist，跳过")
             continue
-        sess.reload_playlist(segs)
+        sess.reload_playlist(segs, mode=_mode, groups=_groups)
         done.append(sid)
-        logger.info(f"素材链热重载：会话 {sid}（库「{lib}」，{len(segs or [])} 段）")
+        logger.info(f"素材链热重载：会话 {sid}（库「{lib}」，{len(segs or [])} 段，"
+                    f"模式={_mode}，项数={len(_groups) if _groups else 0}）")
     return done
 
 
@@ -1047,8 +1125,13 @@ def _ensure_lib_compat(base, first_clip):
     warn = []
     src = os.path.join(base, first_clip)
     if not os.path.isdir(src):
-        warn.append(f"首段 {first_clip} 不存在，兼容文件未建立")
-        return warn
+        # 跨库段（lib/clip 形式）：退到 data/avatars/<lib>/<clip>
+        alt = os.path.join('./data/avatars', first_clip)
+        if os.path.isdir(alt):
+            src = alt
+        else:
+            warn.append(f"首段 {first_clip} 不存在，兼容文件未建立")
+            return warn
     for sub in ('full_imgs', 'face_imgs', 'mask'):
         s = os.path.join(src, sub)
         d = os.path.join(base, sub)

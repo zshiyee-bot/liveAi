@@ -120,7 +120,27 @@ def _load_segments(avatar_path, avatar_id, kind):
         return None
     with open(pl_path, 'r', encoding='utf-8-sig') as f:
         cfg = _json.load(f)
-    names = cfg.get('segments') or []
+    # ── 链格式 ────────────────────────────────────────────────────
+    # v1: {"segments":["a","b"], "mode":"shuffle"}                  —— 单组（= 一个库）
+    # v2: {"groups":[{"lib":"库A","mode":"sequence","clips":["1","2"]}], "mode":"shuffle"}
+    #     顶层 mode = 【组间模式】，各组 mode = 【组内模式】→ 两级自由组合
+    # 段名统一成「库名/片段名」表达跨库；组没写 lib（或就是本 avatar）时用裸片段名。
+    groups_cfg = cfg.get('groups') or None
+    names, gidx = [], []
+    if groups_cfg:
+        for gi, g in enumerate(groups_cfg):
+            if not isinstance(g, dict):
+                continue
+            glib = str(g.get('lib') or '').strip()
+            for c in (g.get('clips') or []):
+                c = str(c or '').strip()
+                if not c:
+                    continue
+                names.append(c if (not glib or glib == avatar_id) else f"{glib}/{c}")
+                gidx.append(gi)
+    else:
+        names = [str(x) for x in (cfg.get('segments') or [])]
+        gidx = [0] * len(names)
     if len(names) < 1:
         return None
 
@@ -128,7 +148,8 @@ def _load_segments(avatar_path, avatar_id, kind):
     # eager/lazy（load_frames_batch 里解释为什么不能每段各判各的），再统一加载。
     resolved = []          # [(name, base, fl, fa, coords)]
     names_used = []
-    for name in names:
+    gidx_used = []         # 每段所属组号（与 names_used 平行）
+    for _i, name in enumerate(names):
         # 先看本 avatar 子目录，再退到 data/avatars/<name>
         cand = [os.path.join(avatar_path, name), os.path.join('./data/avatars', name)]
         base = next((c for c in cand if os.path.isdir(c)), None)
@@ -144,6 +165,7 @@ def _load_segments(avatar_path, avatar_id, kind):
         else:
             resolved.append((name, base, None, None, None))
         names_used.append(name)
+        gidx_used.append(gidx[_i])
 
     if not resolved:
         return None
@@ -178,15 +200,60 @@ def _load_segments(avatar_path, avatar_id, kind):
 
     if not segs:
         return None
+    # ── 入口轮转 ──────────────────────────────────────────────────
+    # v1：按平铺段号轮转（与改动前逐字一致）
+    # v2：按【组/项】轮转 —— 入口段所在项排到最前，且该项从入口段开始；
+    #     否则入口会落到别的项里，项内语义就错乱了。
     entry = int(cfg.get('entry', 0))
-    if entry:
-        segs = segs[entry:] + segs[:entry]
-        names_used = names_used[entry:] + names_used[:entry]
-    # 段名列表挂在返回值上，供界面显示"当前正在播哪一段"
+    if entry and 0 < entry < len(segs):
+        if groups_cfg:
+            order = []
+            for _g in gidx_used:
+                if _g not in order:
+                    order.append(_g)
+            g_entry = gidx_used[entry]
+            k = order.index(g_entry)
+            order = order[k:] + order[:k]
+            perm = []
+            for _g in order:
+                idxs = [i for i, gg in enumerate(gidx_used) if gg == _g]
+                if _g == g_entry:
+                    j = idxs.index(entry) if entry in idxs else 0
+                    idxs = idxs[j:] + idxs[:j]
+                perm.extend(idxs)
+        else:
+            perm = list(range(len(segs)))[entry:] + list(range(len(segs)))[:entry]
+        segs = [segs[i] for i in perm]
+        names_used = [names_used[i] for i in perm]
+        gidx_used = [gidx_used[i] for i in perm]
+
+    # 项/组元数据（供两级 pick_next 用）：start/end 是**轮转后**的平铺段号
+    groups_meta = None
+    if groups_cfg:
+        groups_meta = []
+        for _g in sorted(set(gidx_used)):
+            idxs = [i for i, gg in enumerate(gidx_used) if gg == _g]
+            src = groups_cfg[_g] if (_g < len(groups_cfg) and isinstance(groups_cfg[_g], dict)) else {}
+            meta = {
+                'lib': str(src.get('lib') or '').strip() or avatar_id,
+                'name': str(src.get('name') or src.get('lib') or '').strip() or avatar_id,
+                'mode': src.get('mode') or 'sequence',
+                'start': min(idxs), 'end': max(idxs) + 1,
+                'clips': [names_used[i] for i in idxs],
+            }
+            # 逐项可调参数：repeat=重复几轮 / weight=被抽中的权重 / 将来可再加嵌套子组
+            for _k, _v in src.items():
+                if _k not in ('lib', 'name', 'mode', 'clips', 'start', 'end'):
+                    meta[_k] = _v
+            groups_meta.append(meta)
+        groups_meta.sort(key=lambda x: x['start'])
+
+    # 段名 / 项信息挂在函数属性上，供 init_playlist 取用
     try:
         _load_segments.last_names = names_used
-        # 播放模式（sequence / shuffle / weight）也挂上，供 init_playlist 取用
+        # 顶层 mode = 项间模式（v1 时它就是唯一模式）
         _load_segments.last_mode = cfg.get('mode') or 'shuffle'
+        _load_segments.last_groups = groups_meta
     except Exception:
         pass
     return segs
@@ -218,7 +285,8 @@ class LipReal(BaseAvatar):
         if len(avatar) == 4:
             self.frame_list_cycle, self.face_list_cycle, self.coord_list_cycle, segs = avatar
             _mode = getattr(_load_segments, 'last_mode', None)
-            self.init_playlist(segs, mode=_mode)
+            self.init_playlist(segs, mode=_mode,
+                               groups=getattr(_load_segments, 'last_groups', None))
         else:
             self.frame_list_cycle, self.face_list_cycle, self.coord_list_cycle = avatar
             self.init_playlist(None)
