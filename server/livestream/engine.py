@@ -234,7 +234,17 @@ class LiveStreamRuntime:
             while len(self._inflight) <= self._prefetch:
                 item = await self.queue.get_next()
                 if item is None:
-                    break
+                    # 队列干涸：auto-fill 每 3 秒才补一条，等它就是「话术之间出现空白」。
+                    # 这里直接向话术库要一条（random_pick 内部已做权重 + 最近 N 条不重复）。
+                    filler = getattr(self.queue, '_script_manager', None)
+                    if filler is not None:
+                        try:
+                            item = await filler.random_pick()
+                        except Exception as e:
+                            logger.warning(f"[ls] 话术库补位失败: {e}")
+                            item = None
+                    if item is None:
+                        break
                 try:
                     await self._do_send(item)
                 except Exception as e:
@@ -281,7 +291,10 @@ class LiveStreamRuntime:
     async def _pump_watchdog(self):
         """兜底：事件丢失 / 启动瞬间也能推进（绝不能因为没有 end 事件就停摆）。"""
         while self.running:
-            await asyncio.sleep(1.0)
+            # 窗口空时用更密的节拍（0.5s）补位，缩小「无话可说」的空窗
+            async with self._lock:
+                n0 = len(self._inflight)
+            await asyncio.sleep(0.5 if n0 == 0 else 1.0)
             try:
                 async with self._lock:
                     n = len(self._inflight)
