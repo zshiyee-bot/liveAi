@@ -325,6 +325,54 @@ async def api_settings_reload(request):
     return reply_envelope(info)
 
 
+# ── 语音合成（豆包 TTS）───────────────────────────────────────────
+# 与素材页「本链音色」共用**同一份存储** data/tts_config.json（唯一真源），
+# 不写 LiveStream 的 DB。原因：start.bat 在服务启动前就要读它决定用 doubao 还是
+# 回退 edgetts，而启动脚本读不到 SQLite；两边写同一文件就不会出现"两处不一致"。
+async def api_tts_config_get(request):
+    await ensure_ready()
+    from server import tts_routes as tr
+    key = tr._doubao_api_key()
+    cfg = tr.read_tts_config()
+    opt = request.app.get("opt")
+    return reply_envelope({
+        "has_key": bool(key),
+        "key_masked": tr._mask(key),
+        "resource_id": cfg.get("doubao_resource_id") or "seed-tts-2.0",
+        "engine": getattr(opt, "tts", "") if opt else "",
+        "ref_file": getattr(opt, "REF_FILE", "") if opt else "",
+    })
+
+
+async def api_tts_config_put(request):
+    await ensure_ready()
+    body = await _body(request)
+    from server import tts_routes as tr
+    patch = {}
+    if body.get("doubao_api_key") is not None:
+        patch["doubao_api_key"] = str(body.get("doubao_api_key") or "").strip()
+    if body.get("doubao_resource_id") is not None:
+        rid = str(body.get("doubao_resource_id") or "").strip()
+        if rid not in tr.RESOURCE_IDS:
+            return fail("resource_id 只能是 " + " 或 ".join(tr.RESOURCE_IDS))
+        patch["doubao_resource_id"] = rid
+    if not patch:
+        return fail("没有要保存的字段")
+    cur = tr._write_tts_config(patch)          # 同一份存储 + 同步 tts_key_ok.flag
+    key = str(cur.get("doubao_api_key") or tr._doubao_api_key() or "").strip()
+    logger.info("[ls] 豆包 TTS 配置已保存：resource_id=%s, key=%s",
+                cur.get("doubao_resource_id"), tr._mask(key))
+    opt = request.app.get("opt")
+    return reply_envelope({
+        "has_key": bool(key),
+        "key_masked": tr._mask(key),
+        "resource_id": cur.get("doubao_resource_id") or "seed-tts-2.0",
+        "engine": getattr(opt, "tts", "") if opt else "",
+        "ref_file": getattr(opt, "REF_FILE", "") if opt else "",
+        "note": "已立即生效（无需重启）；双击 start.bat 会自动用豆包复刻音色",
+    })
+
+
 # ── 话术 ─────────────────────────────────────────────────────────
 async def api_scripts_list(request):
     await ensure_ready()
@@ -800,6 +848,10 @@ def setup_livestream_routes(app):
     app.router.add_get(f"{p}/api/settings", api_settings_get)
     app.router.add_put(f"{p}/api/settings", api_settings_put)
     app.router.add_post(f"{p}/api/settings/reload", api_settings_reload)
+
+    # 语音合成（豆包 TTS）：与素材页「本链音色」共用 data/tts_config.json
+    app.router.add_get(f"{p}/api/tts/config", api_tts_config_get)
+    app.router.add_put(f"{p}/api/tts/config", api_tts_config_put)
 
     app.router.add_get(f"{p}/api/scripts", api_scripts_list)
     app.router.add_post(f"{p}/api/scripts", api_scripts_create)
