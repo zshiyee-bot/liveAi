@@ -55,7 +55,16 @@ class PlayerStreamTrack(MediaStreamTrack):
         super().__init__()  # don't forget this!
         self.kind = kind
         self._player = player
-        self._queue = queue.Queue(maxsize=100)
+        # 队列容量按「能不能丢」分离（原来两者都是 100，且都用阻塞 put）：
+        #   音频 100 块 = 只有 2 秒 —— TTS 是「一次性把整段推下来」的，
+        #     2 秒缓冲一满，push_audio 的阻塞 put 就把 process_frames 线程卡死
+        #     → 视频也停了（观众看到画面卡停）+ 音频出现断裂（破音）。
+        #     音频绝对不能丢（丢 1 块 = 20ms 断音 = 咔哒声），所以给足 30 秒：
+        #     1500 块 × 640 B ≈ 1 MB，代价可忽略。
+        #   视频可以丢最旧帧（消费端本来按 40ms 节拍走，丢帧只是画面轻微跳），
+        #     丢最旧远好过阻塞整条管线。
+        self._queue = queue.Queue(maxsize=1500 if kind == 'audio' else 60)
+        self._dropped = 0
         self.timelist = [] #记录最近包的时间戳
         self.current_frame_count = 0
         if self.kind == 'video':
@@ -190,14 +199,39 @@ class HumanPlayer:
     def push_video(self, frame):
         from av import VideoFrame
         new_frame = VideoFrame.from_ndarray(frame, format="bgr24")
-        self.__video._queue.put((new_frame, None))
+        q = self.__video._queue
+        try:
+            q.put_nowait((new_frame, None))
+        except queue.Full:
+            # 丢最旧帧，绝不阻塞（阻塞 = 整条管线停摆）
+            try:
+                q.get_nowait()
+            except queue.Empty:
+                pass
+            try:
+                q.put_nowait((new_frame, None))
+            except queue.Full:
+                pass
+            self.__video._dropped += 1
+            if self.__video._dropped <= 3 or self.__video._dropped % 100 == 0:
+                mylogger.warning('视频队列满(%d)，丢最旧帧累计 %d 次', q.maxsize, self.__video._dropped)
 
     def push_audio(self, frame, eventpoint=None):
         from av import AudioFrame
         new_frame = AudioFrame(format='s16', layout='mono', samples=frame.shape[0])
         new_frame.planes[0].update(frame.tobytes())
         new_frame.sample_rate = 16000
-        self.__audio._queue.put((new_frame, eventpoint))
+        q = self.__audio._queue
+        try:
+            q.put_nowait((new_frame, eventpoint))
+        except queue.Full:
+            # 30 秒深队列仍满 = 消费端严重落后。此时宁可阻塞也不能丢块（丢=破音）。
+            mylogger.warning('音频队列已满(%d 块 ≈ %.0f 秒)，阻塞等待消费', q.maxsize, q.maxsize * 0.02)
+            q.put((new_frame, eventpoint))
+        else:
+            n = q.qsize()
+            if n >= 500 and n % 100 == 0:
+                mylogger.warning('音频积压 %d 块(≈%.0f 秒)，消费端跟不上', n, n * 0.02)
 
     def get_buffer_size(self) -> int:
         return self.__video._queue.qsize()

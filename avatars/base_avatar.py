@@ -943,12 +943,13 @@ class BaseAvatar:
         self.quit_event = quit_event
 
         # 输出队列背压参数（可用环境变量调）：
-        #   原来 buffer_size>=5 就 sleep(0.04*qsize*0.8)（qsize=8 时睡 256ms），
-        #   稳态缓冲只有 5~8 帧（200~320ms）→ 推理线程一旦因「静音↔说话」状态切换、
-        #   TTS 首块等待卡住 200~300ms，队列立刻被抽干 → 推流端无帧可发 = 观众看到的卡顿/掉档。
-        #   现在保留 _PACE_HEADROOM 帧的缓冲余量（默认 5 帧 = 200ms），稳态 qsize 抬到 ~10 帧，
-        #   用缓冲吸收抖动；只有缓冲吃满才 sleep（比例控制方向不变，仍防积压）。
-        _PACE_HEADROOM = int(os.getenv('LT_PACE_HEADROOM', '5'))
+        #   ⚠️ 默认 0 = 与改动前逐字一致的行为（sleep(0.04*buffer_size*0.8)）。
+        #   我曾把默认值设成 5（保留 200ms 缓冲），但实测它会让 render 线程「少睡」→
+        #   音频生产变快 → 把当时只有 2 秒的音频队列灌满 → process_frames 阻塞
+        #   → 画面卡停 + 音频断裂（破音）。所以默认回退 0；
+        #   队列容量已在 server/webrtc.py 里按音视频分离（音频 30 秒深、视频丢最旧），
+        #   要再试缓冲余量时用环境变量 LT_PACE_HEADROOM=5 单独试。
+        _PACE_HEADROOM = int(os.getenv('LT_PACE_HEADROOM', '0'))
         _PACE_HIGH = int(os.getenv('LT_PACE_HIGH', '40'))
         self.init_customindex()
         self.tts.render(quit_event)
