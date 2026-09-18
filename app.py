@@ -291,6 +291,11 @@ def main():
                 loop.run_until_complete(rtc_manager.handle_rtcpush(push_url, str(k)))
         loop.run_forever()    
     #Thread(target=run_server, args=(web.AppRunner(appasync),)).start()
+    # 最后一道保险：确保「控制台输出」走独立线程。任何第三方库在 import 时若调用
+    # logging.basicConfig()（会给 root 装直写控制台的 StreamHandler），都会在这里
+    # 被换成队列版 —— 否则 cmd 窗口一进「选择」态就可能把整个服务冻死。
+    from utils.logger import install_safe_console_logging
+    install_safe_console_logging()
     run_server(web.AppRunner(appasync))
 
     #app.on_shutdown.append(on_shutdown)

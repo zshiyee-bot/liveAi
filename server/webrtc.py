@@ -41,7 +41,11 @@ from aiortc import (
     MediaStreamTrack,
 )
 
-logging.basicConfig()
+# 注意：这里原本是 logging.basicConfig()，它会给 root logger 装一个「直写控制台」的
+# StreamHandler —— 这正是 2026-09-18 服务彻底假死的根因：cmd 窗口进入「选择/快速
+# 编辑」状态时，Windows 会挂住进程写控制台的调用，该线程攥着 logging handler 的
+# 锁不放，于是其它线程（渲染/推理/事件循环）一打日志就永久阻塞。
+# 控制台输出已统一交给 utils/logger.py 的独立线程（队列版）负责，这里不再配置 logging。
 logger = logging.getLogger(__name__)
 from utils.logger import logger as mylogger
 
