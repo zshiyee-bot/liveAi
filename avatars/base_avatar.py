@@ -797,8 +797,14 @@ class BaseAvatar:
                     target_frame = self.custom_img_cycle[audiotype][mirindex]
                     self.custom_index[audiotype] += 1
                 elif self.use_playlist and isinstance(idx, tuple):
-                    # 素材链：静音期取当前段的全身图（架构上保留该路径）
-                    target_frame = self.get_current_segment()[0][idx[1]]
+                    # 素材链静音期：**必须用队列里那一帧所属的段**，绝不能用实时播放头。
+                    # 根因（实测交付帧标 段2:180..183 一闪而过）：切换瞬间实时播放头已
+                    # 前进到下一段，而队列里还有上一段的旧帧号，用 get_current_segment()
+                    # 就会「新段 + 旧帧号」→ 渲染出新片段尾部约 4 帧（~160ms）的跳变。
+                    _seg = self.playlist[idx[0]] if 0 <= idx[0] < len(self.playlist) \
+                        else self.get_current_segment()
+                    _fi = min(max(0, int(idx[1])), len(_seg[0]) - 1)
+                    target_frame = _seg[0][_fi]
                 else:
                     target_frame = self.frame_list_cycle[idx]
                 
