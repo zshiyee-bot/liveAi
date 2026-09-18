@@ -881,6 +881,25 @@ def setup_livestream_routes(app):
 
     app.router.add_get(f"{p}/ws", ls_ws)
 
+    # 未知的 /ls/api/* 请求：明确返回 JSON 404，而不是被下面的 SPA 兜底伪装成 HTML 200。
+    # 背景：静态兜底只注册了 GET，于是「进程比代码旧、新接口没注册」时表现为
+    #   GET  -> 200 + index.html（前端拿到 HTML，报解析/undefined 类错误）
+    #   PUT  -> 405 Allow=GET,HEAD,OPTIONS（浏览器控制台里最难查的一种症状）
+    # 加这一条后，同样的场景会得到 404 + 明确中文提示。
+    async def api_not_found(request):
+        tail = request.match_info.get('tail', '')
+        logger.warning("[ls] 未注册的接口请求：%s %s（若刚更新过代码，请重启服务）",
+                       request.method, request.path)
+        return fail(f"接口不存在：{request.method} /ls/api/{tail}"
+                    f"（若刚更新过代码，说明服务进程还是旧版本，请重启）", status=404)
+
+    # 注意：不能用 add_route('*', ...) —— app.py 的 aiohttp_cors 会对每个资源调
+    # add_preflight_handler，遇到 '*' 通配处理器会直接抛
+    #   ValueError: <DynamicResource /ls/api/{tail}> already has a '*' handler for all methods
+    # 导致服务起不来。所以逐个方法显式注册。
+    for _m in ('GET', 'POST', 'PUT', 'DELETE', 'PATCH'):
+        app.router.add_route(_m, f"{p}/api/{{tail:.*}}", api_not_found)
+
     # 静态兜底必须最后注册
     app.router.add_get(p, ls_static)
     app.router.add_get(f"{p}/{{tail:.*}}", ls_static)
