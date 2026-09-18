@@ -1496,7 +1496,18 @@ async function voiceCheck(){
   if (msg) msg.innerHTML = '正在向火山查询音色状态…';
   const rid = ($('voiceRid') && $('voiceRid').value) || 'seed-tts-2.0';
   const j = await vreq('POST', '/api/tts/voice_check', {ref_file: ref, resource_id: rid});
-  if (j.code !== 0){ if (msg) msg.innerHTML = '<b style="color:#b91c1c">查询失败</b>：' + esc(j.msg); return; }
+  if (j.code !== 0){
+    const m = String(j.msg || '');
+    // 45000030 = 「音色管理」资源未开通。该查询接口要单独开通，与合成无关，
+    // 所以这里自动降级成「合成自检」——真正决定能不能出声的那条链路。
+    if (m.indexOf('45000030') >= 0 || m.indexOf('not granted') >= 0 || m.indexOf('开通') >= 0){
+      if (msg) msg.innerHTML = '<span style="color:#b45309">音色状态查询需要单独开通「音色管理」资源（不影响合成）→ 自动改用合成自检：</span>';
+      await voiceSelfTest(true);
+      return;
+    }
+    if (msg) msg.innerHTML = '<b style="color:#b91c1c">查询失败</b>：' + esc(m);
+    return;
+  }
   const d = j.data || {}, ok = !!d.usable;
   if (msg) msg.innerHTML =
     `音色 <b>${esc(d.ref_file || ref)}</b>：<b style="color:${ok ? '#15803d' : '#b45309'}">${esc(d.status_text || '未知')}</b>`
@@ -1509,20 +1520,21 @@ async function voiceCheck(){
         : '<br><span style="font-size:12px">该音色没有官方试听音频（预置音色无 demo_audio）→ 保存后直接在直播里听</span>');
 }
 
-async function voiceSelfTest(){
+async function voiceSelfTest(append){
   // 真发一次极短合成：直接回答"能不能出声"，比查音色状态更接近实际使用
   const rid = ($('voiceRid') && $('voiceRid').value) || 'seed-tts-2.0';
   const ref = ($('voiceRef').value || '').trim();
   if (rid === 'seed-icl-2.0' && !ref){ toast('复刻音色请先填你自己的音色ID', 3200, true); return; }
   const msg = $('voiceMsg');
-  if (msg) msg.innerHTML = '正在真发一次合成自检（2 个字）…';
+  const pre = append && msg ? msg.innerHTML + '<br>' : '';
+  if (msg && !append) msg.innerHTML = '正在真发一次合成自检（2 个字）…';
   const j = await vreq('POST', '/api/tts/selftest', {resource_id: rid, speaker: ref, text: '你好'});
   if (j.code !== 0){
-    if (msg) msg.innerHTML = '<b style="color:#b91c1c">合成自检失败</b>：<br>' + esc(j.msg);
+    if (msg) msg.innerHTML = pre + '<b style="color:#b91c1c">合成自检失败</b>：<br>' + esc(j.msg);
     return;
   }
   const d = j.data || {};
-  if (msg) msg.innerHTML =
+  if (msg) msg.innerHTML = pre +
     `<b style="color:#15803d">合成自检通过</b>：解出音频 <b>${d.audio_bytes || 0}</b> 字节`
     + ` · 音色 ${esc(d.speaker || '')} · 资源 ${esc(d.resource_id || '')}`
     + `<br><span style="font-size:12px">${esc(d.note || '')}</span>`;
@@ -1685,7 +1697,7 @@ function renderChain(){
           <option value="seed-icl-2.0">声音复刻音色（克隆）</option>
         </select></div>
         <button class="btn pri" id="voiceSave">保存到本链</button>
-        <button class="btn" id="voiceCheck">校验 / 试听</button>
+        <button class="btn" id="voiceCheck" title="查询音色状态（需另开通「音色管理」资源；未开通时自动改用合成自检）">查询音色状态</button>
         <button class="btn" id="voiceSelfTest" title="真发一次 2 字合成，直接回答「能不能出声」">🔊 合成自检</button>
         <button class="btn" id="voiceClear">清除</button>
         <span style="flex:1"></span>
@@ -1777,7 +1789,7 @@ function renderChain(){
   S.voiceLib = L.name;
   if ($('voiceSave')) $('voiceSave').onclick = voiceSave;
   if ($('voiceCheck')) $('voiceCheck').onclick = voiceCheck;
-  if ($('voiceSelfTest')) $('voiceSelfTest').onclick = voiceSelfTest;
+  if ($('voiceSelfTest')) $('voiceSelfTest').onclick = function () { voiceSelfTest(false); };
   if ($('voiceClear')) $('voiceClear').onclick = voiceClear;
   if ($('voiceKeySave')) $('voiceKeySave').onclick = voiceKeySave;
   syncVoiceBox(L.name);
