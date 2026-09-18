@@ -1494,7 +1494,8 @@ async function voiceCheck(){
   if (!ref){ toast('请先填音色ID', 2600, true); return; }
   const msg = $('voiceMsg');
   if (msg) msg.innerHTML = '正在向火山查询音色状态…';
-  const j = await vreq('POST', '/api/tts/voice_check', {ref_file: ref});
+  const rid = ($('voiceRid') && $('voiceRid').value) || 'seed-tts-2.0';
+  const j = await vreq('POST', '/api/tts/voice_check', {ref_file: ref, resource_id: rid});
   if (j.code !== 0){ if (msg) msg.innerHTML = '<b style="color:#b91c1c">查询失败</b>：' + esc(j.msg); return; }
   const d = j.data || {}, ok = !!d.usable;
   if (msg) msg.innerHTML =
@@ -1506,6 +1507,25 @@ async function voiceCheck(){
         ? `<br><audio controls preload="none" style="margin-top:6px;height:32px" src="${esc(d.demo_audio)}"></audio>`
           + `<a href="${esc(d.demo_audio)}" target="_blank" style="margin-left:8px;font-size:12px">官方试听音频（1 小时有效）</a>`
         : '<br><span style="font-size:12px">该音色没有官方试听音频（预置音色无 demo_audio）→ 保存后直接在直播里听</span>');
+}
+
+async function voiceSelfTest(){
+  // 真发一次极短合成：直接回答"能不能出声"，比查音色状态更接近实际使用
+  const rid = ($('voiceRid') && $('voiceRid').value) || 'seed-tts-2.0';
+  const ref = ($('voiceRef').value || '').trim();
+  if (rid === 'seed-icl-2.0' && !ref){ toast('复刻音色请先填你自己的音色ID', 3200, true); return; }
+  const msg = $('voiceMsg');
+  if (msg) msg.innerHTML = '正在真发一次合成自检（2 个字）…';
+  const j = await vreq('POST', '/api/tts/selftest', {resource_id: rid, speaker: ref, text: '你好'});
+  if (j.code !== 0){
+    if (msg) msg.innerHTML = '<b style="color:#b91c1c">合成自检失败</b>：<br>' + esc(j.msg);
+    return;
+  }
+  const d = j.data || {};
+  if (msg) msg.innerHTML =
+    `<b style="color:#15803d">合成自检通过</b>：解出音频 <b>${d.audio_bytes || 0}</b> 字节`
+    + ` · 音色 ${esc(d.speaker || '')} · 资源 ${esc(d.resource_id || '')}`
+    + `<br><span style="font-size:12px">${esc(d.note || '')}</span>`;
 }
 
 async function voiceClear(){
@@ -1666,6 +1686,7 @@ function renderChain(){
         </select></div>
         <button class="btn pri" id="voiceSave">保存到本链</button>
         <button class="btn" id="voiceCheck">校验 / 试听</button>
+        <button class="btn" id="voiceSelfTest" title="真发一次 2 字合成，直接回答「能不能出声」">🔊 合成自检</button>
         <button class="btn" id="voiceClear">清除</button>
         <span style="flex:1"></span>
         <input class="inp" id="voiceKey" type="password" placeholder="豆包 API Key（只存本机 data/）" style="min-width:210px">
@@ -1756,6 +1777,7 @@ function renderChain(){
   S.voiceLib = L.name;
   if ($('voiceSave')) $('voiceSave').onclick = voiceSave;
   if ($('voiceCheck')) $('voiceCheck').onclick = voiceCheck;
+  if ($('voiceSelfTest')) $('voiceSelfTest').onclick = voiceSelfTest;
   if ($('voiceClear')) $('voiceClear').onclick = voiceClear;
   if ($('voiceKeySave')) $('voiceKeySave').onclick = voiceKeySave;
   syncVoiceBox(L.name);

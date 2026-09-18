@@ -25,6 +25,7 @@ import os
 import json
 import uuid
 import asyncio
+import base64
 
 import requests
 from aiohttp import web
@@ -35,6 +36,8 @@ AVATARS_ROOT = './data/avatars'
 PLAYLIST_NAME = 'playlist.json'
 TTS_CONFIG_PATH = './data/tts_config.json'
 DOUBAO_VOICE_URL = 'https://openspeech.bytedance.com/api/v3/tts/get_voice'
+# 合成接口（真正决定"能不能出声"）——「合成自检」用它发一次极短文本
+DOUBAO_SYNTH_URL = 'https://openspeech.bytedance.com/api/v3/tts/unidirectional'
 
 # 火山官方 resource_id：预置大模型音色 / 声音复刻音色
 RESOURCE_IDS = {
@@ -255,7 +258,7 @@ async def api_tts_voice_options(request):
                          'preset_voices': KNOWN_PRESET_VOICES})
 
 
-def _get_voice_sync(ref_file, custom_speaker_id=''):
+def _get_voice_sync(ref_file, custom_speaker_id='', resource_id=''):
     """同步查一个音色（在线程池里跑）。"""
     key = _doubao_api_key()
     if not key:
@@ -268,6 +271,12 @@ def _get_voice_sync(ref_file, custom_speaker_id=''):
         'X-Api-Key': key,
         'X-Api-Request-Id': str(uuid.uuid4()),
     }
+    # 这个头必须显式发：不发火山会拿它自己推断的资源去比对音色归属，
+    # 一律返回 500/55000000「resource ID is mismatched with speaker related resource」
+    # （实测：连标准预置音色 zh_female_vv_uranus_bigtts 也报同一句），
+    # 让人误以为是"音色ID写错了"。发对了才会给出真正的错误（如 45000030 未开通）。
+    if resource_id:
+        headers['X-Api-Resource-Id'] = resource_id
     try:
         resp = requests.post(DOUBAO_VOICE_URL, headers=headers, json=body, timeout=30)
     except Exception as e:
@@ -279,7 +288,9 @@ def _get_voice_sync(ref_file, custom_speaker_id=''):
         data = {}
     if resp.status_code != 200 or not isinstance(data, dict) or data.get('code') not in (0, None):
         return {'ok': False, 'http_status': resp.status_code, 'logid': logid,
-                'error': (data.get('message') if isinstance(data, dict) else '') or resp.text[:300]}
+                'error': _friendly(data.get('code') if isinstance(data, dict) else None,
+                                  (data.get('message') if isinstance(data, dict) else '')
+                                  or resp.text[:300])}
     status = data.get('status')
     lang = data.get('language')
     speaker_status = data.get('speaker_status') or []
@@ -303,6 +314,107 @@ def _get_voice_sync(ref_file, custom_speaker_id=''):
     }
 
 
+# ── 火山错误码 → 用户能照着做的中文说明 ─────────────────────────
+# 实测（新账号/未开通）：45000030 requested resource not granted
+# 不显式发 X-Api-Resource-Id：500 + 55000000 resource ID is mismatched with speaker ...
+ERR_HINTS = {
+    45000030: '账号还没有开通该语音资源（requested resource not granted）。'
+              '步骤：① 火山账号完成实名认证；② 控制台 → 语音技术 → 开通「大模型语音合成」'
+              '（预置音色）或「声音复刻」（复刻音色）并领取免费额度；'
+              '③ 确认 Key 来自「语音技术 → API Key 管理」，而不是方舟/豆包大模型的 Key。',
+    55000000: 'resource ID 与音色类型不匹配：复刻音色请把「音色类型」选成'
+              '『声音复刻音色(seed-icl-2.0)』，预置音色选『预置大模型音色(seed-tts-2.0)』。',
+    45000001: '鉴权失败：API Key 无效或已过期，请重新复制。',
+    45000002: '鉴权失败：请求缺少 X-Api-Key。',
+}
+
+
+def _friendly(code, message):
+    """把火山错误码拼成『原文 + 可操作建议』。"""
+    msg = str(message or '').strip()
+    hint = ERR_HINTS.get(code)
+    if hint:
+        return (f'[{code}] {msg} → {hint}' if msg else f'[{code}] {hint}')
+    return (f'[{code}] {msg}' if code else msg)
+
+
+def _synth_sync(text, speaker, resource_id):
+    """真发一次极短文本的合成，用来回答"到底能不能出声"。"""
+    key = _doubao_api_key()
+    if not key:
+        return {'ok': False, 'error': 'DOUBAO_API_KEY 未配置：请先在「语音」面板填 Key'}
+    body = {
+        'user': {'uid': 'livetalking-selftest'},
+        'req_params': {'text': text, 'speaker': speaker,
+                       'audio_params': {'format': 'pcm', 'sample_rate': 16000}},
+    }
+    headers = {
+        'Content-Type': 'application/json',
+        'X-Api-Key': key,
+        'X-Api-Resource-Id': resource_id,
+        'X-Api-Request-Id': str(uuid.uuid4()),
+        'X-Control-Require-Usage-Tokens-Return': '1',
+    }
+    try:
+        resp = requests.post(DOUBAO_SYNTH_URL, headers=headers, json=body, timeout=30)
+    except Exception as e:
+        return {'ok': False, 'error': f'请求火山接口失败：{type(e).__name__}: {e}'}
+    logid = resp.headers.get('X-Tt-Logid', '')
+    code, message, audio_bytes = None, '', 0
+    for line in (resp.text or '').splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            d = json.loads(line)
+        except Exception:
+            continue
+        h = d.get('header') if isinstance(d.get('header'), dict) else {}
+        if h.get('code') not in (None, 0, 20000000):
+            code = h.get('code') or code
+            message = h.get('message') or message
+        for k in ('data', 'audio', 'audio_data'):
+            v = d.get(k)
+            if isinstance(v, str) and len(v) > 100:
+                try:
+                    audio_bytes += len(base64.b64decode(v))
+                except Exception:
+                    pass
+    if resp.status_code != 200 or code is not None:
+        return {'ok': False, 'http_status': resp.status_code, 'logid': logid, 'code': code,
+                'error': _friendly(code, message), 'raw': (resp.text or '')[:300]}
+    return {'ok': True, 'http_status': resp.status_code, 'audio_bytes': audio_bytes,
+            'speaker': speaker, 'resource_id': resource_id, 'logid': logid,
+            'note': '合成成功：Key 与资源都可用。把这个音色ID 绑到素材链即可用于直播。'}
+
+
+async def api_tts_selftest(request):
+    """合成自检（真发一次 2 字合成，回答"到底能不能出声"）。
+    body 可选: {"speaker": "...", "resource_id": "seed-icl-2.0", "text": "你好"}"""
+    try:
+        p = await request.json()
+    except Exception:
+        p = {}
+    if not isinstance(p, dict):
+        p = {}
+    cfg = read_tts_config()
+    rid = str(p.get('resource_id') or cfg.get('doubao_resource_id') or 'seed-tts-2.0').strip()
+    if rid not in RESOURCE_IDS:
+        return json_error(f"resource_id 只能是 {' 或 '.join(RESOURCE_IDS)}")
+    speaker = str(p.get('speaker') or p.get('ref_file') or '').strip()
+    if not speaker:
+        if rid == 'seed-tts-2.0':
+            speaker = 'zh_female_vv_uranus_bigtts'
+        else:
+            return json_error("声音复刻音色请填你自己的音色ID（speaker）")
+    text = (str(p.get('text') or '').strip() or '你好')[:10]
+    loop = asyncio.get_event_loop()
+    out = await loop.run_in_executor(None, _synth_sync, text, speaker, rid)
+    if not out.get('ok'):
+        return json_error(out.get('error') or '合成失败')
+    return json_ok(data=out)
+
+
 async def api_tts_voice_check(request):
     """body: {"ref_file": "S_xxx"} 或 {"custom_speaker_id": "custom_zh_xxx"}
     返回音色状态 + 官方试听音频（Success 时 demo_audio 有效 1 小时）。"""
@@ -312,12 +424,22 @@ async def api_tts_voice_check(request):
         return json_error("请求体不是合法 JSON")
     ref = str(p.get('ref_file') or p.get('speaker_id') or '').strip()
     custom = str(p.get('custom_speaker_id') or '').strip()
+    rid = str(p.get('resource_id') or '').strip()
+    if rid not in RESOURCE_IDS:
+        rid = str(read_tts_config().get('doubao_resource_id') or '').strip()
+    if rid not in RESOURCE_IDS:
+        rid = 'seed-tts-2.0'
+    # 选了「声音复刻音色」时 ref_file 本身就是复刻音色ID → 走 custom 形态：
+    #   body = {"speaker_id": "custom_speaker_id", "custom_speaker_id": "<音色ID>"}
+    if rid == 'seed-icl-2.0' and not custom:
+        custom = ref
     if not ref and not custom:
         return json_error("请先填音色ID（ref_file）")
     loop = asyncio.get_event_loop()
-    out = await loop.run_in_executor(None, _get_voice_sync, ref or 'custom_speaker_id', custom)
+    out = await loop.run_in_executor(None, _get_voice_sync, ref or 'custom_speaker_id', custom, rid)
     if not out.get('ok'):
         return json_error(out.get('error') or '音色查询失败')
+    out['resource_id'] = rid
     return json_ok(data=out)
 
 
@@ -394,6 +516,7 @@ def setup_tts_routes(app):
     app.router.add_post('/api/tts/config', api_tts_config_put)     # 兼容用 POST 的调用方
     app.router.add_get('/api/tts/voice_options', api_tts_voice_options)
     app.router.add_post('/api/tts/voice_check', api_tts_voice_check)
+    app.router.add_post('/api/tts/selftest', api_tts_selftest)
     app.router.add_get('/api/libs/{lib}/voice', api_chain_voice_get)
     app.router.add_put('/api/libs/{lib}/voice', api_chain_voice_put)
     app.router.add_post('/api/libs/{lib}/voice', api_chain_voice_put)
