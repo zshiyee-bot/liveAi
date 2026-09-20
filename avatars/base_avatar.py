@@ -854,7 +854,7 @@ class BaseAvatar:
             try:
                 import subprocess
                 r = subprocess.run(['nvidia-smi',
-                                    '--query-gpu=utilization.gpu,memory.used,memory.free,power.draw,temperature.gpu',
+                                    '--query-gpu=utilization.gpu,memory.used,memory.free,power.draw,temperature.gpu,pstate,clocks.current.graphics,clocks.current.memory,clocks_throttle_reasons.active',
                                     '--format=csv,noheader'],
                                    capture_output=True, text=True, timeout=5)
                 return r.stdout.strip()
@@ -923,7 +923,42 @@ class BaseAvatar:
                     logger.warning("[gil] 探针延迟 %.2fs（GIL/CPU 被抢）", now - last)
                 last = now
 
+        def _gpu_probe():
+            """GPU 响应探针：每秒在**独立 CUDA stream** 上发一个极小 kernel 再同步。
+
+            为什么要它（2026-09-20 排查）：卡顿时 GPU 利用率 1~7%、功耗 34W
+            （空转），推理线程却卡 4~5 秒；同进程的 GIL 探针 0 次触发（已排除
+            CPU/GIL 被抢）。本探针独立于推理线程、走独立 stream，用来区分：
+              · 它也慢几秒   => 整个 GPU/驱动层当时不响应（降频 / 驱动停顿）
+              · 它一直 1~2ms => GPU 完全正常，是推理线程自己等在某处（锁/同步）
+            开关：LT_GPU_PROBE=0 关闭；阈值 LT_GPU_PROBE_SEC（默认 0.3s）。
+            """
+            if os.getenv('LT_GPU_PROBE', '1') == '0':
+                return
+            try:
+                import torch
+                if not torch.cuda.is_available():
+                    return
+                _st = torch.cuda.Stream()
+                _t = torch.zeros(1, device='cuda')
+            except Exception:
+                return
+            thr = float(os.getenv('LT_GPU_PROBE_SEC', '0.3') or 0.3)
+            while not stop_event.is_set():
+                time.sleep(1.0)
+                try:
+                    t0 = time.perf_counter()
+                    with torch.cuda.stream(_st):
+                        _v = float((_t + 1.0).item())
+                    dt = time.perf_counter() - t0
+                    if dt > thr:
+                        logger.warning("[gpu-probe] 小内核+同步 %.2fs（GPU/驱动层不响应）", dt)
+                except Exception as e:
+                    logger.warning("[gpu-probe] 出错，已停止：%s", e)
+                    return
+
         threading.Thread(target=_gil_probe, name='gil-probe', daemon=True).start()
+        threading.Thread(target=_gpu_probe, name='gpu-probe', daemon=True).start()
         threading.Thread(target=_run, name='stall-watchdog', daemon=True).start()
 
     def _resolve_length(self):
