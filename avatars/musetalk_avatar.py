@@ -231,10 +231,19 @@ class MuseReal(BaseAvatar):
         audio_feature_batch = self.pe(audio_feature_batch)
         latent_batch = latent_batch.to(dtype=self.unet.model.dtype)
 
+        # 诊断：把这一批的时间拆成 unet / vae 两段，超阈值才打（正常时零开销）
+        _t0 = time.perf_counter()
         pred_latents = self.unet.model(latent_batch, 
                                     self.timesteps, 
                                     encoder_hidden_states=audio_feature_batch).sample
+        _t1 = time.perf_counter()
         pred = self.vae.decode_latents(pred_latents)
+        _t2 = time.perf_counter()
+        _slow = float(os.getenv('LT_SLOW_BATCH_SEC', '1.0') or 1.0)
+        if _slow > 0 and (_t2 - _t0) >= _slow:
+            logger.warning("[slow] musetalk unet=%.2fs vae=%.2fs | batch=%d lat=%s",
+                           _t1 - _t0, _t2 - _t1, len(idx_list),
+                           tuple(latent_batch.shape))
         return pred
 
     def paste_back_frame(self,pred_frame,idx):

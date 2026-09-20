@@ -969,7 +969,16 @@ class BaseAvatar:
                 else:
                     idx_list = [mirror_index(length, index + i) for i in range(len(audiofeat_batch))]
 
+                _t0 = time.perf_counter()
                 pred = self.inference_batch(idx_list, audiofeat_batch)
+                _dt = time.perf_counter() - _t0
+                # 诊断：批大小 = feat_queue 里那一块的帧数，**不是固定的 opt.batch_size**。
+                # 队列积压时批会变大、单批变慢，是「周期性 3 秒停顿」的头号嫌疑。
+                # 只在这一批超过阈值时打一行，正常时零开销。LT_SLOW_BATCH_SEC<=0 关闭。
+                _slow = float(os.getenv('LT_SLOW_BATCH_SEC', '1.0') or 1.0)
+                if _slow > 0 and _dt >= _slow:
+                    logger.warning("[slow] inference_batch %.2fs | batch=%d | %s",
+                                   _dt, len(idx_list), self._queues_snapshot())
 
                 counttime += (time.perf_counter() - t)
                 count += self.batch_size
