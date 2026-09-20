@@ -76,7 +76,7 @@ logger.setLevel(logging.DEBUG)
 # 直写控制台的 StreamHandler（那正是上面死锁的入口）。
 logger.propagate = False
 if not any(isinstance(h, logging.FileHandler) for h in logger.handlers):
-    fhandler = logging.FileHandler('livetalking.log', encoding="utf-8")
+    fhandler = logging.FileHandler('tzlive.log', encoding="utf-8")
     fhandler.setFormatter(formatter)
     fhandler.setLevel(logging.INFO)
     logger.addHandler(fhandler)
@@ -138,7 +138,7 @@ def _console_watchdog():
                     "[logger] 控制台输出被挂住了（队列积压 %d 条 ≥6 秒没被消费）。"
                     "最常见原因：命令行窗口处于「选择/快速编辑」状态 —— "
                     "点一下那个窗口、按 Esc 即可恢复。**服务本身不受影响**："
-                    "渲染/推理/推流照常，日志继续写 livetalking.log。", n)
+                    "渲染/推理/推流照常，日志继续写 tzlive.log。", n)
         except Exception:
             pass
 

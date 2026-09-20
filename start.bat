@@ -3,7 +3,7 @@ rem ============================================================
 rem  LiveTalking 启动脚本 ----- 库 / 素材链 模式
 rem ------------------------------------------------------------
 rem  用法:
-rem    start.bat                 启动服务 (默认端口 8010)
+rem    start.bat                 启动服务 (默认端口 8063)
 rem    start.bat <额外参数...>   原样透传给 app.py, 例如:
 rem        start.bat --listenport 8020
 rem        start.bat --transport rtmp
@@ -44,7 +44,7 @@ setlocal
 chcp 65001 >nul 2>&1
 set PYTHONUTF8=1
 set PYTHONIOENCODING=utf-8
-set PORT=8010
+set PORT=8063
 set PYEXE=%~dp0.venv\Scripts\python.exe
 
 rem ---- 把 venv\Scripts 放到 PATH 最前: ffmpeg / ffprobe 硬链在此 ----
@@ -120,7 +120,7 @@ echo [INFO] 保持本窗口打开, 关闭窗口即停止服务。
 echo.
 echo [INFO] 本窗口可以看日志, 但请不要在窗口里拖选文字(点了拖动也算):
 echo        那会让窗口进入「选择」态, 日志会停止滚动 —— 但服务本身不受影响,
-echo        按一下 Esc 立即恢复; 完整日志一直写在 livetalking.log。
+echo        按一下 Esc 立即恢复; 完整日志一直写在 tzlive.log。
 echo.
 
 if defined DEFAULT_AVATAR (

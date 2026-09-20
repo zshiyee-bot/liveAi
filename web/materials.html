@@ -738,7 +738,7 @@ function netErrMsg(e, u){
   const m = String((e && e.message) || e || '');
   if (m.includes('Failed to fetch') || m.includes('NetworkError') || m.includes('Load failed')){
     return `无法连接到服务（${u}）。请确认 LiveTalking 已启动、端口正确，` +
-           `并且这个页面是通过服务地址打开的（http://127.0.0.1:8010/materials.html），不要用 file:// 直接打开`;
+           `并且这个页面是通过服务地址打开的（http://127.0.0.1:8063/materials.html），不要用 file:// 直接打开`;
   }
   if (m.includes('aborted') || (e && e.name === 'AbortError')) return '请求被取消（可能超时或页面切换）';
   return m || '请求失败';
