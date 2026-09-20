@@ -164,6 +164,37 @@ def _free_cached_vram(tag: str = ''):
         logger.warning("[gpu] empty_cache 失败（忽略）：%s", e)
 
 
+def _disable_cudnn_benchmark(tag: str = ''):
+    """直播推理必须关掉 cudnn.benchmark —— 否则变长 batch 会触发秒级卡顿。
+
+    为什么（2026-09-20 本机复现，RTX 4060 Ti 16GB）：
+      · 素材训练会走人脸检测（avatars/*/face_detection/api.py:57 与
+        sfd/detect.py:25、63），那里把 torch.backends.cudnn.benchmark 设成 True。
+        这是**进程级全局开关，设一次就不再恢复**；训练和直播在同一个进程里，
+        所以只要在这台服务上训练过一次素材，之后所有直播推理都跑在
+        benchmark=True 之下。
+      · 而直播的批大小是变化的（wav2lip_avatar.inference_batch 按"当时有几个
+        mel 就绪"组批），warm_up 又只预热了 batch=16 这一个形状。benchmark=True
+        会让 cuDNN 对**每一个新形状**做一次算法基准测试，实测代价：
+            wav2lip : 1905 / 2079 / 2379 / 3552 ms（9 个形状合计 21.3s，9/9 >1s）
+            musetalk: 1303 / 2898 / 3843 / 5777 ms（9 个形状合计 30.1s，9/9 >1s）
+        正好对应线上日志里 3.0s / 3.1s / 5.0s / 13.2s 的「未产出帧」卡死。
+      · 关掉后同样 9 个形状：wav2lip 合计 0.97s、musetalk 2.96s，**零个 >1s**。
+
+    逃生开关：LT_CUDNN_BENCHMARK=1 可恢复旧行为。
+    """
+    if os.getenv('LT_CUDNN_BENCHMARK', '0') == '1':
+        return
+    try:
+        import torch
+        if torch.backends.cudnn.benchmark:
+            torch.backends.cudnn.benchmark = False
+            logger.info("[gpu] 已关闭 cudnn.benchmark（%s）："
+                        "避免变长 batch 对每个新形状做秒级 autotune", tag)
+    except Exception as e:
+        logger.warning("[gpu] 关闭 cudnn.benchmark 失败（忽略）：%s", e)
+
+
 class AutoModelManager:
     """按需加载 / 卸载模型。任意时刻至多驻留一个模型。
 
@@ -204,6 +235,8 @@ class AutoModelManager:
             raise ModelLoadError(f"不支持的模型类型：{kind}")
 
         with self._lock:
+            # 必须早于 load / warm_up：训练会把全局 cudnn.benchmark 翻成 True 且不恢复
+            _disable_cudnn_benchmark(f'{kind}:session')
             if self._kind == kind and self._model is not None:
                 # 复用已驻留模型：也要回吐「上一次会话运行期」留下的空闲缓存，
                 # 否则第二次连接是带着 4~5GB 缓存开始的（实测会话停掉后仍占 6.6GB）。

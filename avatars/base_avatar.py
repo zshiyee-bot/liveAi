@@ -874,6 +874,13 @@ class BaseAvatar:
                 if idle < threshold or (now - self._last_stall_dump) < 10.0:
                     continue
                 self._last_stall_dump = now
+                # 运行期显存回收不能只挂在「每 100 帧打印一次 fps」上：
+                # 一旦卡住，帧不流动 -> fps 行不打印 -> 回收永远不触发（鸡生蛋）。
+                # 这里在确认卡死时按时间独立触发一次（阈值/开关同 _vram_guard）。
+                try:
+                    _vram_guard()
+                except Exception:
+                    pass
                 try:
                     logger.warning("[stall] %.1fs 未产出帧 | %s | gpu %s",
                                    idle, self._queues_snapshot(with_free_vram=True), _snapshot_gpu())
