@@ -146,6 +146,17 @@ class SessionManager:
                     avatar_session.quit_event.set()
             except Exception:
                 logger.exception(f"session {sessionid} cleanup error")
+            # ── 会话结束后把模型缓存分配器扣住的显存交还驱动 ──────────────
+            # 实测（2026-09-20，RTX 4060 Ti 16GB）：会话停掉后进程仍占着 6.6GB
+            # 显存（模型 1.9GB + 运行期峰值留下的空闲缓存 4.7GB）。这台机器上
+            # 桌面/DSH/GameViewer/浏览器本来就要显存，空闲只剩 8.4GB；下次再开
+            # 会话时是"带着 6.6GB"开始的 → 越播越容易出现 WDDM 换页、fps 掉到
+            # 个位数。模型本身保留（下次连接免加载），只回吐空闲缓存。
+            try:
+                from avatars.auto_loader import _free_cached_vram
+                _free_cached_vram('session-close')
+            except Exception:
+                pass
 
 # 单例抛出
 session_manager = SessionManager()

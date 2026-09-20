@@ -29,6 +29,7 @@ import cv2
 import glob
 import resampy
 import queue
+import threading
 from queue import Queue
 from threading import Thread, Event
 from io import BytesIO
@@ -60,6 +61,39 @@ class AudioFrameData:
     type: int = 0  # 默认值
     userdata: dict = field(default_factory=dict)
 
+
+def _vram_guard():
+    """运行期显存自保：把 PyTorch 缓存分配器扣住但未使用的块回吐给驱动。
+
+    背景（本机实测，2026-09-20，RTX 4060 Ti 16GB / musetalk / batch16）：
+      · 管线稳态只用到 ~2GB 张量，但缓存分配器会把 VAE/UNet 的瞬时峰值
+        （VAE decode 峰值 ~2.2GB/批）长期扣在 reserved 里，加载后即 ~10.5GB。
+      · 本机同时还有浏览器软解 688x1312@25fps、DSH Desktop、GameViewerServer、
+        dwm 在用同一张卡；一旦总需求超过 16GB 物理显存，WDDM 会把显存换到内存，
+        CUDA 核掉到 PCIe 速度（实测 inference_batch 43.6ms/帧 -> 205ms/帧，
+        推流 4~6fps、GPU 却只有 ~30W，见 2026-09-20 现场日志）。
+      · 这里每打印一次 fps（约 100 帧）检查一次：free < 1GB 或 reserved > 8GB
+        就 empty_cache() 回吐空闲块（只动空闲缓存，不动在用张量）。
+
+    逃生开关：LT_VRAM_GUARD=0 关闭；软阈值 LT_VRAM_SOFT_GB（默认 8）。
+    """
+    if os.getenv('LT_VRAM_GUARD', '1') == '0':
+        return
+    try:
+        if not torch.cuda.is_available():
+            return
+        free, _total = torch.cuda.mem_get_info()
+        reserved = torch.cuda.memory_reserved()
+        soft = int(float(os.getenv('LT_VRAM_SOFT_GB', '8') or 8) * (1 << 30))
+        if free < (1 << 30) or reserved > soft:
+            before = reserved / (1 << 20)
+            torch.cuda.empty_cache()
+            logger.info("[gpu] 运行期显存回收：reserved %.0fMB -> %.0fMB（free %.0fMB）",
+                        before, torch.cuda.memory_reserved() / (1 << 20), free / (1 << 20))
+    except Exception:
+        pass
+
+
 class BaseAvatar:
     def __init__(self, opt):
         self.opt = opt
@@ -74,6 +108,8 @@ class BaseAvatar:
         self.width = self.height = 0
 
         self.custom_audiotype = 0 # 0: normal, 1: sinlence, >1: custom audio
+        self._frames_out = 0     # 已推给输出的帧数（卡死看门狗用）
+        self._last_stall_dump = 0.0
         self.custom_img_cycle = {}
         self.custom_audio_cycle = {}
         self.custom_audio_index = {}
@@ -753,6 +789,112 @@ class BaseAvatar:
         return self.playlist[self.playlist_index]
 
     # ========================== 核心渲染及 Pipeline 桥接 ==========================
+    def _queues_snapshot(self, with_free_vram=False):
+        """一行打印各队列深度（+可选显存），用于定位"卡在哪一段"。
+
+        为什么需要：现场日志里 fps 掉到 4~7，但 GPU 利用率/功耗同时接近空转
+        （nvidia-smi 0~4%、32~51W），说明线程在"等"而不是在算。只靠 fps 无法
+        区分是 WebRTC 队列背压、res/feat 队列背压、还是 GPU 同步/驱动停顿。
+        """
+        def _q(o):
+            try:
+                return o.qsize()
+            except Exception:
+                return -1
+        def _m(o):
+            try:
+                return o.maxsize
+            except Exception:
+                return -1
+        stats = {}
+        try:
+            out = getattr(self, 'output', None)
+            if out is not None and hasattr(out, 'get_queue_stats'):
+                stats = out.get_queue_stats() or {}
+        except Exception:
+            stats = {}
+        parts = [
+            'video_q=%s/%s(drop=%s)' % (stats.get('video_q', '?'), stats.get('video_max', '?'),
+                                        stats.get('video_dropped', '?')),
+            'audio_q=%s/%s' % (stats.get('audio_q', '?'), stats.get('audio_max', '?')),
+        ]
+        try:
+            parts.append('res_q=%d/%d' % (_q(self.res_frame_queue), _m(self.res_frame_queue)))
+            asr = getattr(self, 'asr', None)
+            if asr is not None:
+                parts.append('feat_q=%d/%d' % (_q(asr.feat_queue), _m(asr.feat_queue)))
+                parts.append('asr_q=%d' % _q(asr.queue))
+                parts.append('out_q=%d' % _q(asr.output_queue))
+        except Exception:
+            pass
+        try:
+            if torch.cuda.is_available():
+                parts.append('vram_res=%.0fMB' % (torch.cuda.memory_reserved() / 2**20))
+                if with_free_vram:
+                    free, _t = torch.cuda.mem_get_info()
+                    parts.append('vram_free=%.0fMB' % (free / 2**20))
+        except Exception:
+            pass
+        return ' '.join(parts)
+
+    def _start_stall_watchdog(self, stop_event):
+        """卡死看门狗：连续 LT_STALL_SEC 秒没有产出帧，就把「队列深度 + 每条线程的
+        Python 栈 + 显存/GPU」写进日志 —— 下次卡顿不用再猜。
+
+        逃生开关：LT_STALL_DUMP=0 关闭；阈值 LT_STALL_SEC（默认 3 秒）。
+        """
+        if os.getenv('LT_STALL_DUMP', '1') == '0':
+            return
+        import sys as _sys
+        import traceback as _tb
+        threshold = float(os.getenv('LT_STALL_SEC', '3') or 3)
+        poll = float(os.getenv('LT_STALL_POLL', '1') or 1)
+
+        def _snapshot_gpu():
+            try:
+                import subprocess
+                r = subprocess.run(['nvidia-smi',
+                                    '--query-gpu=utilization.gpu,memory.used,memory.free,power.draw,temperature.gpu',
+                                    '--format=csv,noheader'],
+                                   capture_output=True, text=True, timeout=5)
+                return r.stdout.strip()
+            except Exception as e:
+                return 'nvidia-smi ERR:%s' % type(e).__name__
+
+        def _run():
+            last_n = self._frames_out
+            last_t = time.perf_counter()
+            while not stop_event.is_set():
+                time.sleep(poll)
+                now = time.perf_counter()
+                if self._frames_out != last_n:
+                    last_n, last_t = self._frames_out, now
+                    continue
+                idle = now - last_t
+                if idle < threshold or (now - self._last_stall_dump) < 10.0:
+                    continue
+                self._last_stall_dump = now
+                try:
+                    logger.warning("[stall] %.1fs 未产出帧 | %s | gpu %s",
+                                   idle, self._queues_snapshot(with_free_vram=True), _snapshot_gpu())
+                except Exception:
+                    pass
+                try:
+                    frames = _sys._current_frames()
+                    for t in threading.enumerate():
+                        fr = frames.get(t.ident)
+                        if fr is None:
+                            continue
+                        try:
+                            stack = ''.join(_tb.format_stack(fr, limit=10)).strip().replace('\n', ' | ')
+                        except Exception:
+                            stack = '?'
+                        logger.warning("[stall] thread=%s daemon=%s | %s", t.name, t.daemon, stack)
+                except Exception:
+                    pass
+
+        threading.Thread(target=_run, name='stall-watchdog', daemon=True).start()
+
     def _resolve_length(self):
         """播放头用的长度：优先素材链当前段，否则用原有 frame_list_cycle。"""
         if self.use_playlist:
@@ -825,9 +967,10 @@ class BaseAvatar:
                 counttime += (time.perf_counter() - t)
                 count += self.batch_size
                 if count >= 100:
-                    logger.info(f"------actual avg infer fps:{count/counttime:.4f}")
+                    logger.info(f"------actual avg infer fps:{count/counttime:.4f} | {self._queues_snapshot()}")
                     count = 0
                     counttime = 0
+                    _vram_guard()   # 显存自保：回吐空闲缓存，避免 WDDM 换页导致掉到个位数 fps
                 for i, res_frame in enumerate(pred):
                     self.res_frame_queue.put((res_frame, audio_frames[i*2:i*2+2], idx_list[i]))
                     index = index + 1
@@ -923,6 +1066,7 @@ class BaseAvatar:
 
             # 使用统一输出接口推送视频帧
             self.output.push_video_frame(combine_frame)
+            self._frames_out += 1
             self.record_video_data(combine_frame)
 
             for audio_frame in audio_frames:
@@ -955,6 +1099,8 @@ class BaseAvatar:
         self.tts.render(quit_event)
 
         infer_quit_event = mp.Event()
+        # 卡死自证：连续几秒没有帧产出 -> 把队列深度 + 每条线程栈写进日志
+        self._start_stall_watchdog(quit_event)
         infer_thread = Thread(target=self.inference, args=(infer_quit_event,))
         infer_thread.start()
         

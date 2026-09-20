@@ -133,6 +133,37 @@ def scan_available():
     return out
 
 
+def _free_cached_vram(tag: str = ''):
+    """把「模型加载 / warm_up 期间被 PyTorch 缓存分配器扣住、但实际不再使用」
+    的显存交还给驱动。
+
+    为什么要做（本机 RTX 4060 Ti 16GB 实测，musetalk + batch 16）：
+      · 加载 + warm_up 之后：allocated ≈ 1.9GB，而 reserved ≈ 10.5GB，
+        nvidia-smi 看到进程占用 11.5GB —— 其中 ~8.6GB 只是缓存里的空闲块。
+      · 这台机器上浏览器（同机看画面会软解 688x1312@25fps）、DSH Desktop、
+        GameViewerServer、dwm 也都要显存；总需求一旦超过物理显存，WDDM 会把
+        显存换到内存，CUDA 核掉到 PCIe 速度 —— 实测表现就是
+        inference_batch 从 43.6ms/帧 涨到 205ms/帧、推流 4~6fps、GPU 只有约 30W。
+      · empty_cache() 之后：reserved 10.5GB → 2.5GB，进程占用 11.5GB → 3.4GB，
+        等于凭空多出 8GB 安全余量。这一步只回吐空闲缓存，不动任何在用张量。
+
+    逃生开关：LT_FREE_VRAM=0 可关闭。
+    """
+    if os.getenv('LT_FREE_VRAM', '1') == '0':
+        return
+    try:
+        import torch
+        if not torch.cuda.is_available():
+            return
+        torch.cuda.synchronize()
+        before = torch.cuda.memory_reserved() / (1 << 20)
+        torch.cuda.empty_cache()
+        after = torch.cuda.memory_reserved() / (1 << 20)
+        logger.info("[gpu] 显存缓存已交还驱动（%s）：reserved %.0fMB -> %.0fMB", tag, before, after)
+    except Exception as e:
+        logger.warning("[gpu] empty_cache 失败（忽略）：%s", e)
+
+
 class AutoModelManager:
     """按需加载 / 卸载模型。任意时刻至多驻留一个模型。
 
@@ -174,6 +205,9 @@ class AutoModelManager:
 
         with self._lock:
             if self._kind == kind and self._model is not None:
+                # 复用已驻留模型：也要回吐「上一次会话运行期」留下的空闲缓存，
+                # 否则第二次连接是带着 4~5GB 缓存开始的（实测会话停掉后仍占 6.6GB）。
+                _free_cached_vram(f'{kind}:cached')
                 return self._model, self._mod
 
             # 需要切换 —— 先确认没有别的会话正在用旧模型
@@ -227,6 +261,9 @@ class AutoModelManager:
             else:  # wav2lip
                 model = mod.load_model(WEIGHT_OF['wav2lip'])
                 mod.warm_up(batch_size, model, 256)
+            # warm_up 会把大块 activation 缓存留在显存里（实测 ~8.6GB 空闲缓存），
+            # 交还驱动，避免与同机其它程序一起挤爆 16GB 触发 WDDM 换页。
+            _free_cached_vram(kind)
             return model
         except ModelLoadError:
             raise

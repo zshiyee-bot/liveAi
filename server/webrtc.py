@@ -240,6 +240,15 @@ class HumanPlayer:
     def get_buffer_size(self) -> int:
         return self.__video._queue.qsize()
 
+    def get_queue_stats(self) -> dict:
+        """音视频队列深度（诊断用）。audio 队列满(1500)时 push_audio 会阻塞
+        整个 process_frames；video 队列满(60)时会丢最旧帧。"""
+        return {'video_q': self.__video._queue.qsize(),
+                'video_max': self.__video._queue.maxsize,
+                'video_dropped': getattr(self.__video, '_dropped', 0),
+                'audio_q': self.__audio._queue.qsize(),
+                'audio_max': self.__audio._queue.maxsize}
+
     def notify(self,eventpoint):
         if self.__container is not None:
             self.__container.notify(eventpoint)

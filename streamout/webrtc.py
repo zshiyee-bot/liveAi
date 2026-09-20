@@ -39,5 +39,11 @@ class WebRTCOutput(BaseOutput):
             return self._player.get_buffer_size()
         return 0
 
+    def get_queue_stats(self) -> dict:
+        """WebRTC 音视频队列深度（诊断用，见 base_avatar._queues_snapshot）。"""
+        if self._player is not None and hasattr(self._player, 'get_queue_stats'):
+            return self._player.get_queue_stats()
+        return {}
+
     def stop(self) -> None:
         pass
