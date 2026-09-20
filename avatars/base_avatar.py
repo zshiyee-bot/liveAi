@@ -900,6 +900,30 @@ class BaseAvatar:
                 except Exception:
                     pass
 
+        def _gil_probe():
+            """GIL / CPU 探针：sleep(50ms) 循环，测量「实际醒来」比预期晚了多少。
+
+            为什么要它（2026-09-20 排查）：卡顿时抓到 GPU 有 ~4 秒**完全空转**
+            （utilization 1~7%、功耗 34W、显存控制器 1~4%），紧接着又满载
+            （100%、129W）——说明推理线程那 4 秒既没跑 CPU 也没往 GPU 提交活儿。
+            而同一批里 UNet 慢 43 倍、VAE 只慢 3 倍（UNet 要几百次 Python 往返，
+            VAE 只要一次大调用），这个不对称指向「Python 层被反复挂起」。
+            本探针只做一件事：如果日志里出现 [gil] 延迟 0.x~几秒，就说明这条线程
+            （以及同进程其它 Python 线程）在这段时间内拿不到 GIL / 分不到 CPU。
+            开关：LT_GIL_PROBE=0 关闭；阈值 LT_GIL_PROBE_SEC（默认 0.4s）。
+            """
+            if os.getenv('LT_GIL_PROBE', '1') == '0':
+                return
+            thr = float(os.getenv('LT_GIL_PROBE_SEC', '0.4') or 0.4)
+            last = time.perf_counter()
+            while not stop_event.is_set():
+                time.sleep(0.05)
+                now = time.perf_counter()
+                if (now - last) > thr:
+                    logger.warning("[gil] 探针延迟 %.2fs（GIL/CPU 被抢）", now - last)
+                last = now
+
+        threading.Thread(target=_gil_probe, name='gil-probe', daemon=True).start()
         threading.Thread(target=_run, name='stall-watchdog', daemon=True).start()
 
     def _resolve_length(self):
