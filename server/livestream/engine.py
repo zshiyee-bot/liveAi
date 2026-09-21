@@ -63,9 +63,46 @@ class LiveStreamRuntime:
 
     # ── 对外状态 ────────────────────────────────────────────────
     async def snapshot(self):
+        """播放队列快照（含「已预送、马上播」的那些）。
+
+        零接缝会把下一条提前送进 TTS 的待播队列，于是它已经不在 PlayQueue 里了 ——
+        运营页就会看不到「弹幕回复正在等着播」。所以这里把预送窗口里的条目按来源
+        并回高优/低优列表：
+          · _inflight[0] 是"正在播"，前端用 playback_started 事件单独显示，不重复列
+          · 其余（已预送）按 source 摆回 high/low，前端队列面板就能看到弹幕回复
+        注意：这里故意不加 self._lock —— 本函数会被 _do_send 在 _prefill 持锁时调用，
+        再取同一把锁会死锁。列表切片不会让出事件循环，读到的视图足够一致。
+        """
         if self.queue is None:
             return {"high": [], "low": []}
-        return await self.queue.snapshot()
+        snap = await self.queue.snapshot()
+        pending = list(self._inflight[1:])
+        for it in pending:
+            row = {
+                "id": it.id,
+                "type": it.type,
+                "source": it.source,
+                "content_preview": (it.content or "")[:80],
+                "level": it.level,
+                "presend": True,          # 标记：已预送（前端不认识也无害）
+            }
+            if it.source == "script":
+                snap.setdefault("low", []).append(row)
+            else:
+                snap.setdefault("high", []).append(row)
+        return snap
+
+    async def _notify_queue(self):
+        """让运营页刷新播放队列。
+
+        预送窗口变化（送出一条 / 播完一条）不会经过 PlayQueue，也就不会触发
+        PlayQueue 的 on_change 回调 —— 不主动推一次的话，队列面板上就看不见
+        弹幕回复进进出出。
+        """
+        try:
+            await self._emit({"type": "queue_update", "data": await self.snapshot()})
+        except Exception as e:
+            logger.warning(f"[ls] 队列广播失败: {e}")
 
     async def status(self):
         speaking = False
@@ -220,6 +257,7 @@ class LiveStreamRuntime:
         })
         logger.info(f"[ls] → 会话 utt={utt} priority={priority} inflight={len(self._inflight)} "
                     f"[{item.source}] {(item.content or '')[:40]}")
+        await self._notify_queue()
         return True
 
     async def _prefill(self):
@@ -295,6 +333,7 @@ class LiveStreamRuntime:
             logger.info(f"[ls] 播完 [{done.source}] utt={done.metadata.get('utt')}")
         if self.running:
             await self._prefill()
+        await self._notify_queue()
 
     async def _pump_watchdog(self):
         """兜底：事件丢失 / 启动瞬间也能推进（绝不能因为没有 end 事件就停摆）。"""
