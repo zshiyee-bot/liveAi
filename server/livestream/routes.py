@@ -754,6 +754,65 @@ async def api_mock_danmaku(request):
     return reply({"code": 0, "msg": "ok"})
 
 
+# ── 弹幕转发入口（Windows 侧中继 → 服务器）──────────────────────
+#  场景：抖音弹幕只能靠 DouyinBarrageGrab 在「正在直播的那台 Windows」上抓包
+#  （它挂系统代理，解抖音的弹幕 WebSocket 流量），而数字人跑在 Linux 服务器上。
+#  Windows 侧跑 danmaku_forward.py 当哑管道，把中继的原始 JSON 原样 POST 过来：
+#      DouyinBarrageGrab(ws://127.0.0.1:8888) → 转发器 → 这里
+#  解析仍然走 DouyinCollector._parse_msg（Type 1/3/4/5、PascalCase/camelCase、
+#  Data 是字符串还是对象），保证兼容逻辑只有一处，转发器不用跟着升级。
+_forward_parser = None
+_forward_seen = False
+
+
+def _douyin_parser():
+    """复用同一个 DouyinCollector 实例做解析（_parse_msg 不依赖连接状态）。"""
+    global _forward_parser
+    if _forward_parser is None:
+        from server.livestream.services.danmaku.douyin import DouyinCollector
+        _forward_parser = DouyinCollector("")
+    return _forward_parser
+
+
+async def api_danmaku_forward(request):
+    """接收 Windows 转发的原始弹幕：单个对象，或 {"items": [...]} 批量。"""
+    global _forward_seen
+    await ensure_ready()
+
+    want = (os.getenv("LS_DANMAKU_TOKEN", "") or "").strip()
+    if want and request.headers.get("X-Danmaku-Token", "") != want:
+        logger.warning("[ls] 弹幕转发鉴权失败（来源 %s）", request.remote)
+        return fail("token 不正确", status=403)
+
+    body = await _body(request)
+    items = body.get("items") if isinstance(body.get("items"), list) else None
+    raws = items if items else ([body] if body else [])
+    if not raws:
+        return fail("请求体为空")
+
+    if not runtime.running:
+        # 返回 200：还没点「开始直播」时，Windows 侧不该把它当成错误一直重试
+        return json_ok({"accepted": 0, "reason": "直播未启动"})
+
+    parser = _douyin_parser()
+    accepted = 0
+    for raw in raws:
+        if not isinstance(raw, dict):
+            continue
+        msg = parser._parse_msg(raw)
+        if msg is None:
+            continue          # 点赞/统计等不转发的类型
+        await runtime.ingest(msg)
+        accepted += 1
+
+    if accepted and not _forward_seen:
+        _forward_seen = True
+        logger.info("[ls] 已收到 Windows 转发来的弹幕（来源 %s）—— 抖音弹幕链路已通", request.remote)
+    elif accepted:
+        logger.debug("[ls] 弹幕转发：收到 %d 条", accepted)
+    return json_ok({"accepted": accepted})
+
+
 # ── WebSocket（替代 FastAPI 的 /ws）──────────────────────────────
 async def ls_ws(request):
     await ensure_ready()
@@ -875,6 +934,8 @@ def setup_livestream_routes(app):
 
     app.router.add_get(f"{p}/api/queue", api_queue)
     app.router.add_post(f"{p}/api/mock/danmaku", api_mock_danmaku)
+    # Windows 侧转发器把抖音弹幕 POST 到这里（数字人跑在服务器上时用）
+    app.router.add_post(f"{p}/api/danmaku/forward", api_danmaku_forward)
 
     app.router.add_get(f"{p}/ws", ls_ws)
 

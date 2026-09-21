@@ -256,6 +256,13 @@ class LiveStreamRuntime:
                 metadata={"sender": msg.sender},
             ))
 
+    async def ingest(self, msg):
+        """外部来源的弹幕塞进来（Windows 侧转发的抖音弹幕走这里）。
+
+        走的路径和采集器回调完全一致：广播事件 → 逐条生成回复 → 高优队列。
+        """
+        await self._on_danmaku(msg)
+
     async def mock_danmaku(self, msg_type: str, sender: str, content: str):
         """测试面板用：绕过采集器直接走 on_message 路径。"""
         from server.livestream.services.danmaku.base import DanmakuMessage
