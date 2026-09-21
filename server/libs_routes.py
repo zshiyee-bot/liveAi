@@ -976,6 +976,30 @@ async def api_lib_playlist(request):
         else:
             cfg = {"segments": clips, "entry": entry, "mode": mode, "_lib": lib}
         pl_path = os.path.join(base, PLAYLIST_NAME)
+
+        # ── 保留已绑定的音色：**不要让"空白"把它挤掉** ──────────────────
+        # 规则：只有本次**显式传了** voice 才覆盖；没传就沿用 playlist.json 里已有的值。
+        #
+        # 实测（2026-09-21，Ubuntu 服务器）：先在素材页绑定音色（PUT
+        # /api/libs/{lib}/voice 会把 voice 写进 playlist.json），随后保存素材链 ——
+        # 这里从零构造 cfg 整体写回，把 voice 抹掉了。之后新会话读不到音色 →
+        # 豆包 TTS 退回启动时的默认预置音色名，而 data/tts_config.json 里
+        # resource_id=seed-icl-2.0（声音复刻）→ 豆包返回
+        #   55000000 "resource ID is mismatched with speaker related resource"
+        # → 整条音频链路静音（表现为完全没声音，同时嘴一抽一抽）。
+        try:
+            if os.path.isfile(pl_path):
+                with open(pl_path, encoding='utf-8') as _f:
+                    _old = json.load(_f)
+                if isinstance(_old, dict) and _old.get('voice'):
+                    cfg['voice'] = _old['voice']
+        except Exception as _e:
+            logger.warning(f"读取旧素材链以保留音色失败（忽略，不阻断保存）: {_e}")
+
+        # 本次显式带了音色才覆盖（用户在页面上主动换音色走这条）
+        if p.get('voice'):
+            cfg['voice'] = p.get('voice')
+
         with open(pl_path, 'w', encoding='utf-8') as f:
             json.dump(cfg, f, ensure_ascii=False, indent=2)
         logger.info(f"库「{lib}」素材链已保存: {cfg}")
