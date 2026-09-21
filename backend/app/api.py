@@ -421,11 +421,85 @@ async def _get_or_create_queue():
     return app.state.play_queue
 
 
+def _is_withdrawable(item) -> bool:
+    """该项在 LiveTalking 侧是否可撤回。
+
+    只有 /human 的文字项会被服务端用 utt 打标；/humanaudio 与
+    /load_custom_media 不收 utt，也就撤不掉。do_send 会写入这个标记。
+    """
+    return bool(item.metadata.get("withdrawable"))
+
+
+def _pick_withdrawable(inflight: list):
+    """从「已预送」的项里挑出可撤回的那一条（即 inflight[1]），否则返回 None。
+
+    inflight[0] 是正在播的（不动它）；只考虑 inflight[1]。
+    音视频项不可撤回时返回 None —— 调用方据此「原位保留」，
+    避免出现「撤不干净却照样重发 → 同一条播两遍」。
+    """
+    if len(inflight) < 2:
+        return None
+    cand = inflight[1]
+    return cand if _is_withdrawable(cand) else None
+
+
+async def _teardown_livestream(reason: str = ""):
+    """彻底结束当前直播会话（start 的重启保护 与 stop 接口共用）。
+
+    顺序有讲究：先把代号 +1 并清掉运行标志（旧循环下一轮自然失效），
+    再取消任务（确定性停止，不等循环醒来），最后才断连接 / 停队列 / 清队列。
+    """
+    from app.main import app
+
+    # ① 这一代作废：旧 watchdog / 聚合器的 _session_alive() 立刻变 False
+    app.state._livestream_gen = getattr(app.state, "_livestream_gen", 0) + 1
+    app.state._livestream_running = False
+
+    # ② 确定性取消（不依赖循环自己醒来看标志位）
+    tasks = getattr(app.state, "_livestream_tasks", None) or []
+    for t in tasks:
+        t.cancel()
+    for t in tasks:
+        try:
+            await t
+        except asyncio.CancelledError:
+            pass
+        except Exception as e:
+            logger.warning(f"后台任务退出异常: {e}")
+    app.state._livestream_tasks = []
+
+    # ③ 断开弹幕平台
+    if getattr(app.state, "collector", None):
+        try:
+            await app.state.collector.disconnect()
+        except Exception as e:
+            logger.warning(f"Disconnect collector error: {e}")
+        app.state.collector = None
+
+    # ④ 停自动补位 + 清空队列
+    if getattr(app.state, "play_queue", None):
+        await app.state.play_queue.stop_auto_fill()
+        await app.state.play_queue.clear()
+
+    # ⑤ 断开 LiveTalking（保留 session）
+    if getattr(app.state, "lt_client", None):
+        await app.state.lt_client.disconnect()
+
+    if reason:
+        logger.info(f"Livestream torn down ({reason})")
+
+
 @router.post("/api/livestream/start", tags=["livestream"])
 async def start_livestream(req: LivestreamStartRequest):
     """启动直播：连接弹幕 + 连接数字人 + 启动队列"""
     from app.main import app
     from app.database import async_session
+
+    # 幂等启动：已在直播则先彻底停掉旧会话。
+    # 否则旧会话的 watchdog / 弹幕聚合器还在跑，两套消费者抢同一个队列 → 双份回复。
+    if getattr(app.state, "_livestream_running", False):
+        logger.warning("检测到直播已在运行 → 先停止旧会话再启动")
+        await _teardown_livestream("restart")
 
     llm = app.state.llm_service
     lt_client = app.state.lt_client
@@ -453,16 +527,35 @@ async def start_livestream(req: LivestreamStartRequest):
     _PREFETCH = 1                     # 预送窗口
     _IDLE_TICKS = 0                   # 看门狗：连续多少次探测到「没在说话」
 
+    # 会话代号。旧会话的 watchdog / 弹幕聚合器只认自己那一代，
+    # 重启时代号 +1，旧任务立刻失效退出（光靠 _livestream_running 挡不住：
+    # 重启会把它立刻置回 True，旧任务就"复活"并与新任务抢同一个队列）。
+    app.state._livestream_gen = getattr(app.state, "_livestream_gen", 0) + 1
+    _gen = app.state._livestream_gen
+
+    def _session_alive() -> bool:
+        return (getattr(app.state, "_livestream_running", False)
+                and getattr(app.state, "_livestream_gen", 0) == _gen)
+
     async def do_send(item, priority: bool = False):
-        """把一条交给 LiveTalking（用 item.id 当 utt 编号，便于撤回未开播的那条）"""
+        """把一条交给 LiveTalking（用 item.id 当 utt 编号，便于撤回未开播的那条）
+
+        只有走 /human 的文字项能被打标撤回：服务端是拿 utt 去标记 TTS 音频帧的。
+        /humanaudio（音频）和 /load_custom_media（视频）都不接受 utt，
+        服务端无法定位它们的帧 → 明确记为不可撤回，
+        否则「撤回无效却照样重发」会让这一条播两遍。
+        """
         utt = item.id
-        item.metadata["utt"] = utt
         if item.type == "video" and item.content:
             await lt_client.load_media(item.content)
+            item.metadata["withdrawable"] = False
         elif item.type == "audio" and item.content:
             await lt_client.send_audio(item.content)
+            item.metadata["withdrawable"] = False
         else:
             await lt_client.send_text(item.content, utt=utt, priority=priority)
+            item.metadata["utt"] = utt
+            item.metadata["withdrawable"] = True
         _inflight.append(item)
         await _broadcast_status({
             "type": "playback_started",
@@ -489,14 +582,22 @@ async def start_livestream(req: LivestreamStartRequest):
                     break
 
     async def withdraw_pending():
-        """撤回「已预送、还没开播」的那条 → 给弹幕回复腾出紧邻位置（正在播的不动）"""
+        """撤回「已预送、还没开播」的那条 → 给弹幕回复腾出紧邻位置（正在播的不动）
+
+        仅撤回文字项（服务端有 utt 标记）。音频/视频项撤不掉，就原地保留不动，
+        让弹幕回复顺延到它之后 —— 总好过撤不干净还重发一遍、导致重复播放。
+        """
         async with _playback_lock:
-            pending = _inflight[1:]
-            del _inflight[1:]
-        for it in pending:
-            res = await lt_client.drop_queued_talk(it.metadata.get("utt", ""))
-            logger.info(f"撤回预送 utt={it.metadata.get('utt')} -> {res}")
-        return pending[0] if pending else None
+            if len(_inflight) < 2:
+                return None
+            cand = _pick_withdrawable(_inflight)
+            if cand is None:
+                logger.info(f"预送项 [{_inflight[1].source}] type={_inflight[1].type} 不可撤回 → 原位保留")
+                return None
+            del _inflight[1]
+        res = await lt_client.drop_queued_talk(cand.metadata.get("utt", ""))
+        logger.info(f"撤回预送 utt={cand.metadata.get('utt')} -> {res}")
+        return cand
 
     async def push_priority(text: str, source: str = "danmaku", metadata: dict = None):
         """插队播报：当前这句一定说完，回复紧跟其后（priority=True 插到 TTS 未合成队列最前）"""
@@ -528,7 +629,7 @@ async def start_livestream(req: LivestreamStartRequest):
     async def _pump_watchdog():
         """兜底：SSE 丢失 / 启动瞬间也能推进（绝不能因为没有 end 事件就停摆）"""
         nonlocal _IDLE_TICKS
-        while getattr(app.state, "_livestream_running", False):
+        while _session_alive():
             await asyncio.sleep(1.0)
             try:
                 async with _playback_lock:
@@ -561,7 +662,7 @@ async def start_livestream(req: LivestreamStartRequest):
     _POLICY = _persona.get("danmaku_policy") or ""                     # 用户自定义回复策略
 
     async def _danmaku_aggregator():
-        while getattr(app.state, "_livestream_running", False):
+        while _session_alive():
             await asyncio.sleep(0.2)
             if not _danmaku_buf:
                 continue
@@ -620,8 +721,11 @@ async def start_livestream(req: LivestreamStartRequest):
     app.state._danmaku_count = 0
 
     # 6. 启动调度：先预送第一条（零接缝的起点），再挂兜底看门狗 + 弹幕聚合器
-    asyncio.create_task(_pump_watchdog())
-    asyncio.create_task(_danmaku_aggregator())
+    #    任务句柄存下来，停止/重启时能确定性地取消（而不是等循环自己发现标志位）
+    app.state._livestream_tasks = [
+        asyncio.create_task(_pump_watchdog()),
+        asyncio.create_task(_danmaku_aggregator()),
+    ]
     await prefill()
 
     await _broadcast_status({"type": "status_change", "running": True, "room_id": req.room_id})
@@ -641,27 +745,8 @@ async def get_queue():
 
 @router.post("/api/livestream/stop", tags=["livestream"])
 async def stop_livestream():
-    """停止直播"""
-    from app.main import app
-
-    # 停止弹幕
-    if app.state.collector:
-        try:
-            await app.state.collector.disconnect()
-        except Exception as e:
-            logger.warning(f"Disconnect collector error: {e}")
-        app.state.collector = None
-
-    # 停止队列
-    if app.state.play_queue:
-        await app.state.play_queue.stop_auto_fill()
-        await app.state.play_queue.clear()
-
-    # 断开 LiveTalking（保留 session）
-    if app.state.lt_client:
-        await app.state.lt_client.disconnect()
-
-    app.state._livestream_running = False
+    """停止直播（与 start 的重启保护共用同一套 teardown）"""
+    await _teardown_livestream("stop api")
     await _broadcast_status({"type": "status_change", "running": False})
     logger.info("Livestream stopped")
     return {"code": 0, "msg": "ok"}
