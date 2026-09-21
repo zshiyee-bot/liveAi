@@ -1,18 +1,19 @@
 ###############################################################################
-#  LiveStream 播放引擎（进程内版）—— 行为对齐上游 lipku/LiveStream
+#  LiveStream 播放引擎（进程内版）
 #
-#  上游把直播逻辑写在 FastAPI 的 /api/livestream/start 闭包 + app.state 里
-#  （LiveStream/backend/app/api.py:415-521），这里抽成一个类，逻辑保持一致：
+#  弹幕侧行为 = 上游 lipku/LiveStream 原版：每条弹幕单独交给 LLM 生成一句回复，
+#  进高优队列；礼物「谢谢X的Y！」、关注「欢迎X关注直播间！」。
 #
-#    · 弹幕：逐条交给 LLM 生成回复 → put_high 进高优队列（同优先级 FIFO）
-#    · 礼物：直接「谢谢X的Y！」→ put_high
-#    · 关注：直接「欢迎X关注直播间！」→ put_high
-#    · 播放：播完一条 → 取队列下一条（on_playback_end 事件驱动 + 出队锁）
-#    · 补位：PlayQueue.start_auto_fill（低优队列不足 min_size 时补一条话术）
+#  播放调度比上游多一层「预送流水线」，目的是**消除两条话术之间的空白**：
+#    · 始终维持「1 条在播 + 1 条已预送」——播完一条立刻就有下一条在合成，
+#      不用等 TTS 首包（豆包首包实测 0.9~2.0s，那正是那段空白）
+#    · 弹幕/礼物/关注来了 → 先抽回「还没开播的低优话术」，把回复排到当前这句
+#      之后，再把抽回的话术补发 → 弹幕优先，且弹幕之间保持 FIFO 不乱序
+#    · 看门狗兜底：end 事件丢了也能推进，绝不因为没有事件就停摆
 #
 #  与上游唯一的差别：原来 LiveStream 是独立进程、通过 HTTP 访问 LiveTalking
 #  （/human、/humanaudio、/sse …）；现在合并进同一进程，改由
-#  LocalAvatarAdapter 直接操作 avatar_session，其余保持不变。
+#  LocalAvatarAdapter 直接操作 avatar_session。
 ###############################################################################
 
 import asyncio
@@ -25,7 +26,7 @@ class LiveStreamRuntime:
         self.queue = None                    # PlayQueue
         self.llm = None                      # LLMService
         self.collector = None                # MultiPlatformCollector
-        self.adapter = None                  # LocalAvatarAdapter（make_adapter() 注入）
+        self.adapter = None                  # LocalAvatarAdapter（每房间一个）
 
         self.running = False
         self.room_id = ""
@@ -33,9 +34,19 @@ class LiveStreamRuntime:
         self.platform = ""
         self.danmaku_count = 0
 
-        self._playback_lock = asyncio.Lock()  # 防止重复出队（上游同名逻辑）
-        self._play_task = None
+        # ── 预送流水线 ──
+        self._lock = asyncio.Lock()
+        self._inflight: list = []            # 已发出、未播完（[0] 正在播）
+        self._prefetch = 1                   # 除正在播的那条外，再预送几条
+        self._idle_ticks = 0
+        self._tasks: list = []               # 看门狗等后台任务
+
         self._status_cbs: list = []
+
+    @property
+    def inflight_count(self) -> int:
+        """已发出未播完的条数（[0] 正在播）—— 诊断页/状态接口用。"""
+        return len(self._inflight)
 
     # ── 状态广播（routes 注入：推给 /ls/ws 的客户端）─────────────
     def on_status(self, cb):
@@ -71,6 +82,7 @@ class LiveStreamRuntime:
             # 注意：PlayQueue 的 high_length/low_length/total_length 是 property，不是方法
             "queue_high_count": self.queue.high_length if self.queue else 0,
             "queue_low_count": self.queue.low_length if self.queue else 0,
+            "inflight": len(self._inflight),
             "danmaku_count": self.danmaku_count,
             "is_speaking": speaking,
         }
@@ -90,6 +102,8 @@ class LiveStreamRuntime:
         self.room_id = room_id or ""
         self.platform = platform or "bilibili"
         self.danmaku_count = 0
+        self._idle_ticks = 0
+        self._inflight = []
 
         # 1. 重新加载最新人设（前端可能刚改过 persona）
         if llm is not None and persona:
@@ -116,8 +130,9 @@ class LiveStreamRuntime:
                          f"直播继续，仅无弹幕")
 
         self.running = True
-        # 5. 首次触发：手动启动第一次出队播放
-        self._play_task = asyncio.create_task(self._try_play_next())
+        # 5. 看门狗 + 把预送窗口填满（起点：第一条立刻送出去，后面才有"无缝"可言）
+        self._tasks = [asyncio.create_task(self._pump_watchdog())]
+        await self._prefill()
         await self._emit({"type": "status_change", "running": True, "room_id": self.room_id})
         logger.info(f"[ls] 直播已启动 room={self.room_id} session={self.session_id[:8]} "
                     f"platform={self.platform}")
@@ -126,16 +141,9 @@ class LiveStreamRuntime:
     async def stop(self):
         was = self.running
         self.running = False
-        # 合并版特有：一个进程会反复 start/stop，必须把等待出队的循环收掉
-        if self._play_task is not None:
-            self._play_task.cancel()
-            try:
-                await self._play_task
-            except asyncio.CancelledError:
-                pass
-            except Exception as e:
-                logger.warning(f"[ls] 收尾出队任务异常: {e}")
-            self._play_task = None
+        for t in self._tasks:
+            t.cancel()
+        self._tasks = []
         if self.collector is not None:
             try:
                 await self.collector.disconnect()
@@ -150,7 +158,7 @@ class LiveStreamRuntime:
                 await self.queue.clear()
             except Exception as e:
                 logger.warning(f"[ls] 清空队列异常: {e}")
-        # 合并版特有：点了「停止直播」不能还在继续说
+        # 打断正在播/正在合成的那条（flush_talk 会清掉 TTS 的待播队列）
         if self.adapter is not None:
             _sid, sess = self.adapter.resolve()
             if sess is not None and callable(getattr(sess, 'flush_talk', None)):
@@ -158,6 +166,9 @@ class LiveStreamRuntime:
                     sess.flush_talk()
                 except Exception:
                     pass
+        async with self._lock:
+            self._inflight = []
+        if self.adapter is not None:
             await self.adapter.disconnect()
         if was:
             await self._emit({"type": "status_change", "running": False})
@@ -165,62 +176,153 @@ class LiveStreamRuntime:
         return {"code": 0, "msg": "ok"}
 
     async def interrupt(self):
-        """打断当前播报（上游：POST /api/livestream/interrupt → lt_client.interrupt()）。"""
+        """打断当前播报：清掉未播的内容 + 停掉正在合成的 TTS。未开播时安全返回。"""
+        n = len(self._inflight)
         if self.adapter is None:
-            return {"code": 0, "msg": "ok"}
+            async with self._lock:
+                self._inflight = []
+            return {"code": 0, "msg": "ok", "dropped": n}
         _sid, sess = self.adapter.resolve()
         if sess is not None and callable(getattr(sess, 'flush_talk', None)):
             try:
                 sess.flush_talk()
-                logger.info("[ls] 已打断当前播报")
+                logger.info(f"[ls] 已打断（清掉 {n} 条未播内容）")
             except Exception as e:
                 logger.warning(f"[ls] 打断失败: {e}")
-        return {"code": 0, "msg": "ok"}
+        async with self._lock:
+            self._inflight = []
+        return {"code": 0, "msg": "ok", "dropped": n}
 
-    # ── 播放调度（与上游一致：出队锁 + 播完取一条）───────────────
-    async def _do_send(self, item):
-        """把一条交给 LiveTalking（上游 do_send）。"""
-        if item.type == "video" and item.content:
-            # LiveTalking 侧没有 convert_custom_media / load_media（上游预留未实现）
-            raise RuntimeError("video 类型话术暂不支持（LiveTalking 无 load_media 接口）")
-        if item.type == "audio" and item.content:
-            res = await self.adapter.send_audio(item.content)
+    # ── 预送流水线（消除话术之间的空白）──────────────────────────
+    async def _do_send(self, item, priority: bool = False):
+        """把一条交给 LiveTalking。用 item.id 当 utt，便于撤回未开播的那条。"""
+        utt = item.id
+        if item.metadata is None:
+            item.metadata = {}
+        item.metadata["utt"] = utt
+        if item.type == "audio":
+            res = await self.adapter.send_audio(item.content, utt=utt, priority=priority)
+        elif item.type == "video":
+            # LiveTalking 侧没有 convert_custom_media / load_custom_media（上游预留未实现）
+            raise RuntimeError("video 类型话术暂不支持（LiveTalking 无 convert_custom_media 接口）")
         else:
-            res = await self.adapter.send_text(item.content)
+            res = await self.adapter.send_text(item.content, utt=utt, priority=priority)
         if isinstance(res, dict) and res.get("code") not in (0, None):
             raise RuntimeError(f"发送失败: {res.get('msg')}")
+        self._inflight.append(item)
         await self._emit({
             "type": "playback_started",
             "item_id": item.id,
             "source": item.source,
+            "priority": priority,
+            "inflight": len(self._inflight),
             "content_preview": (item.content or "")[:80],
         })
-        logger.info(f"[ls] → 会话 [{item.source}] {(item.content or '')[:40]}")
+        logger.info(f"[ls] → 会话 utt={utt} priority={priority} inflight={len(self._inflight)} "
+                    f"[{item.source}] {(item.content or '')[:40]}")
+        return True
 
-    async def _try_play_next(self):
-        """出队并发送（带锁，同一时刻只执行一次）—— 上游 try_play_next。
-
-        比上游多一个 self.running 判断：合并版同一个进程会反复 start/stop，
-        循环必须能退出，否则旧队列的话术会被发到下一个会话上。
-        """
-        if self._playback_lock.locked():
-            return
-        async with self._playback_lock:
-            item = None
-            while self.running:
+    async def _prefill(self):
+        """把预送窗口填满。不阻塞等待：队列空就返回，靠 auto-fill / 弹幕再触发。"""
+        async with self._lock:
+            while len(self._inflight) <= self._prefetch:
                 item = await self.queue.get_next()
-                if item is not None:
+                if item is None:
+                    # 队列干涸：auto-fill 每 3 秒才补一条，等它就是「话术之间出现空白」。
+                    # 这里直接向话术库要一条（random_pick 内部已做权重 + 最近 N 条不重复）。
+                    filler = getattr(self.queue, '_script_manager', None)
+                    if filler is not None:
+                        try:
+                            item = await filler.random_pick()
+                        except Exception as e:
+                            logger.warning(f"[ls] 话术库补位失败: {e}")
+                            item = None
+                    if item is None:
+                        break
+                try:
+                    await self._do_send(item)
+                except Exception as e:
+                    logger.error(f"[ls] 发送失败: {e}")
                     break
-                await asyncio.sleep(0.3)
-            if item is None:
-                return
-            await self._do_send(item)
+
+    async def _withdraw_scripts(self):
+        """抽回「已预送、还没开播」的**低优话术**（正在播的那条不动）。
+
+        只抽话术、不动已经排上的弹幕/礼物回复，原因：
+          · 目的只是别让话术挡住弹幕的位置；
+          · TTS 的 priority=True 是 appendleft（后到的排最前），如果连之前的弹幕
+            回复也一起抽回来重发，连发弹幕时回复顺序会颠倒。
+        """
+        async with self._lock:
+            keep, drop = [], []
+            for i, it in enumerate(self._inflight):
+                if i > 0 and it.source == "script":
+                    drop.append(it)
+                else:
+                    keep.append(it)
+            self._inflight = keep
+        for it in drop:
+            try:
+                await self.adapter.drop_queued_talk(it.metadata.get("utt", ""))
+            except Exception as e:
+                logger.warning(f"[ls] 撤回预送话术失败: {e}")
+        return drop
+
+    async def push_priority(self, text: str, source: str = "danmaku", metadata: dict = None):
+        """插队播报：当前这句一定说完，这条紧跟其后（不让预送话术挡在前面）。"""
+        if not text or not text.strip():
+            return
+        from server.livestream.services.play_queue import QueueItem
+        item = QueueItem(type="text", content=text, source=source, metadata=metadata or {})
+        pending = await self._withdraw_scripts()      # ① 抽回预送的话术，腾出紧邻位置
+        try:
+            await self._do_send(item)                 # ② 追加（FIFO → 弹幕之间不乱序）
+        except Exception as e:
+            logger.error(f"[ls] 插队发送失败: {e}")
+        for p in pending:                             # ③ 抽回的话术补在后面
+            try:
+                await self._do_send(p)
+            except Exception as e:
+                logger.error(f"[ls] 补发撤回项失败: {e}")
 
     async def on_playback_end(self):
-        """收到播放结束事件：出队下一条（上游同名回调）。"""
-        await self._try_play_next()
+        """收到播放结束事件：腾出窗口并立刻补位（保证下一条早已在队列里）。"""
+        done = None
+        async with self._lock:
+            if self._inflight:
+                done = self._inflight.pop(0)
+        if done is not None:
+            logger.info(f"[ls] 播完 [{done.source}] utt={done.metadata.get('utt')}")
+        if self.running:
+            await self._prefill()
 
-    # ── 弹幕（与上游一致：逐条回复 / 礼物 / 关注 → 高优队列）──────
+    async def _pump_watchdog(self):
+        """兜底：事件丢失 / 启动瞬间也能推进（绝不能因为没有 end 事件就停摆）。"""
+        while self.running:
+            # 窗口空时用更密的节拍（0.5s）补位，缩小「无话可说」的空窗
+            async with self._lock:
+                n0 = len(self._inflight)
+            await asyncio.sleep(0.5 if n0 == 0 else 1.0)
+            try:
+                async with self._lock:
+                    n = len(self._inflight)
+                if n == 0:
+                    await self._prefill()
+                    continue
+                if await self.adapter.is_speaking():
+                    self._idle_ticks = 0
+                    continue
+                self._idle_ticks += 1
+                if n == 1 and self._idle_ticks >= 3:
+                    logger.warning("[ls] watchdog: 连续 3 秒未收到 end 且未在说话 → 手动推进")
+                    self._idle_ticks = 0
+                    await self.on_playback_end()
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.warning(f"[ls] watchdog 异常: {e}")
+
+    # ── 弹幕（与上游一致：逐条回复 / 礼物 / 关注）──────────────────
     async def _on_danmaku(self, msg):
         await self._emit({
             "type": getattr(msg, "msg_type", "danmaku"),
@@ -231,7 +333,6 @@ class LiveStreamRuntime:
         })
         self.danmaku_count += 1
 
-        from server.livestream.services.play_queue import QueueItem
         msg_type = getattr(msg, "msg_type", "danmaku")
         if msg_type == "danmaku" and self.llm:
             try:
@@ -241,25 +342,21 @@ class LiveStreamRuntime:
                 reply = ""
             if reply:
                 logger.info(f"[ls] 弹幕回复 [{msg.sender}]: {reply[:60]}")
-                await self.queue.put_high(QueueItem(
-                    type="text", content=reply, source="danmaku",
-                    metadata={"sender": msg.sender, "original": msg.content},
-                ))
+                # 插队播报：当前这句说完就播，不排在预送的话术后面
+                await self.push_priority(reply, source="danmaku", metadata={
+                    "sender": msg.sender, "original": msg.content,
+                })
         elif msg_type == "gift":
-            await self.queue.put_high(QueueItem(
-                type="text", content=f"谢谢{msg.sender}的{msg.content}！", source="gift",
-                metadata={"sender": msg.sender},
-            ))
+            await self.push_priority(f"谢谢{msg.sender}的{msg.content}！", source="gift",
+                                     metadata={"sender": msg.sender})
         elif msg_type == "follow":
-            await self.queue.put_high(QueueItem(
-                type="text", content=f"欢迎{msg.sender}关注直播间！", source="follow",
-                metadata={"sender": msg.sender},
-            ))
+            await self.push_priority(f"欢迎{msg.sender}关注直播间！", source="follow",
+                                     metadata={"sender": msg.sender})
 
     async def ingest(self, msg):
         """外部来源的弹幕塞进来（Windows 侧转发的抖音弹幕走这里）。
 
-        走的路径和采集器回调完全一致：广播事件 → 逐条生成回复 → 高优队列。
+        走的路径和采集器回调完全一致：广播事件 → 逐条生成回复 → 插队播报。
         """
         await self._on_danmaku(msg)
 
@@ -273,5 +370,5 @@ class LiveStreamRuntime:
         return {"code": 0, "msg": "ok"}
 
 
-# 全局单例
+# 全局单例（仅兼容旧引用；多房间模式下每个房间各自 new 一个）
 runtime = LiveStreamRuntime()

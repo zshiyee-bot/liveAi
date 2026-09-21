@@ -1025,6 +1025,8 @@ async def api_ls_status_page(request):
             "platform": rm.runtime.platform,
             "queue": {"high": rm.queue.high_length if rm.queue else 0,
                       "low": rm.queue.low_length if rm.queue else 0},
+            # 已发出未播完的条数（[0] 正在播，其余是预送的）—— 预送流水线是否在工作看它
+            "inflight": rm.runtime.inflight_count,
             "ws_clients": len(rm.ws_clients),
         }
     info = {
