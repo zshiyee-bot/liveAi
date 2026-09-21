@@ -252,6 +252,54 @@ async def admin_sessions(request):
         return json_error(str(e))
 
 
+async def admin_kick_session(request):
+    """Admin: 强制踢掉会话（单个 / 全部）。
+
+    为什么需要这个出口：rtc_manager 只在 connectionState 变成 failed/closed 时
+    才回收会话。客户端直接关页面 / 崩溃 / 断网时，PeerConnection 常常停在
+    connecting 或 disconnected（aiortc 不会很快超时到 failed），会话就永远留在
+    「活跃会话」列表里 —— 用户明明关了所有页面，后台还显示有会话在跑。
+
+    这里除了 remove_session（停线程 + 交还显存），还会 await pc.close()，
+    让浏览器那边立刻断开，而不是画面冻住。
+    """
+    try:
+        body = {}
+        try:
+            body = await request.json()
+        except Exception:
+            pass
+
+        kick_all = bool(body.get("all"))
+        sid = (body.get("sessionid") or "").strip()
+        if not kick_all and not sid:
+            return json_error("sessionid 不能为空（或传 all=true 踢掉全部）")
+
+        targets = list(session_manager.sessions.keys()) if kick_all else [sid]
+        kicked = []
+        for s in targets:
+            if s not in session_manager.sessions:
+                continue                      # 已经断开了（前端 5 秒轮询有延迟）
+            sess = session_manager.get_session(s)
+            pc = getattr(sess, "_rtc_pc", None) if sess is not None else None
+            if pc is not None:
+                try:
+                    await pc.close()          # 先断开 PeerConnection，浏览器立刻掉线
+                except Exception as e:
+                    logger.warning("踢 %s 时关闭 pc 失败: %s", s[:8], e)
+            session_manager.remove_session(s)  # 兜底：pc.close 没触发回调也要清掉
+            kicked.append(s)
+            logger.info("[admin] 已踢掉会话 %s", s[:8])
+        if not kicked:
+            if kick_all:
+                return json_error("当前没有活跃会话")
+            return json_error("没有找到这个会话（可能已经断开了）")
+        return json_ok(data={"kicked": kicked})
+    except Exception as e:
+        logger.exception('admin_kick_session exception:')
+        return json_error(str(e))
+
+
 # ─── 路由注册 ──────────────────────────────────────────────────────────────
 
 async def index(request):
@@ -277,6 +325,7 @@ def setup_routes(app):
     app.router.add_post("/is_speaking", is_speaking)
     app.router.add_get("/api/admin/config", admin_config)
     app.router.add_get("/api/admin/sessions", admin_sessions)
+    app.router.add_post("/api/admin/sessions/kick", admin_kick_session)
     app.router.add_get('/sse', sse_handler)
 
     # ── Local ASR endpoint (SenseVoice/FunASR) ── Issue #604 ──

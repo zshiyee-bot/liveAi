@@ -62,13 +62,60 @@ class RTCManager:
             except Exception:
                 pass
 
-        @pc.on("connectionstatechange")
-        async def on_connectionstatechange():
-            logger.info("Connection state is %s", pc.connectionState)
-            if pc.connectionState in ("failed", "closed"):
-                await pc.close()
+        # ── 会话回收 ────────────────────────────────────────────────
+        # 原来只处理 failed/closed。但客户端直接关页面 / 崩溃 / 断网时，pc 往往
+        # 停在 disconnected 就不再变化（aiortc 不会很快超时到 failed），会话于是
+        # 永远留在 admin 的「活跃会话」里 —— 用户明明关了所有页面，后台还显示有
+        # 会话在跑，而且会一直占着模型切换的名额。
+        # 给一个宽限期：期间恢复成 connected 就不动，到期仍是断开态才回收。
+        _disconnect_grace = 30.0
+        _disconnect_task = {"t": None}
+
+        def _cancel_grace_task():
+            t = _disconnect_task["t"]
+            # 不要取消「自己」：宽限任务到点后会 await pc.close()，那会再次触发本回调，
+            # 若在这里把当前任务 cancel 掉，后面的清理语句就会被 CancelledError 跳过。
+            if t is not None and not t.done() and t is not asyncio.current_task():
+                t.cancel()
+            _disconnect_task["t"] = None
+
+        async def _reap_if_still_disconnected():
+            try:
+                await asyncio.sleep(_disconnect_grace)
+            except asyncio.CancelledError:
+                return
+            if pc.connectionState in ("disconnected", "failed", "closed"):
+                logger.warning("会话 %s 断开超过 %.0fs 仍未恢复，自动回收",
+                               sessionid[:8], _disconnect_grace)
+                # 先清理再关 pc：pc.close() 会再触发一次本回调，顺序反了会让清理被跳过
                 self.pcs.discard(pc)
                 session_manager.remove_session(sessionid)
+                try:
+                    await pc.close()
+                except Exception:
+                    pass
+
+        @pc.on("connectionstatechange")
+        async def on_connectionstatechange():
+            state = pc.connectionState
+            logger.info("Connection state is %s", state)
+            if state in ("failed", "closed"):
+                _cancel_grace_task()
+                # 先把资源清掉，再关 pc（pc.close() 会再次触发本回调，顺序反了会被中断）
+                self.pcs.discard(pc)
+                session_manager.remove_session(sessionid)
+                if state == "failed":
+                    try:
+                        await pc.close()
+                    except Exception:
+                        pass
+            elif state == "disconnected":
+                # 只在没有在跑的宽限任务时起一个，避免重复计时
+                t = _disconnect_task["t"]
+                if t is None or t.done():
+                    _disconnect_task["t"] = asyncio.create_task(_reap_if_still_disconnected())
+            elif state == "connected":
+                _cancel_grace_task()
 
         # 添加发送轨道
         from server.webrtc import HumanPlayer

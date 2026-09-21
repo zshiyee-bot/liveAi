@@ -234,6 +234,10 @@
                     <h4 class="mb-4 d-flex align-items-center gap-2">
                         <i class="bi bi-people-fill text-success"></i> 活跃会话
                         <span class="badge bg-primary ms-2 rounded-pill" id="sessionCount">0</span>
+                        <button class="btn btn-sm btn-outline-danger ms-auto d-none" id="kickAllBtn"
+                                title="强制断开所有会话（客户端会立刻掉线）">
+                            <i class="bi bi-x-octagon"></i> 全部踢掉
+                        </button>
                     </h4>
 
                     <div id="sessionsContainer">
@@ -313,6 +317,7 @@
         function renderSessions(sessions) {
             const container = $('#sessionsContainer');
             container.empty();
+            $('#kickAllBtn').toggleClass('d-none', sessions.length === 0);
 
             if (sessions.length === 0) {
                 container.append(`
@@ -348,6 +353,11 @@
                             <div>
                                 ${statusBadge}
                                 ${recBadge}
+                                <button class="btn btn-sm btn-outline-danger kick-btn"
+                                        data-sid="${session.sessionid}"
+                                        title="强制断开这个会话（客户端会立刻掉线）">
+                                    <i class="bi bi-x-circle"></i> 踢掉
+                                </button>
 
                             </div>
                         </div>
@@ -376,6 +386,38 @@
                 `);
             });
         }
+
+        async function kickSession(sid, all = false) {
+            const label = all ? '全部会话' : `会话 ${String(sid).slice(0, 8)}…`;
+            if (!confirm(`确定要踢掉${label}吗？对方会立刻断开，需要重新连接。`)) return;
+
+            try {
+                const response = await fetch('/api/admin/sessions/kick', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(all ? { all: true } : { sessionid: sid })
+                });
+                const result = await response.json();
+                if (result.code === 0) {
+                    const n = (result.data && result.data.kicked) ? result.data.kicked.length : 0;
+                    console.log('已踢掉', n, '个会话');
+                } else {
+                    alert('踢掉失败: ' + (result.msg || '未知错误'));
+                }
+            } catch (err) {
+                alert('踢掉失败: 网络错误');
+            } finally {
+                fetchSessions();
+            }
+        }
+
+        $(document).on('click', '.kick-btn', function () {
+            kickSession($(this).attr('data-sid'));
+        });
+
+        $(document).on('click', '#kickAllBtn', function () {
+            kickSession('', true);
+        });
 
         function refreshData() {
             const icon = $('.bi-arrow-clockwise');

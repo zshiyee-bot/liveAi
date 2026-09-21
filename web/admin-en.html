@@ -217,6 +217,10 @@
                     <h4 class="mb-4 d-flex align-items-center gap-2">
                         <i class="bi bi-people-fill text-success"></i> Active Sessions
                         <span class="badge bg-primary ms-2 rounded-pill" id="sessionCount">0</span>
+                        <button class="btn btn-sm btn-outline-danger ms-auto d-none" id="kickAllBtn"
+                                title="Force-disconnect every session (clients drop immediately)">
+                            <i class="bi bi-x-octagon"></i> Kick All
+                        </button>
                     </h4>
 
                     <div id="sessionsContainer">
@@ -296,6 +300,7 @@
         function renderSessions(sessions) {
             const container = $('#sessionsContainer');
             container.empty();
+            $('#kickAllBtn').toggleClass('d-none', sessions.length === 0);
 
             if (sessions.length === 0) {
                 container.append(`
@@ -331,6 +336,11 @@
                             <div>
                                 ${statusBadge}
                                 ${recBadge}
+                                <button class="btn btn-sm btn-outline-danger kick-btn"
+                                        data-sid="${session.sessionid}"
+                                        title="Force-disconnect this session (client drops immediately)">
+                                    <i class="bi bi-x-circle"></i> Kick
+                                </button>
                             </div>
                         </div>
                         <div class="row">
@@ -356,6 +366,38 @@
                 `);
             });
         }
+
+        async function kickSession(sid, all = false) {
+            const label = all ? 'ALL sessions' : `session ${String(sid).slice(0, 8)}…`;
+            if (!confirm(`Kick ${label}? The client will be disconnected immediately.`)) return;
+
+            try {
+                const response = await fetch('/api/admin/sessions/kick', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(all ? { all: true } : { sessionid: sid })
+                });
+                const result = await response.json();
+                if (result.code === 0) {
+                    const n = (result.data && result.data.kicked) ? result.data.kicked.length : 0;
+                    console.log('kicked', n, 'session(s)');
+                } else {
+                    alert('Kick failed: ' + (result.msg || 'unknown error'));
+                }
+            } catch (err) {
+                alert('Kick failed: network error');
+            } finally {
+                fetchSessions();
+            }
+        }
+
+        $(document).on('click', '.kick-btn', function () {
+            kickSession($(this).attr('data-sid'));
+        });
+
+        $(document).on('click', '#kickAllBtn', function () {
+            kickSession('', true);
+        });
 
         function refreshData() {
             const icon = $('.bi-arrow-clockwise');
