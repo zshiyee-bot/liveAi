@@ -53,7 +53,18 @@ def json_error(msg, code=-1):
 
 
 async def _body(request) -> dict:
+    """请求体解析。
+
+    先看 content-type 再读，不能"先 json() 失败再 post()" —— body 只会被消费一次。
+    前端「模拟弹幕」面板提交的是 FormData（multipart/form-data），上游这个接口用的
+    也是 FastAPI 的 Form(...)，所以这里必须支持表单，否则用户在内容框里填的东西
+    会被整条丢掉、只剩默认文案。
+    """
     try:
+        ct = (request.content_type or "").lower()
+        if "form" in ct:
+            data = await request.post()
+            return {k: (v if isinstance(v, str) else str(v)) for k, v in data.items()}
         data = await request.json()
         return data if isinstance(data, dict) else {}
     except Exception:
@@ -269,30 +280,12 @@ async def api_persona_put(request):
             if isinstance(ft, str):
                 ft = [x.strip() for x in ft.replace('，', ',').split(',') if x.strip()]
             p.forbidden_topics = json.dumps(ft, ensure_ascii=False)
-        if body.get('danmaku_policy') is not None:
-            p.danmaku_policy = str(body['danmaku_policy'])
-        for k, lo, hi in (('danmaku_batch_trigger', 1, 50), ('danmaku_max_chars', 10, 200)):
-            if body.get(k) is not None:
-                try:
-                    setattr(p, k, max(lo, min(hi, int(body[k]))))
-                except Exception:
-                    pass
-        if body.get('danmaku_batch_wait') is not None:
-            try:
-                p.danmaku_batch_wait = max(0.5, min(30.0, float(body['danmaku_batch_wait'])))
-            except Exception:
-                pass
         await s.commit()
         await s.refresh(p)
         d = _persona_norm(p)
     # 人设改了要立刻反映到 LLM（否则要等重启）
     if LS.llm is not None:
         LS.llm.persona = d
-    if runtime.running:
-        runtime._policy = d.get('danmaku_policy') or ""
-        runtime._batch_trigger = max(1, int(d.get('danmaku_batch_trigger') or 3))
-        runtime._batch_wait = float(d.get('danmaku_batch_wait') or 6.0)
-        runtime._max_chars = int(d.get('danmaku_max_chars') or 60)
     return reply(d)
 
 
@@ -746,18 +739,17 @@ async def api_queue(request):
 
 async def api_mock_danmaku(request):
     await ensure_ready()
+    if not runtime.running:
+        return fail("直播未启动，无法模拟弹幕")
     body = await _body(request)
     kind = (body.get('msg_type') or body.get('type') or 'danmaku').strip()
     sender = (body.get('sender') or '测试观众').strip()
-    # 兼容前端可能用的各种字段名。实测：网页上点「模拟弹幕」会在两台机器上都返回
-    # 400 Bad Request（/ls/api/mock/danmaku），就是这里 content 取不到值导致的。
-    # 模拟弹幕本来就是测试功能，没给内容时给个默认值即可，不该报错拦住用户。
+    # 兼容前端可能用的各种字段名（上游这个接口用的是 FastAPI Form）
     content = (body.get('content') or body.get('text') or body.get('message')
                or body.get('msg') or '').strip()
     if not content:
-        # 默认文案必须是一句「值得回应」的话 —— 之前是「这是一条模拟弹幕」，
-        # LLM 按人设判定为无意义测试内容 → 回 SKIP → 用户看到「发弹幕没反应」。
-        content = '主播你好，今天播到几点呀？'
+        # 与上游一致：模拟弹幕默认文案「主播好厉害！」
+        content = '主播好厉害！'
     await runtime.mock_danmaku(kind, sender, content)
     return reply({"code": 0, "msg": "ok"})
 
@@ -833,7 +825,6 @@ async def api_ls_status_page(request):
                                       and getattr(LS.queue, '_on_change', None) is not None),
         "sessions": len(adapter.list_sessions()),
         "running": runtime.running,
-        "inflight": len(runtime._inflight),
         "ws_clients": len(LS.ws_clients),
         "frontend_built": os.path.isfile(os.path.join(WEB_LS_DIR, 'index.html')),
         "url_prefix": "/ls",

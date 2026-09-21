@@ -40,14 +40,9 @@ def _migrate_add_columns(conn):
     """幂等补列：先 PRAGMA table_info 看缺哪列，再 ALTER TABLE ADD COLUMN。"""
     from sqlalchemy import text
 
-    wanted = {
-        "persona": [
-            ("danmaku_policy", "TEXT DEFAULT ''"),
-            ("danmaku_batch_trigger", "INTEGER DEFAULT 3"),
-            ("danmaku_batch_wait", "FLOAT DEFAULT 6.0"),
-            ("danmaku_max_chars", "INTEGER DEFAULT 60"),
-        ],
-    }
+    # 合并版当初给 persona 加过 4 个「弹幕聚合」字段，现已按上游恢复、不再使用。
+    # （SQLite 里留着那几列不影响 ORM：select 只取模型里映射的列。）
+    wanted = {}
     for table, cols in wanted.items():
         try:
             rows = conn.execute(text(f"PRAGMA table_info({table})")).fetchall()
