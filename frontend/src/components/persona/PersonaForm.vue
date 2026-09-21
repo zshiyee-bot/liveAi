@@ -37,6 +37,28 @@
         style="width: 100%"
       />
     </el-form-item>
+    <!-- ── 弹幕聚合回复：多条弹幕 → 合并成一句话再播报 ── -->
+    <el-divider content-position="left">弹幕回复（小助手设定）</el-divider>
+    <el-form-item label="聚合触发条数">
+      <el-input-number v-model="form.danmaku_batch_trigger" :min="1" :max="50" />
+      <span class="hint">弹幕积压超过 {{ Math.max(0, form.danmaku_batch_trigger - 1) }} 条就立刻合并成一句话</span>
+    </el-form-item>
+    <el-form-item label="兜底等待">
+      <el-input-number v-model="form.danmaku_batch_wait" :min="0.5" :max="30" :step="0.5" />
+      <span class="hint">秒；不够上面的条数时等这么久就回（避免只有一两条时一直不回）</span>
+    </el-form-item>
+    <el-form-item label="一句话上限">
+      <el-input-number v-model="form.danmaku_max_chars" :min="10" :max="200" />
+      <span class="hint">字；多条弹幕会被合并成「一句话」播报，超长只保留重点</span>
+    </el-form-item>
+    <el-form-item label="回复策略">
+      <el-input
+        v-model="form.danmaku_policy"
+        type="textarea"
+        :rows="3"
+        placeholder="如：优先回答商品、价格、位置类问题；纯表情、刷屏、重复内容不回"
+      />
+    </el-form-item>
     <el-form-item label=" ">
       <el-button type="primary" @click="handleSave" :loading="saving">保存配置</el-button>
       <el-button @click="handleReset">重置</el-button>
@@ -66,6 +88,10 @@ const form = reactive({
   style: '',
   knowledge_scope: '',
   forbidden_topics: [] as string[],
+  danmaku_policy: '',
+  danmaku_batch_trigger: 3,
+  danmaku_batch_wait: 3,
+  danmaku_max_chars: 60,
 })
 
 const previewText = computed(() => {
@@ -78,6 +104,12 @@ const previewText = computed(() => {
   if (form.forbidden_topics.length > 0) {
     parts.push(`禁止谈论：${form.forbidden_topics.join('、')}`)
   }
+  if (form.danmaku_policy) {
+    parts.push(`弹幕回复策略：${form.danmaku_policy}`)
+  }
+  parts.push(
+    `弹幕积压超过 ${Math.max(0, form.danmaku_batch_trigger - 1)} 条时，把多条合并成一句（≤${form.danmaku_max_chars}字）播报`
+  )
   return parts.join('\n')
 })
 
@@ -89,6 +121,10 @@ onMounted(async () => {
   form.style = p.style
   form.knowledge_scope = p.knowledge_scope
   form.forbidden_topics = [...p.forbidden_topics]
+  form.danmaku_policy = p.danmaku_policy || ''
+  form.danmaku_batch_trigger = p.danmaku_batch_trigger || 3
+  form.danmaku_batch_wait = p.danmaku_batch_wait || 3
+  form.danmaku_max_chars = p.danmaku_max_chars || 60
 })
 
 async function handleSave() {
@@ -109,6 +145,18 @@ function handleReset() {
     form.style = p.style
     form.knowledge_scope = p.knowledge_scope
     form.forbidden_topics = [...p.forbidden_topics]
+  form.danmaku_policy = p.danmaku_policy || ''
+  form.danmaku_batch_trigger = p.danmaku_batch_trigger || 3
+  form.danmaku_batch_wait = p.danmaku_batch_wait || 3
+  form.danmaku_max_chars = p.danmaku_max_chars || 60
   })
 }
 </script>
+
+<style scoped>
+.hint {
+  margin-left: 10px;
+  font-size: 12px;
+  color: #909399;
+}
+</style>

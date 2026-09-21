@@ -58,11 +58,11 @@ class PlayQueue:
     # ── 入队 ──────────────────────────────────────────────────────
 
     async def put_high(self, item: QueueItem):
-        """高优先级入队（追加到高优队尾，同优先级 FIFO）"""
+        """高优先级入队（插到高优队列**最前面** → 紧跟当前正在播的那句之后）"""
         item.level = "high"
         async with self._lock:
-            self._high.append(item)
-        logger.info(f"Queue put_high: [{item.source}] {item.content[:50]}... (high={len(self._high)}, low={len(self._low)})")
+            self._high.appendleft(item)
+        logger.info(f"Queue put_high(front): [{item.source}] {item.content[:50]}... (high={len(self._high)}, low={len(self._low)})")
         await self._notify_change()
 
     async def put_low(self, item: QueueItem):

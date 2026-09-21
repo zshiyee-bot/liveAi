@@ -6,6 +6,11 @@ export interface PersonaConfig {
   style: string
   knowledge_scope: string
   forbidden_topics: string[]
+  // ── 弹幕聚合回复（小助手设定）：多条弹幕合并成一句话再播报 ──
+  danmaku_policy: string
+  danmaku_batch_trigger: number
+  danmaku_batch_wait: number
+  danmaku_max_chars: number
   updated_at: string | null
 }
 

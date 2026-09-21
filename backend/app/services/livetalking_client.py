@@ -163,23 +163,49 @@ class LiveTalkingClient:
 
     # ── 发送 ──────────────────────────────────────────────────────
 
-    async def send_text(self, text: str):
-        """通过 /human 接口发送文字（echo 模式直接 TTS）"""
+    async def send_text(self, text: str, utt: str = "", priority: bool = False):
+        """通过 /human 接口发送文字（echo 模式直接 TTS）
+
+        utt: 本条话术的编号（服务端会用它在音频帧上打标，便于「撤回未开播的那条」）
+        priority: True = 插到「还没开始合成」的最前面（正在播的那条不受影响 → 不产生接缝）
+        """
         if not self._http:
             raise RuntimeError("Not connected")
 
-        resp = await self._http.post(
-            f"{self.base_url}/human",
-            json={
-                "sessionid": self.session_id,
-                "text": text,
-                "type": "echo",
-            },
-        )
+        payload = {
+            "sessionid": self.session_id,
+            "text": text,
+            "type": "echo",
+        }
+        if utt:
+            payload["utt"] = utt
+        if priority:
+            payload["priority"] = True
+
+        resp = await self._http.post(f"{self.base_url}/human", json=payload)
         data = resp.json()
         if data.get("code") != 0:
             logger.warning(f"LiveTalking /human returned error: {data}")
         return data
+
+    async def drop_queued_talk(self, utt: str) -> dict:
+        """撤回「已入队、但还没开播」的某条话术（弹幕插队用）。
+        服务端只会摘掉 TTS 待合成队列 + asr 播放队列里属于该 utt 的音频帧，
+        当前正在说的那条不受影响。"""
+        if not self._http or not utt:
+            return {}
+        try:
+            resp = await self._http.post(
+                f"{self.base_url}/drop_queued_talk",
+                json={"sessionid": self.session_id, "utt": utt},
+            )
+            data = resp.json()
+            if data.get("code") != 0:
+                logger.warning(f"drop_queued_talk returned error: {data}")
+            return data
+        except Exception as e:
+            logger.warning(f"drop_queued_talk failed: {e}")
+            return {}
 
     async def send_audio(self, audio_path: str):
         """通过 /humanaudio 接口上传音频文件"""

@@ -52,6 +52,15 @@ async def update_persona(data: PersonaUpdate, db: AsyncSession = Depends(get_db)
     persona.style = data.style
     persona.knowledge_scope = data.knowledge_scope
     persona.forbidden_topics_list = data.forbidden_topics
+    # 弹幕聚合回复配置（可选字段：未传则保持原值）
+    if data.danmaku_policy is not None:
+        persona.danmaku_policy = data.danmaku_policy
+    if data.danmaku_batch_trigger is not None:
+        persona.danmaku_batch_trigger = int(data.danmaku_batch_trigger)
+    if data.danmaku_batch_wait is not None:
+        persona.danmaku_batch_wait = float(data.danmaku_batch_wait)
+    if data.danmaku_max_chars is not None:
+        persona.danmaku_max_chars = int(data.danmaku_max_chars)
     await db.commit()
     await db.refresh(persona)
     logger.info(f"Persona updated: {persona.name}")
@@ -434,70 +443,167 @@ async def start_livestream(req: LivestreamStartRequest):
     lt_client.set_session(req.session_id)
     await lt_client.connect()
 
-    # ── 播放调度（SSE 主力 + 轮询兜底）──
-    _playback_lock = asyncio.Lock()       # 防止重复出队
+    # ── 播放调度：预送流水线（零接缝）+ 弹幕插队（不打断当前这句）──
+    #
+    # 为什么必须预送：LiveTalking 的 TTS 是「整段联网合成完成 → 一次性把音频帧灌进播放队列」，
+    # 而 edge TTS 每段要 1.0~2.8 秒。若「等这条播完才去要下一条」，中间必然出现 1~3 秒空白。
+    # 所以始终保持「1 条在播 + 1 条已预送」：下一条在上一条播完前就已合成好、帧已排队 → 无缝。
+    _playback_lock = asyncio.Lock()   # 只保护状态变更（不用来等队列 → 不会丢推进）
+    _inflight: list = []              # 已发给 LiveTalking、还没播完的项（[0] = 正在播）
+    _PREFETCH = 1                     # 预送窗口
+    _IDLE_TICKS = 0                   # 看门狗：连续多少次探测到「没在说话」
 
-    async def do_send(item):
-        """发送一条到 LiveTalking"""
+    async def do_send(item, priority: bool = False):
+        """把一条交给 LiveTalking（用 item.id 当 utt 编号，便于撤回未开播的那条）"""
+        utt = item.id
+        item.metadata["utt"] = utt
         if item.type == "video" and item.content:
             await lt_client.load_media(item.content)
         elif item.type == "audio" and item.content:
             await lt_client.send_audio(item.content)
         else:
-            await lt_client.send_text(item.content)
+            await lt_client.send_text(item.content, utt=utt, priority=priority)
+        _inflight.append(item)
         await _broadcast_status({
             "type": "playback_started",
             "item_id": item.id,
             "source": item.source,
+            "priority": priority,
+            "inflight": len(_inflight),
             "content_preview": item.content[:80],
         })
+        logger.info(f"→ LiveTalking utt={utt} priority={priority} inflight={len(_inflight)} "
+                    f"[{item.source}] {item.content[:40]}")
 
-    async def try_play_next():
-        """出队并发送（带锁，同一时刻只执行一次）"""
-        if _playback_lock.locked():
-            return
+    async def prefill():
+        """把预送窗口填满（不阻塞等待：队列空就返回，靠 auto-fill / 弹幕再触发）"""
         async with _playback_lock:
-            # 阻塞等待队列有数据
-            while True:
+            while len(_inflight) <= _PREFETCH:
                 item = await queue.get_next()
-                if item is not None:
+                if item is None:
                     break
-                await asyncio.sleep(0.3)
-            await do_send(item)
+                try:
+                    await do_send(item)
+                except Exception as e:
+                    logger.error(f"Send to LiveTalking failed: {e}")
+                    break
+
+    async def withdraw_pending():
+        """撤回「已预送、还没开播」的那条 → 给弹幕回复腾出紧邻位置（正在播的不动）"""
+        async with _playback_lock:
+            pending = _inflight[1:]
+            del _inflight[1:]
+        for it in pending:
+            res = await lt_client.drop_queued_talk(it.metadata.get("utt", ""))
+            logger.info(f"撤回预送 utt={it.metadata.get('utt')} -> {res}")
+        return pending[0] if pending else None
+
+    async def push_priority(text: str, source: str = "danmaku", metadata: dict = None):
+        """插队播报：当前这句一定说完，回复紧跟其后（priority=True 插到 TTS 未合成队列最前）"""
+        if not text:
+            return
+        from app.services.play_queue import QueueItem
+        item = QueueItem(type="text", content=text, source=source, metadata=metadata or {})
+        pending = await withdraw_pending()      # ① 把已预送的那条抽回来
+        await do_send(item, priority=True)      # ② 回复插到最前（紧跟当前这句）
+        if pending is not None:                 # ③ 抽回来的那条补在后面
+            try:
+                await do_send(pending)
+            except Exception as e:
+                logger.error(f"补发撤回项失败: {e}")
+
+    async def on_playback_end():
+        """SSE status=end：这条播完了 → 腾出窗口并立刻补位（保证下一条早已在队列里）"""
+        done = None
+        async with _playback_lock:
+            if _inflight:
+                done = _inflight.pop(0)
+        if done is not None:
+            logger.info(f"播完 [{done.source}] utt={done.metadata.get('utt')}")
+        await prefill()
 
     # SSE 回调（主力）
-    async def on_playback_end():
-        await try_play_next()
     lt_client.on_playback_ended(on_playback_end)
+
+    async def _pump_watchdog():
+        """兜底：SSE 丢失 / 启动瞬间也能推进（绝不能因为没有 end 事件就停摆）"""
+        nonlocal _IDLE_TICKS
+        while getattr(app.state, "_livestream_running", False):
+            await asyncio.sleep(1.0)
+            try:
+                async with _playback_lock:
+                    n = len(_inflight)
+                if n == 0:
+                    await prefill()
+                    continue
+                if await lt_client.is_speaking():
+                    _IDLE_TICKS = 0
+                    continue
+                _IDLE_TICKS += 1
+                if n == 1 and _IDLE_TICKS >= 3:
+                    logger.warning("watchdog: 连续 3 秒未收到 end 且未在说话 → 手动推进")
+                    _IDLE_TICKS = 0
+                    await on_playback_end()
+            except Exception as e:
+                logger.warning(f"pump watchdog error: {e}")
 
     # 3. 连接弹幕平台
     app.state.collector = MultiPlatformCollector()
 
+    # ── 弹幕聚合：积压 >2 条（或等 3 秒）→ 一次 LLM 调用 → 合并成「一句」话术 ──
+    # 多条弹幕不逐条回，而是合成一句话，例如：
+    #   A「在哪」B「多少钱」→「刚刚有观众问我们位置和价格，我们是在苏州，价格也不贵，两百块」
+    _danmaku_buf: list = []
+    _persona = llm.persona or {}
+    _BATCH_TRIGGER = int(_persona.get("danmaku_batch_trigger") or 3)   # 积压 >2 条即触发
+    _BATCH_WAIT = float(_persona.get("danmaku_batch_wait") or 3.0)     # 不足时兜底等待（秒）
+    _MAX_CHARS = int(_persona.get("danmaku_max_chars") or 60)          # 一句话上限字数
+    _POLICY = _persona.get("danmaku_policy") or ""                     # 用户自定义回复策略
+
+    async def _danmaku_aggregator():
+        while getattr(app.state, "_livestream_running", False):
+            await asyncio.sleep(0.2)
+            if not _danmaku_buf:
+                continue
+            waited = 0.0
+            while len(_danmaku_buf) < _BATCH_TRIGGER and waited < _BATCH_WAIT:
+                await asyncio.sleep(0.15)
+                waited += 0.15
+            batch = list(_danmaku_buf)
+            _danmaku_buf.clear()
+            try:
+                merged = await llm.generate_merged_reply(batch, policy=_POLICY,
+                                                         max_chars=_MAX_CHARS)
+            except Exception as e:
+                logger.error(f"弹幕聚合失败: {e}")
+                merged = ""
+            await _broadcast_status({
+                "type": "danmaku_batch",
+                "count": len(batch),
+                "merged": merged,
+                "items": [{"kind": b.get("kind"), "sender": b.get("sender"),
+                           "content": (b.get("content") or "")[:60]} for b in batch],
+            })
+            if merged:
+                logger.info(f"弹幕合并成一句（{len(batch)} 条）: {merged}")
+                await push_priority(merged, source="danmaku", metadata={
+                    "batch_count": len(batch), "merged": True,
+                    "senders": [b.get("sender") for b in batch],
+                })
+            else:
+                logger.info(f"这 {len(batch)} 条弹幕判定为无需回应（跳过，不占播放队列）")
+
     async def on_danmaku(msg: DanmakuMessage):
         await _broadcast_event(msg)
         app.state._danmaku_count = getattr(app.state, '_danmaku_count', 0) + 1
-
-        llm = app.state.llm_service
-        if msg.msg_type == "danmaku" and llm:
-            reply = await llm.generate_reply(msg.content, msg.sender)
-            if reply:
-                from app.services.play_queue import QueueItem
-                await queue.put_high(QueueItem(
-                    type="text", content=reply, source="danmaku",
-                    metadata={"sender": msg.sender, "original": msg.content},
-                ))
-        elif msg.msg_type == "gift":
-            from app.services.play_queue import QueueItem
-            await queue.put_high(QueueItem(
-                type="text", content=f"谢谢{msg.sender}的{msg.content}！", source="gift",
-                metadata={"sender": msg.sender},
-            ))
-        elif msg.msg_type == "follow":
-            from app.services.play_queue import QueueItem
-            await queue.put_high(QueueItem(
-                type="text", content=f"欢迎{msg.sender}关注直播间！", source="follow",
-                metadata={"sender": msg.sender},
-            ))
+        # 不立刻回复：先入缓冲，由 _danmaku_aggregator 攒批后「合并成一句」再插队
+        _danmaku_buf.append({
+            "kind": msg.msg_type,        # danmaku / gift / follow
+            "sender": msg.sender,
+            "content": msg.content,
+        })
+        logger.info(f"弹幕入缓冲（{len(_danmaku_buf)}/{_BATCH_TRIGGER}）"
+                    f"[{msg.msg_type}] {msg.sender}: {msg.content[:40]}")
 
     app.state.collector.on_message(on_danmaku)
     # 保存 handler 引用供 mock 接口使用
@@ -513,8 +619,10 @@ async def start_livestream(req: LivestreamStartRequest):
     app.state._session_id = req.session_id
     app.state._danmaku_count = 0
 
-    # 6. 首次触发：手动启动第一次出队播放
-    asyncio.create_task(try_play_next())
+    # 6. 启动调度：先预送第一条（零接缝的起点），再挂兜底看门狗 + 弹幕聚合器
+    asyncio.create_task(_pump_watchdog())
+    asyncio.create_task(_danmaku_aggregator())
+    await prefill()
 
     await _broadcast_status({"type": "status_change", "running": True, "room_id": req.room_id})
     logger.info(f"Livestream started: room={req.room_id}, session={req.session_id}")
