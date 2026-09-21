@@ -222,7 +222,14 @@ class HumanPlayer:
 
     def push_audio(self, frame, eventpoint=None):
         from av import AudioFrame
-        new_frame = AudioFrame(format='s16', layout='mono', samples=frame.shape[0])
+        # ⚠️ 采样率必须在**构造时**传入，不能建完再赋值。
+        # 实测（2026-09-21）：同一份代码在 Windows 上声音正常、在 Linux 上完全没声音，
+        # 差别就在 libav/aiortc 的版本。AudioFrame 用默认采样率建出来之后再写
+        # `.sample_rate = 16000`，在新版 PyAV 上不会同步内部缓冲的采样率，
+        # aiortc 做 16k→48k 重采样时数据对不上 → 推出去的音频轨全是静音。
+        # 构造时传 sample_rate 两种版本都正确；下面再赋一次是无害的兜底。
+        new_frame = AudioFrame(format='s16', layout='mono',
+                               samples=frame.shape[0], sample_rate=16000)
         new_frame.planes[0].update(frame.tobytes())
         new_frame.sample_rate = 16000
         q = self.__audio._queue
