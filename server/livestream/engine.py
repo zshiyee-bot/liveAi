@@ -92,6 +92,23 @@ class LiveStreamRuntime:
                 snap.setdefault("high", []).append(row)
         return snap
 
+    async def _emit_playing(self):
+        """广播「现在在播哪条」（前端「正在播放」靠它）。
+
+        _inflight[0] 才是当前在播的那条：上一条收到 end 事件后它才轮到。
+        没有它就别报 —— 否则前端会一直显示上一条已经播完的内容。
+        """
+        if not self._inflight:
+            return
+        cur = self._inflight[0]
+        await self._emit({
+            "type": "playback_started",
+            "item_id": cur.id,
+            "source": cur.source,
+            "inflight": len(self._inflight),
+            "content_preview": (cur.content or "")[:80],
+        })
+
     async def _notify_queue(self):
         """让运营页刷新播放队列。
 
@@ -170,6 +187,7 @@ class LiveStreamRuntime:
         # 5. 看门狗 + 把预送窗口填满（起点：第一条立刻送出去，后面才有"无缝"可言）
         self._tasks = [asyncio.create_task(self._pump_watchdog())]
         await self._prefill()
+        await self._emit_playing()          # 第一条开始播
         await self._emit({"type": "status_change", "running": True, "room_id": self.room_id})
         logger.info(f"[ls] 直播已启动 room={self.room_id} session={self.session_id[:8]} "
                     f"platform={self.platform}")
@@ -247,14 +265,10 @@ class LiveStreamRuntime:
         if isinstance(res, dict) and res.get("code") not in (0, None):
             raise RuntimeError(f"发送失败: {res.get('msg')}")
         self._inflight.append(item)
-        await self._emit({
-            "type": "playback_started",
-            "item_id": item.id,
-            "source": item.source,
-            "priority": priority,
-            "inflight": len(self._inflight),
-            "content_preview": (item.content or "")[:80],
-        })
+        # 这里**故意不报 playback_started**：预送模式下"发出去"≠"开始播"
+        # （发出去的下一条还在 TTS 队列里等着）。真正的开始播边界是播放结束事件，
+        # 见 _emit_playing()。原来在发送时就报，会让「正在播放」显示成预送的那条，
+        # 单条弹幕的回复会"闪一下就没了"。
         logger.info(f"[ls] → 会话 utt={utt} priority={priority} inflight={len(self._inflight)} "
                     f"[{item.source}] {(item.content or '')[:40]}")
         await self._notify_queue()
@@ -333,6 +347,8 @@ class LiveStreamRuntime:
             logger.info(f"[ls] 播完 [{done.source}] utt={done.metadata.get('utt')}")
         if self.running:
             await self._prefill()
+        # 上一条播完了 → 轮到的这条才是"正在播"，在这里报才准
+        await self._emit_playing()
         await self._notify_queue()
 
     async def _pump_watchdog(self):
