@@ -115,6 +115,10 @@
         房间: {{ store.roomId }} | Session: {{ store.sessionId?.slice(0, 12) }}... |
         弹幕数: {{ store.danmakuCount }}
       </span>
+      <!-- 多房间部署才有：/ls/?room=xxx 打开时会显示，单房间不显示 -->
+      <el-tag v-if="ROOM_KEY" type="warning" size="small" style="margin-left: 12px">
+        运营房间: {{ ROOM_KEY }}
+      </el-tag>
     </div>
   </div>
 </template>
@@ -127,6 +131,7 @@ import { useQueueStore } from '@/stores/queue'
 import LiveChat from '@/components/dashboard/LiveChat.vue'
 import QueueStatus from '@/components/dashboard/QueueStatus.vue'
 import client from '@/api/client'
+import { ROOM_KEY } from '@/api/room'
 
 const store = useLivestreamStore()
 const queueStore = useQueueStore()

@@ -1,4 +1,5 @@
 import type { WSMessage } from '@/types'
+import { ROOM_KEY } from './room'
 
 type MessageHandler = (msg: WSMessage) => void
 
@@ -18,7 +19,12 @@ class WSClient {
     if (this.ws?.readyState === WebSocket.OPEN) return
 
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
-    const wsUrl = this.url.startsWith('ws') ? this.url : `${protocol}//${window.location.host}${this.url}`
+    // 多房间部署：WS 也要带房间标识，否则会收到别的房间的队列/弹幕推送
+    let path = this.url
+    if (ROOM_KEY && !path.includes('room=')) {
+      path += (path.includes('?') ? '&' : '?') + 'room=' + encodeURIComponent(ROOM_KEY)
+    }
+    const wsUrl = path.startsWith('ws') ? path : `${protocol}//${window.location.host}${path}`
 
     this.ws = new WebSocket(wsUrl)
 

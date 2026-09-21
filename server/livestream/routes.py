@@ -23,8 +23,8 @@ from utils.logger import logger
 from server.livestream.config import load_settings
 from server.livestream.db import init_db, async_session, dispose_engine
 from server.livestream.models import Persona, Script, AppSettings, KnowledgeDocument
-from server.livestream.adapter import adapter
-from server.livestream.engine import runtime
+from server.livestream.adapter import adapter, LocalAvatarAdapter
+from server.livestream.engine import LiveStreamRuntime
 from server.livestream.services.play_queue import PlayQueue
 from server.livestream.services.script_manager import ScriptManager
 from server.livestream.services.llm_service import LLMService
@@ -125,46 +125,141 @@ def _safe_name(name: str, maxlen: int = 60) -> str:
     return (stem or "file") + ext.lower()
 
 
-# ── 运行态 ───────────────────────────────────────────────────────
+# ── 运行态（按「房间」隔离）──────────────────────────────────────
+#  一台服务器带多场独立直播时，弹幕 / 播放队列 / LLM 记忆 / WS 推送必须按房间隔离，
+#  否则 A 房间的弹幕会跑进 B 房间的队列。
+#     · 房间标识来自请求头 X-Room-Key 或 ?room=xxx；不传 = 默认房间
+#       → 单场直播的行为和以前一模一样（原版语义不变）
+#     · 人设、话术库、系统配置目前仍是全局共用（persona/script 表还没有房间维度）
+DEFAULT_ROOM = "default"
+
+
+class _Room:
+    """一个直播间的全部运行态。"""
+
+    def __init__(self, key: str):
+        self.key = key
+        self.runtime = LiveStreamRuntime()
+        self.queue = None
+        self.llm = None
+        self.collector = None
+        self.adapter = LocalAvatarAdapter()   # 每个房间各自绑定一个 LiveTalking 会话
+        self.ws_clients = set()
+        # runtime 只会创建这一次，所以广播回调在这里挂（重复挂会导致重复推送）
+        self.runtime.on_status(self._emit)
+
+    async def _emit(self, payload: dict):
+        await _broadcast_to(self, payload)
+
+
 class _LS:
+    """全局（跨房间共用）状态 + 房间注册表。"""
+
     def __init__(self):
         self.ready = False
         self.lock = asyncio.Lock()
         self.settings = None
-        self.llm = None
-        self.queue = None
-        self.collector = None
-        self.ws_clients = set()
         self.init_error = ""
+        self.rooms: dict = {}
+
+    # ── 默认房间的快捷访问 ──
+    # 老代码里写的 LS.llm / LS.queue / LS.collector / LS.ws_clients 一律指默认房间，
+    # 这样单场直播那套代码一行都不用改。
+    @property
+    def default(self) -> "_Room":
+        return get_room(DEFAULT_ROOM)
+
+    @property
+    def llm(self):
+        return self.default.llm
+
+    @llm.setter
+    def llm(self, v):
+        self.default.llm = v
+
+    @property
+    def queue(self):
+        return self.default.queue
+
+    @queue.setter
+    def queue(self, v):
+        self.default.queue = v
+
+    @property
+    def collector(self):
+        return self.default.collector
+
+    @collector.setter
+    def collector(self, v):
+        self.default.collector = v
+
+    @property
+    def ws_clients(self):
+        return self.default.ws_clients
 
 
 LS = _LS()
 
 
-async def _broadcast(payload: dict):
-    """把事件推给所有 /ls/ws 客户端（前端用来实时刷新队列/弹幕/状态）。"""
-    if not LS.ws_clients:
+def _norm_key(key) -> str:
+    """房间标识规范化：只留安全字符（防日志注入），空 = 默认房间。"""
+    k = re.sub(r"[^0-9A-Za-z_\-.\u4e00-\u9fff]", "", str(key or "").strip())[:64]
+    return k or DEFAULT_ROOM
+
+
+def get_room(key=None) -> _Room:
+    """取（没有就建）房间运行态。注意 queue/llm 要等 rebuild_deps 之后才有值。"""
+    k = _norm_key(key)
+    rm = LS.rooms.get(k)
+    if rm is None:
+        rm = _Room(k)
+        LS.rooms[k] = rm
+        logger.info("[ls] 新建房间运行态: %s（当前共 %d 个房间）", k, len(LS.rooms))
+    return rm
+
+
+def _key_of(request) -> str:
+    """房间标识：优先 X-Room-Key 请求头，其次 ?room=xxx，都不传则默认房间。"""
+    try:
+        return _norm_key(request.headers.get("X-Room-Key") or request.query.get("room"))
+    except Exception:
+        return DEFAULT_ROOM
+
+
+def _live_llms() -> list:
+    """所有房间的 LLMService（人设/知识库是全局共用的，要一起改）。"""
+    return [rm.llm for rm in LS.rooms.values() if rm.llm is not None]
+
+
+async def _broadcast_to(rm: _Room, payload: dict):
+    """把事件推给这个房间自己的 /ls/ws 客户端（不会串台）。"""
+    if not rm.ws_clients:
         return
     text = json.dumps(payload, ensure_ascii=False)
     dead = []
-    for ws in list(LS.ws_clients):
+    for ws in list(rm.ws_clients):
         try:
             await ws.send_str(text)
         except Exception:
             dead.append(ws)
     for ws in dead:
-        LS.ws_clients.discard(ws)
+        rm.ws_clients.discard(ws)
 
 
-async def _broadcast_queue():
+async def _broadcast_queue_to(rm: _Room):
     """队列一变就推给前端。前端 stores/queue.ts 没有轮询兜底，队列显示全靠这个事件。"""
-    if not LS.ws_clients or LS.queue is None:
+    if not rm.ws_clients or rm.queue is None:
         return
     try:
-        snap = await LS.queue.snapshot()
+        snap = await rm.queue.snapshot()
     except Exception:
         return
-    await _broadcast({"type": "queue_update", "data": snap})
+    await _broadcast_to(rm, {"type": "queue_update", "data": snap})
+
+
+async def _broadcast(payload: dict):
+    """默认房间的广播（兼容老调用点）。"""
+    await _broadcast_to(LS.default, payload)
 
 
 def _persona_norm(p) -> dict:
@@ -201,8 +296,9 @@ async def get_settings_dict() -> dict:
         return st.to_dict()
 
 
-async def rebuild_deps(reason: str = "startup"):
-    """(重)构造 LLM/知识库/队列/采集器。系统配置改了之后必须走这里才生效。"""
+async def rebuild_deps(reason: str = "startup", rm: _Room = None):
+    """(重)构造**某个房间**的 LLM/知识库/队列/采集器。系统配置改了之后必须走这里才生效。"""
+    rm = rm or LS.default
     persona = await get_persona()
     cfg = await get_settings_dict()
     llm = LLMService(
@@ -216,16 +312,30 @@ async def rebuild_deps(reason: str = "startup"):
     )
     await llm.init_knowledge_base()
     queue = PlayQueue(script_manager=ScriptManager(async_session))
-    queue.set_on_change(_broadcast_queue)
-    LS.llm = llm
-    LS.queue = queue
-    LS.collector = MultiPlatformCollector()
-    runtime.llm = llm
-    runtime.queue = queue
-    runtime.collector = LS.collector
-    logger.info(f"[ls] 依赖已重建（{reason}）: model={cfg.get('llm_model')} "
+    queue.set_on_change(lambda rm=rm: _broadcast_queue_to(rm))
+    rm.llm = llm
+    rm.queue = queue
+    rm.collector = MultiPlatformCollector()
+    rm.runtime.llm = llm
+    rm.runtime.queue = queue
+    rm.runtime.collector = rm.collector
+    logger.info(f"[ls] 依赖已重建（{reason}, room={rm.key}）: model={cfg.get('llm_model')} "
                 f"KB={'on' if llm._knowledge_base else 'off'}")
     return {"llm_model": cfg.get('llm_model', ''), "knowledge_base": bool(llm._knowledge_base)}
+
+
+async def rebuild_all_rooms(reason: str = "manual") -> list:
+    """系统配置 / 人设 / 知识库变了 → 所有已存在的房间一起重建。"""
+    rooms = list(LS.rooms.values()) or [LS.default]
+    out = []
+    for rm in rooms:
+        try:
+            info = await rebuild_deps(reason, rm)
+            out.append({"room": rm.key, **info})
+        except Exception as e:
+            logger.exception(f"[ls] 房间 {rm.key} 重建失败: {e}")
+            out.append({"room": rm.key, "error": str(e)})
+    return out
 
 
 async def ensure_ready():
@@ -253,8 +363,11 @@ async def api_health(request):
         await ensure_ready()
     except Exception as e:
         return json_error(f"init failed: {e}")
+    running = [k for k, rm in LS.rooms.items() if rm.runtime.running]
     return json_ok({"status": "ok", "version": "0.1.0", "in_process": True,
-                    "running": runtime.running,
+                    "running": bool(running),
+                    "running_rooms": running,
+                    "rooms": sorted(LS.rooms.keys()),
                     "knowledge_base": bool(LS.llm and LS.llm._knowledge_base)})
 
 
@@ -283,9 +396,10 @@ async def api_persona_put(request):
         await s.commit()
         await s.refresh(p)
         d = _persona_norm(p)
-    # 人设改了要立刻反映到 LLM（否则要等重启）
-    if LS.llm is not None:
-        LS.llm.persona = d
+    # 人设是全局共用的：所有房间的 LLM 都要立刻反映（否则要等重启）
+    for rm in LS.rooms.values():
+        if rm.llm is not None:
+            rm.llm.persona = d
     return reply(d)
 
 
@@ -314,7 +428,9 @@ async def api_settings_put(request):
 
 async def api_settings_reload(request):
     await ensure_ready()
-    info = await rebuild_deps("settings/reload")
+    # 系统配置是全局的：所有已存在的房间一起重建（LLM/知识库/队列）
+    rooms = await rebuild_all_rooms("settings/reload")
+    info = {"rooms": rooms, "count": len(rooms)}
     return reply_envelope(info)
 
 
@@ -602,22 +718,31 @@ async def api_kb_delete(request):
 
 async def api_kb_rebuild(request):
     await ensure_ready()
-    if LS.llm is None or LS.llm._knowledge_base is None:
-        # 通常是没配 embedding key / 没装 chromadb
-        await LS.llm.init_knowledge_base() if LS.llm else None
-    if LS.llm is None or LS.llm._knowledge_base is None:
+    # 知识库是全局共用的 → 所有房间的 LLM 一起重建索引
+    llms = _live_llms() or [LS.llm]
+    done = 0
+    for llm in llms:
+        if llm is None:
+            continue
+        if llm._knowledge_base is None:
+            # 通常是没配 embedding key / 没装 chromadb
+            await llm.init_knowledge_base()
+        if llm._knowledge_base is None:
+            continue
+        try:
+            await llm.rebuild_knowledge_base()
+            done += 1
+        except Exception as e:
+            logger.exception(f"[ls] 知识库重建失败: {e}")
+            return fail(f"重建失败: {e}", 500)
+    if done == 0:
         return fail("知识库不可用：请在「系统配置」填好 embedding 的 API Key / Base URL / 模型")
-    try:
-        await LS.llm.rebuild_knowledge_base()
-    except Exception as e:
-        logger.exception(f"[ls] 知识库重建失败: {e}")
-        return fail(f"重建失败: {e}", 500)
     async with async_session() as s:
         rows = (await s.execute(select(KnowledgeDocument))).scalars().all()
         for r in rows:
             r.chunk_count = _count_chunks(r.content or "")
         await s.commit()
-    return reply({"code": 0, "msg": "ok", "rebuilt": True})
+    return reply({"code": 0, "msg": "ok", "rebuilt": True, "rooms": done})
 
 
 def _count_chunks(content: str) -> int:
@@ -659,9 +784,12 @@ async def _kb_rebuild_bg():
     """后台重建索引（不阻塞接口返回；失败只记日志）。"""
     async def _run():
         try:
-            if LS.llm and LS.llm._knowledge_base:
-                await LS.llm.rebuild_knowledge_base()
-                logger.info("[ls] 知识库已自动重建")
+            llms = [x for x in _live_llms() if x is not None]
+            ready = [x for x in llms if x._knowledge_base]
+            if ready:
+                for x in ready:
+                    await x.rebuild_knowledge_base()
+                logger.info("[ls] 知识库已自动重建（%d 个房间）", len(ready))
             else:
                 logger.warning("[ls] 知识库未配置（缺 embedding key）→ 文档只入库、未建索引")
         except Exception as e:
@@ -681,65 +809,76 @@ async def api_lt_sessions(request):
     return reply({"code": 0, "sessions": sessions})
 
 
-# ── 直播控制 ─────────────────────────────────────────────────────
+# ── 直播控制（按房间隔离）──────────────────────────────────────────
 async def api_livestream_start(request):
     await ensure_ready()
     body = await _body(request)
+    rm = get_room(_key_of(request))
     session_id = (body.get('session_id') or '').strip()
     room_id = (body.get('room_id') or '').strip()
     platform = (body.get('platform') or 'bilibili').strip()
     if not session_id:
         return fail("session_id 必填（请先在 index.html 建立会话并点刷新）")
+    if rm.queue is None or rm.llm is None:
+        # 这个房间第一次用（或配置刚改过还没重建）→ 按房间单独建一份依赖
+        await rebuild_deps(f"room:{rm.key}/start", rm)
     cfg = await get_settings_dict()
     persona = await get_persona()
     try:
-        res = await runtime.start(
-            queue=LS.queue, llm=LS.llm, collector=LS.collector, adapter=adapter,
+        res = await rm.runtime.start(
+            queue=rm.queue, llm=rm.llm, collector=rm.collector, adapter=rm.adapter,
             session_id=session_id, room_id=room_id, platform=platform,
             persona=persona,
             min_size=int(cfg.get('queue_min_size') or 2) if str(cfg.get('queue_min_size', '')).isdigit() else 2,
             interval=(LS.settings.queue_auto_fill_interval if LS.settings else 3.0),
         )
     except Exception as e:
-        logger.exception(f"[ls] 启动直播失败: {e}")
+        logger.exception(f"[ls] 启动直播失败（room={rm.key}）: {e}")
         return fail(f"启动失败: {e}", 500)
-    return reply({"code": 0, "msg": "ok"})
+    return reply({"code": 0, "msg": "ok", "room": rm.key})
 
 
 async def api_livestream_stop(request):
     await ensure_ready()
+    rm = get_room(_key_of(request))
     try:
-        await runtime.stop()
+        await rm.runtime.stop()
     except Exception as e:
-        logger.exception(f"[ls] 停止直播失败: {e}")
+        logger.exception(f"[ls] 停止直播失败（room={rm.key}）: {e}")
         return fail(str(e), 500)
-    return reply({"code": 0, "msg": "ok"})
+    return reply({"code": 0, "msg": "ok", "room": rm.key})
 
 
 async def api_livestream_interrupt(request):
     await ensure_ready()
+    rm = get_room(_key_of(request))
     try:
-        await runtime.interrupt()
+        await rm.runtime.interrupt()
     except Exception as e:
         return fail(str(e), 500)
-    return reply({"code": 0, "msg": "ok"})
+    return reply({"code": 0, "msg": "ok", "room": rm.key})
 
 
 async def api_livestream_status(request):
     await ensure_ready()
     # 前端 api/livestream.ts 直接当 LivestreamStatus 用（裸对象）
-    return reply(await runtime.status())
+    rm = get_room(_key_of(request))
+    st = await rm.runtime.status()
+    st["room"] = rm.key
+    return reply(st)
 
 
 async def api_queue(request):
     await ensure_ready()
     # 前端 stores/queue.ts 期望 {high, low}
-    return reply(await runtime.snapshot())
+    rm = get_room(_key_of(request))
+    return reply(await rm.runtime.snapshot())
 
 
 async def api_mock_danmaku(request):
     await ensure_ready()
-    if not runtime.running:
+    rm = get_room(_key_of(request))
+    if not rm.runtime.running:
         return fail("直播未启动，无法模拟弹幕")
     body = await _body(request)
     kind = (body.get('msg_type') or body.get('type') or 'danmaku').strip()
@@ -750,8 +889,8 @@ async def api_mock_danmaku(request):
     if not content:
         # 与上游一致：模拟弹幕默认文案「主播好厉害！」
         content = '主播好厉害！'
-    await runtime.mock_danmaku(kind, sender, content)
-    return reply({"code": 0, "msg": "ok"})
+    await rm.runtime.mock_danmaku(kind, sender, content)
+    return reply({"code": 0, "msg": "ok", "room": rm.key})
 
 
 # ── 弹幕转发入口（Windows 侧中继 → 服务器）──────────────────────
@@ -762,7 +901,7 @@ async def api_mock_danmaku(request):
 #  解析仍然走 DouyinCollector._parse_msg（Type 1/3/4/5、PascalCase/camelCase、
 #  Data 是字符串还是对象），保证兼容逻辑只有一处，转发器不用跟着升级。
 _forward_parser = None
-_forward_seen = False
+_forward_seen: set = set()     # 已经提示过「链路已通」的房间
 
 
 def _douyin_parser():
@@ -790,9 +929,10 @@ async def api_danmaku_forward(request):
     if not raws:
         return fail("请求体为空")
 
-    if not runtime.running:
+    rm = get_room(_key_of(request))
+    if not rm.runtime.running:
         # 返回 200：还没点「开始直播」时，Windows 侧不该把它当成错误一直重试
-        return json_ok({"accepted": 0, "reason": "直播未启动"})
+        return json_ok({"accepted": 0, "room": rm.key, "reason": "直播未启动"})
 
     parser = _douyin_parser()
     accepted = 0
@@ -802,34 +942,38 @@ async def api_danmaku_forward(request):
         msg = parser._parse_msg(raw)
         if msg is None:
             continue          # 点赞/统计等不转发的类型
-        await runtime.ingest(msg)
+        await rm.runtime.ingest(msg)
         accepted += 1
 
-    if accepted and not _forward_seen:
-        _forward_seen = True
-        logger.info("[ls] 已收到 Windows 转发来的弹幕（来源 %s）—— 抖音弹幕链路已通", request.remote)
+    if accepted and rm.key not in _forward_seen:
+        _forward_seen.add(rm.key)
+        logger.info("[ls] 已收到 Windows 转发来的弹幕（room=%s，来源 %s）—— 抖音弹幕链路已通",
+                    rm.key, request.remote)
     elif accepted:
-        logger.debug("[ls] 弹幕转发：收到 %d 条", accepted)
-    return json_ok({"accepted": accepted})
+        logger.debug("[ls] 弹幕转发：room=%s 收到 %d 条", rm.key, accepted)
+    return json_ok({"accepted": accepted, "room": rm.key})
 
 
 # ── WebSocket（替代 FastAPI 的 /ws）──────────────────────────────
 async def ls_ws(request):
     await ensure_ready()
+    rm = get_room(_key_of(request))
     ws = web.WebSocketResponse(heartbeat=30)
     await ws.prepare(request)
-    LS.ws_clients.add(ws)
-    logger.info(f"[ls] ws 客户端接入（共 {len(LS.ws_clients)}）")
+    rm.ws_clients.add(ws)
+    logger.info(f"[ls] ws 客户端接入（room={rm.key}，该房间共 {len(rm.ws_clients)}）")
     try:
-        await ws.send_str(json.dumps(await runtime.status(), ensure_ascii=False))
+        st = await rm.runtime.status()
+        st["room"] = rm.key
+        await ws.send_str(json.dumps(st, ensure_ascii=False))
         async for msg in ws:
             if msg.type == web.WSMsgType.TEXT and msg.data == 'ping':
                 await ws.send_str('pong')
     except Exception:
         pass
     finally:
-        LS.ws_clients.discard(ws)
-        logger.info(f"[ls] ws 客户端断开（剩 {len(LS.ws_clients)}）")
+        rm.ws_clients.discard(ws)
+        logger.info(f"[ls] ws 客户端断开（room={rm.key}，剩 {len(rm.ws_clients)}）")
     return ws
 
 
@@ -858,11 +1002,13 @@ async def ls_startup(app):
 
 
 async def ls_cleanup(app):
-    try:
-        if runtime.running:
-            await runtime.stop()
-    except Exception:
-        pass
+    # 关服务时把所有房间的直播都停掉（每个房间各自绑定一个会话）
+    for rm in list(LS.rooms.values()):
+        try:
+            if rm.runtime.running:
+                await rm.runtime.stop()
+        except Exception:
+            pass
     try:
         await dispose_engine()
     except Exception:
@@ -871,6 +1017,16 @@ async def ls_cleanup(app):
 
 async def api_ls_status_page(request):
     """诊断页：一眼看出合并版是否就绪（浏览器直接打开 /ls/api/diag）。"""
+    rooms = {}
+    for k, rm in LS.rooms.items():
+        rooms[k] = {
+            "running": rm.runtime.running,
+            "session_id": rm.runtime.session_id,
+            "platform": rm.runtime.platform,
+            "queue": {"high": rm.queue.high_length if rm.queue else 0,
+                      "low": rm.queue.low_length if rm.queue else 0},
+            "ws_clients": len(rm.ws_clients),
+        }
     info = {
         "ready": LS.ready,
         "init_error": LS.init_error,
@@ -883,7 +1039,8 @@ async def api_ls_status_page(request):
         "queue_on_change_wired": bool(LS.queue is not None
                                       and getattr(LS.queue, '_on_change', None) is not None),
         "sessions": len(adapter.list_sessions()),
-        "running": runtime.running,
+        "running": any(rm.runtime.running for rm in LS.rooms.values()),
+        "rooms": rooms,
         "ws_clients": len(LS.ws_clients),
         "frontend_built": os.path.isfile(os.path.join(WEB_LS_DIR, 'index.html')),
         "url_prefix": "/ls",
@@ -962,7 +1119,8 @@ def setup_livestream_routes(app):
     app.router.add_get(p, ls_static)
     app.router.add_get(f"{p}/{{tail:.*}}", ls_static)
 
-    runtime.on_status(_broadcast)
+    # 注意：不再在这里给单个 runtime 挂广播 —— 每个房间在 _Room.__init__ 里
+    # 自己挂自己的，避免多房间串台、也避免重复挂导致重复推送。
 
     try:
         app.on_startup.append(ls_startup)

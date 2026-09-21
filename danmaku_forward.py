@@ -81,17 +81,22 @@ def main() -> int:
                     help="与服务器环境变量 LS_DANMAKU_TOKEN 一致；服务器没配就不用填")
     ap.add_argument("--relay", default=os.getenv("LS_RELAY_WS", "ws://127.0.0.1:8888"),
                     help="本机 DouyinBarrageGrab 的 WebSocket 地址")
+    ap.add_argument("--key", default=os.getenv("LS_ROOM_KEY", ""),
+                    help="房间标识：一台服务器带多场直播时用来区分（同一房间要填一样的值）")
     args = ap.parse_args()
 
     url = build_url(args.server)
     headers = {"Content-Type": "application/json"}
     if args.token:
         headers["X-Danmaku-Token"] = args.token
+    if args.key:
+        headers["X-Room-Key"] = args.key
 
     print("=" * 64)
     print(" 抖音弹幕转发器")
     print(f"   本机中继 : {args.relay}")
     print(f"   转发目标 : {url}")
+    print(f"   房间标识 : {args.key or '(未设置 → 服务器默认房间)'}")
     print(f"   鉴权口令 : {'已设置' if args.token else '未设置（服务器没配 token 就不用管）'}")
     print("   按 Ctrl+C 停止")
     print("=" * 64)
@@ -101,6 +106,7 @@ def main() -> int:
     sent = 0
     fails = 0
     last_note = ""
+    last_note_room = [""]        # 只提示一次"归到哪个房间"
     t_report = time.time()
     t_reach_err = 0.0
 
@@ -130,6 +136,9 @@ def main() -> int:
         try:
             data = (r.json() or {}).get("data") or {}
             note = data.get("reason") or ""
+            if data.get("room") and data["room"] != last_note_room[0]:
+                last_note_room[0] = data["room"]
+                print(f"[提示] 服务器已把弹幕归到房间：{data['room']}")
         except Exception:
             note = ""
         if note and note != last_note:
