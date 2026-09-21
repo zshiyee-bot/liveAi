@@ -123,11 +123,22 @@ class LLMService:
             response = await self.client.chat.completions.create(
                 model=self.llm_model,
                 messages=messages,
-                max_tokens=200,
+                max_tokens=800,
                 temperature=0.8,
             )
-            reply = response.choices[0].message.content or ""
-            reply = reply.strip()
+            choice = response.choices[0]
+            reply = (choice.message.content or "").strip()
+            if not reply:
+                # 空回复 = 这条弹幕被静默丢掉，必须留痕。
+                # 推理型模型（deepseek-flash、*-reasoner 之类）先输出 reasoning_content，
+                # 那些 token 同样算进 max_tokens；预算被推理吃光时 content 就是空串。
+                # 实测 deepseek-flash + max_tokens=200 → finish_reason=length、content=""，
+                # 三次里两次把弹幕吞了。所以这里给足预算，并且空回复打 WARNING。
+                logger.warning(
+                    "LLM 返回空内容（model=%s finish_reason=%s）—— 这条弹幕不回；"
+                    "若频繁出现，请换非推理模型（如 deepseek-chat）",
+                    self.llm_model, getattr(choice, 'finish_reason', None))
+                return ""
 
             # 记录到记忆
             self.add_to_memory(sender, "user", message)

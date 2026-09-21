@@ -129,6 +129,12 @@ class LiveStreamRuntime:
         # 合并版特有：一个进程会反复 start/stop，必须把等待出队的循环收掉
         if self._play_task is not None:
             self._play_task.cancel()
+            try:
+                await self._play_task
+            except asyncio.CancelledError:
+                pass
+            except Exception as e:
+                logger.warning(f"[ls] 收尾出队任务异常: {e}")
             self._play_task = None
         if self.collector is not None:
             try:
