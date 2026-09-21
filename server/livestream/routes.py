@@ -393,13 +393,31 @@ async def api_persona_put(request):
             if isinstance(ft, str):
                 ft = [x.strip() for x in ft.replace('，', ',').split(',') if x.strip()]
             p.forbidden_topics = json.dumps(ft, ensure_ascii=False)
+        # 弹幕回复方式：trigger=1 逐条回；≥2 攒够 N 条合并成一句
+        if body.get('danmaku_policy') is not None:
+            p.danmaku_policy = str(body['danmaku_policy'])
+        for k, lo, hi in (('danmaku_batch_trigger', 1, 50), ('danmaku_max_chars', 10, 200)):
+            if body.get(k) is not None:
+                try:
+                    setattr(p, k, max(lo, min(hi, int(body[k]))))
+                except Exception:
+                    pass
+        if body.get('danmaku_batch_wait') is not None:
+            try:
+                p.danmaku_batch_wait = max(0.5, min(30.0, float(body['danmaku_batch_wait'])))
+            except Exception:
+                pass
         await s.commit()
         await s.refresh(p)
         d = _persona_norm(p)
-    # 人设是全局共用的：所有房间的 LLM 都要立刻反映（否则要等重启）
+    # 人设是全局共用的：所有房间的 LLM / 弹幕回复方式都要立刻反映（否则要等重启）
     for rm in LS.rooms.values():
         if rm.llm is not None:
             rm.llm.persona = d
+        try:
+            rm.runtime.apply_persona(d)
+        except Exception as e:
+            logger.warning(f"[ls] 房间 {rm.key} 应用人设失败: {e}")
     return reply(d)
 
 

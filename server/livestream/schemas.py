@@ -13,6 +13,12 @@ class PersonaUpdate(BaseModel):
     style: str = Field(..., min_length=1)
     knowledge_scope: str = Field(..., min_length=1)
     forbidden_topics: list[str] = Field(default_factory=list)
+    # 弹幕回复方式（可选：不传则保持原值）
+    #   trigger=1 → 逐条回复；≥2 → 攒够 N 条合并成一句
+    danmaku_policy: str | None = None
+    danmaku_batch_trigger: int | None = Field(default=None, ge=1, le=50)
+    danmaku_batch_wait: float | None = Field(default=None, ge=0.5, le=30.0)
+    danmaku_max_chars: int | None = Field(default=None, ge=10, le=200)
 
 
 class PersonaResponse(BaseModel):
@@ -22,6 +28,10 @@ class PersonaResponse(BaseModel):
     style: str
     knowledge_scope: str
     forbidden_topics: list[str]
+    danmaku_policy: str = ""
+    danmaku_batch_trigger: int = 3
+    danmaku_batch_wait: float = 6.0
+    danmaku_max_chars: int = 60
     updated_at: str | None = None
 
 

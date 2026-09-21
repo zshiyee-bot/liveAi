@@ -149,6 +149,133 @@ class LLMService:
             logger.error(f"LLM generate failed: {e}")
             return ""
 
+    # ── 弹幕聚合回复：一批弹幕 → 一句话术（不是逐条回）─────────────
+
+    async def generate_merged_reply(self, batch: list[dict], policy: str = "",
+                                    max_chars: int = 60):
+        """把「一批弹幕/礼物/关注」合并成【一句】自然的主播口播话术。
+
+        batch 元素：{"kind": "danmaku"|"gift"|"follow", "sender": str, "content": str}
+
+        返回三种结果，**必须区分开**：
+          · 一句话  → 直接朗读
+          · ""      → LLM 明确判定「都不值得回应」（输出 SKIP），跳过就行
+          · None    → **调用失败 / 返回空内容**（多半是推理型模型的 token 被推理吃光）
+                      —— 调用方必须降级处理，绝不能当成"无需回应"把整批弹幕丢掉
+        """
+        if self.client is None or not batch:
+            return ""
+
+        p = self.persona
+        _kind_cn = {"danmaku": "弹幕", "gift": "礼物", "follow": "关注"}
+        lines = []
+        for i, it in enumerate(batch, 1):
+            kind = _kind_cn.get(it.get("kind"), "弹幕")
+            who = it.get("sender") or "观众"
+            what = (it.get("content") or "").strip()
+            lines.append(f"[{i}] {kind} {who}：{what}")
+        batch_text = "\n".join(lines)
+
+        # ── 知识库检索：**逐条弹幕**单独查，再合并去重 ──
+        # 为什么不能把整批拼成一个 query：一批里 3 条弹幕可能问完全不同的事
+        # （位置 / 价格 / 尺码），拼起来只会命中其中一条，另外两条就丢了事实依据。
+        # 礼物、关注不含问题 → 不检索；条数上限 8，避免一次弹幕风暴打出太多 embedding 调用。
+        kb_docs: list = []
+        kb_seen: set = set()
+        kb_queries: list = []
+        if self._knowledge_base:
+            kb_queries = [(it.get("content") or "").strip() for it in batch
+                          if it.get("kind") == "danmaku"]
+            kb_queries = [q for q in kb_queries if len(q) >= 2][:8]
+            for q in kb_queries:
+                try:
+                    docs = await self._knowledge_base.search(q, k=2)
+                except Exception as e:
+                    logger.warning(f"Knowledge base search failed for query={q[:20]!r}: {e}")
+                    continue
+                for d in (docs or []):
+                    key = (getattr(d, "page_content", "") or "").strip()
+                    if not key or key in kb_seen:
+                        continue
+                    kb_seen.add(key)
+                    kb_docs.append(d)
+            if kb_docs:
+                logger.info(f"KB 逐条检索: {len(kb_queries)} 条问题 → 去重后 {len(kb_docs)} 段"
+                            f"（取前 {min(len(kb_docs), 6)} 段进 prompt）")
+
+        # 合并后总量上限 6 段（避免 prompt 太长、也避免不同问题的知识互相干扰）
+        kb_context = "\n".join((d.page_content or "").strip() for d in kb_docs[:6])
+
+        parts = [
+            f"你是{p.get('name', '小助手')}，一位正在直播的主播。",
+            f"性格特点：{p.get('personality', '热情友好')}",
+            f"说话风格：{p.get('style', '轻松活泼')}",
+            f"知识范围：{p.get('knowledge_scope', '日常闲聊')}",
+        ]
+        forbidden = p.get("forbidden_topics", [])
+        if forbidden:
+            parts.append(f"禁止谈论以下话题：{'、'.join(forbidden)}")
+
+        parts.extend([
+            "",
+            "下面是刚刚这一小段时间里观众发的内容（按时间排序）：",
+            batch_text,
+            "",
+            "请把其中【值得回应】的内容，合并成【一句】自然的主播口播话术 —— 不是逐条回答。",
+            f"要求：只能是一句话；不超过 {max_chars} 个字；口语化、可直接朗读；",
+            "不要编号、不要换行、不要 emoji、不要 markdown、不要引号、不要念观众账号名；",
+            "礼物和关注必须顺带致谢；刷屏、无意义、纯表情、重复内容直接忽略不提；",
+            "示例：输入「A问在哪」「B问多少钱」→ 输出：刚刚有观众问我们位置和价格，我们是在苏州，价格也不贵，两百块。",
+            "如果全都不值得回应，只输出：SKIP",
+            "现在只输出这句话（或 SKIP），不要任何解释、前缀、后缀。",
+        ])
+
+        policy = (policy or "").strip()
+        if policy:
+            parts.append(f"\n主播本人指定的弹幕回复策略（优先遵守）：\n{policy}")
+        if kb_context:
+            parts.append(f"\n参考知识（按上面观众问题的顺序检索而来；只用它回答事实性问题，"
+                         f"不要照读原文，也不要把 A 问题的答案安到 B 问题上）：\n{kb_context}")
+
+        messages = [
+            {"role": "system", "content": "\n".join(parts)},
+            {"role": "user", "content": "请直接给出这一句话。"},
+        ]
+
+        try:
+            response = await self.client.chat.completions.create(
+                model=self.llm_model,
+                messages=messages,
+                max_tokens=2000,          # 聚合 prompt 长，推理型模型的 reasoning 也算在这里
+                temperature=0.8,
+            )
+            choice = response.choices[0]
+            reply = (choice.message.content or "").strip()
+            if not reply:
+                # 空串 ≠ SKIP 必须区分开：推理型模型（deepseek-flash / reasoner 之类）先输出
+                # reasoning_content，一旦推理把 max_tokens 吃光，content 就是空串。
+                # 返回 None（失败）让调用方降级成逐条回复，而不是当成"无需回应"丢掉整批弹幕。
+                logger.warning(
+                    "[ls] LLM 合并回复返回空内容（model=%s, finish_reason=%s, usage=%s）—— "
+                    "多半是 max_tokens 被推理过程吃光；交给调用方降级处理",
+                    self.llm_model, choice.finish_reason,
+                    getattr(getattr(response, "usage", None), "completion_tokens_details", None),
+                )
+                return None
+        except Exception as e:
+            logger.error(f"LLM merged reply failed: {e}")
+            return None
+
+        # 清洗：合并成一行 / 去引号 / 超长截断
+        reply = " ".join(reply.split())
+        reply = reply.strip().strip('"').strip("'").strip("“”").strip()
+        if not reply or reply.upper().startswith("SKIP"):
+            return ""
+        limit = max(20, int(max_chars)) + 20
+        if len(reply) > limit:
+            reply = reply[:limit]
+        return reply
+
     async def generate_reply_stream(self, message: str, sender: str) -> AsyncIterator[str]:
         """流式生成弹幕回复，按标点分句 yield"""
         if self.client is None:

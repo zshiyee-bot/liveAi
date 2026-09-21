@@ -4,7 +4,7 @@
 
 import json
 from datetime import datetime
-from sqlalchemy import String, Text, Integer, Boolean, DateTime, func
+from sqlalchemy import String, Text, Integer, Boolean, DateTime, Float, func
 from sqlalchemy.orm import Mapped, mapped_column
 from server.livestream.db import Base
 
@@ -20,6 +20,13 @@ class Persona(Base):
     style: Mapped[str] = mapped_column(Text, default="轻松活泼")
     knowledge_scope: Mapped[str] = mapped_column(Text, default="日常闲聊")
     forbidden_topics: Mapped[str] = mapped_column(Text, default="[]")
+    # ── 弹幕回复方式（"小助手设定"里配置）──
+    #   danmaku_batch_trigger == 1 → 逐条回复（每条弹幕单独回一句）
+    #   danmaku_batch_trigger >= 2 → 攒够 N 条（或等满 batch_wait 秒）合并成一句播报
+    danmaku_policy: Mapped[str] = mapped_column(Text, default="")           # 自定义回复策略（自然语言）
+    danmaku_batch_trigger: Mapped[int] = mapped_column(Integer, default=3)  # 触发条数（1 = 逐条回）
+    danmaku_batch_wait: Mapped[float] = mapped_column(Float, default=6.0)   # 不足 N 条时的兜底等待（秒）
+    danmaku_max_chars: Mapped[int] = mapped_column(Integer, default=60)     # 合并后一句话长度上限（字）
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, server_default=func.now(), onupdate=func.now()
     )
@@ -40,6 +47,10 @@ class Persona(Base):
             "style": self.style,
             "knowledge_scope": self.knowledge_scope,
             "forbidden_topics": self.forbidden_topics_list,
+            "danmaku_policy": self.danmaku_policy or "",
+            "danmaku_batch_trigger": self.danmaku_batch_trigger or 3,
+            "danmaku_batch_wait": self.danmaku_batch_wait or 6.0,
+            "danmaku_max_chars": self.danmaku_max_chars or 60,
             "updated_at": self.updated_at.isoformat() if self.updated_at else None,
         }
 
@@ -52,6 +63,13 @@ class Persona(Base):
             "style": "轻松活泼，喜欢用简短的句子，偶尔加入网络流行语",
             "knowledge_scope": "日常闲聊、生活百科、娱乐八卦",
             "forbidden_topics": "[]",
+            "danmaku_policy": (
+                "优先回复与直播主题相关、有明确问题或互动的弹幕；"
+                "纯表情、刷屏、重复内容不回；同一观众短时间内只回一次"
+            ),
+            "danmaku_batch_trigger": 3,   # 1 = 逐条回复；≥2 = 攒够 N 条合并成一句
+            "danmaku_batch_wait": 6.0,
+            "danmaku_max_chars": 60,
         }
 
 

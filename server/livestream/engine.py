@@ -17,6 +17,7 @@
 ###############################################################################
 
 import asyncio
+import time
 
 from utils.logger import logger
 
@@ -39,7 +40,15 @@ class LiveStreamRuntime:
         self._inflight: list = []            # 已发出、未播完（[0] 正在播）
         self._prefetch = 1                   # 除正在播的那条外，再预送几条
         self._idle_ticks = 0
-        self._tasks: list = []               # 看门狗等后台任务
+        self._tasks: list = []               # 看门狗 / 弹幕聚合 等后台任务
+
+        # ── 弹幕回复方式（人设里配，见 apply_persona）──
+        #   _batch_trigger == 1 → 逐条回复；>= 2 → 攒够 N 条（或等满 _batch_wait 秒）合并成一句
+        self._danmaku_buf: list = []
+        self._batch_trigger = 3
+        self._batch_wait = 6.0
+        self._max_chars = 60
+        self._policy = ""
 
         self._status_cbs: list = []
 
@@ -47,6 +56,29 @@ class LiveStreamRuntime:
     def inflight_count(self) -> int:
         """已发出未播完的条数（[0] 正在播）—— 诊断页/状态接口用。"""
         return len(self._inflight)
+
+    def mode_desc(self) -> str:
+        """当前弹幕回复方式的可读描述（日志/诊断用）。"""
+        if self._batch_trigger <= 1:
+            return "逐条回复"
+        return f"每 {self._batch_trigger} 条合并成一句（兜底 {self._batch_wait:g}s）"
+
+    def apply_persona(self, persona: dict):
+        """人设变化时刷新弹幕回复方式（不影响正在播的内容）。"""
+        persona = persona or {}
+        self._policy = persona.get("danmaku_policy") or ""
+        try:
+            self._batch_trigger = max(1, int(persona.get("danmaku_batch_trigger") or 3))
+        except Exception:
+            self._batch_trigger = 3
+        try:
+            self._batch_wait = max(0.5, min(30.0, float(persona.get("danmaku_batch_wait") or 6.0)))
+        except Exception:
+            self._batch_wait = 6.0
+        try:
+            self._max_chars = max(10, min(200, int(persona.get("danmaku_max_chars") or 60)))
+        except Exception:
+            self._max_chars = 60
 
     # ── 状态广播（routes 注入：推给 /ls/ws 的客户端）─────────────
     def on_status(self, cb):
@@ -158,10 +190,14 @@ class LiveStreamRuntime:
         self.danmaku_count = 0
         self._idle_ticks = 0
         self._inflight = []
+        self._danmaku_buf = []
 
-        # 1. 重新加载最新人设（前端可能刚改过 persona）
+        # 1. 重新加载最新人设（前端可能刚改过 persona）+ 刷新弹幕回复方式
         if llm is not None and persona:
             llm.persona = persona
+        self.apply_persona(persona)
+        logger.info(f"[ls] 弹幕回复方式：{self.mode_desc()}"
+                    f"（上限 {self._max_chars} 字，策略={'有' if self._policy else '无'}）")
 
         # 2. 绑定会话 + 订阅播放结束事件（替代原来的 /sse 连接）
         self.adapter.set_session(self.session_id)
@@ -185,7 +221,10 @@ class LiveStreamRuntime:
 
         self.running = True
         # 5. 看门狗 + 把预送窗口填满（起点：第一条立刻送出去，后面才有"无缝"可言）
-        self._tasks = [asyncio.create_task(self._pump_watchdog())]
+        self._tasks = [
+            asyncio.create_task(self._pump_watchdog()),
+            asyncio.create_task(self._danmaku_aggregator()),
+        ]
         await self._prefill()
         await self._emit_playing()          # 第一条开始播
         await self._emit({"type": "status_change", "running": True, "room_id": self.room_id})
@@ -223,6 +262,7 @@ class LiveStreamRuntime:
                     pass
         async with self._lock:
             self._inflight = []
+        self._danmaku_buf = []
         if self.adapter is not None:
             await self.adapter.disconnect()
         if was:
@@ -377,8 +417,9 @@ class LiveStreamRuntime:
             except Exception as e:
                 logger.warning(f"[ls] watchdog 异常: {e}")
 
-    # ── 弹幕（与上游一致：逐条回复 / 礼物 / 关注）──────────────────
+    # ── 弹幕：入缓冲 → 逐条回 / 攒批合并 → 插队播报 ────────────────
     async def _on_danmaku(self, msg):
+        """收到弹幕/礼物/关注：先广播给运营页，再塞进缓冲，由聚合器决定怎么回。"""
         await self._emit({
             "type": getattr(msg, "msg_type", "danmaku"),
             "platform": getattr(msg, "platform", ""),
@@ -388,30 +429,121 @@ class LiveStreamRuntime:
         })
         self.danmaku_count += 1
 
-        msg_type = getattr(msg, "msg_type", "danmaku")
-        if msg_type == "danmaku" and self.llm:
+        self._danmaku_buf.append({
+            "kind": getattr(msg, "msg_type", "danmaku"),
+            "sender": getattr(msg, "sender", ""),
+            "content": getattr(msg, "content", ""),
+        })
+        logger.info(f"[ls] 弹幕入缓冲（{len(self._danmaku_buf)}/{self._batch_trigger}）"
+                    f"[{getattr(msg, 'msg_type', '')}] {getattr(msg, 'sender', '')}: "
+                    f"{(getattr(msg, 'content', '') or '')[:40]}")
+
+    async def _danmaku_aggregator(self):
+        """把缓冲里的弹幕变成播报。
+
+        · 逐条模式（batch_trigger <= 1）：一条一条单独生成回复，不做"值得不值得回"的判定
+        · 聚合模式（batch_trigger >= 2）：攒满 N 条立即合并；不足 N 条等满 batch_wait 秒也合并
+        两种模式都由 push_priority 插队：当前这句说完，回复紧跟其后。
+        """
+        batch_start = None            # 当前这批「第一条」弹幕的入缓冲时刻
+        while self.running:
+            await asyncio.sleep(0.1)
             try:
-                reply = await self.llm.generate_reply(msg.content, msg.sender)
+                if not self._danmaku_buf:
+                    batch_start = None
+                    continue
+                now = time.time()
+                if batch_start is None:
+                    batch_start = now
+                if self._batch_trigger <= 1:
+                    batch = self._danmaku_buf[:1]                 # 逐条：一条一条来
+                    del self._danmaku_buf[:1]
+                else:
+                    n = len(self._danmaku_buf)
+                    if n >= self._batch_trigger:
+                        batch = self._danmaku_buf[:self._batch_trigger]   # 攒满：多的留给下一批
+                        del self._danmaku_buf[:self._batch_trigger]
+                    elif now - batch_start >= self._batch_wait:
+                        batch = list(self._danmaku_buf)           # 超时：1~2 条也回，不让观众干等
+                        self._danmaku_buf.clear()
+                    else:
+                        continue
+                batch_start = None
+            except asyncio.CancelledError:
+                break
             except Exception as e:
-                logger.error(f"[ls] 弹幕回复生成失败: {e}")
-                reply = ""
-            if reply:
-                logger.info(f"[ls] 弹幕回复 [{msg.sender}]: {reply[:60]}")
-                # 插队播报：当前这句说完就播，不排在预送的话术后面
-                await self.push_priority(reply, source="danmaku", metadata={
-                    "sender": msg.sender, "original": msg.content,
-                })
-        elif msg_type == "gift":
-            await self.push_priority(f"谢谢{msg.sender}的{msg.content}！", source="gift",
-                                     metadata={"sender": msg.sender})
-        elif msg_type == "follow":
-            await self.push_priority(f"欢迎{msg.sender}关注直播间！", source="follow",
-                                     metadata={"sender": msg.sender})
+                logger.error(f"[ls] 弹幕缓冲读取异常: {e}")
+                continue
+
+            try:
+                if self._batch_trigger <= 1:
+                    await self._reply_single(batch[0])
+                else:
+                    await self._reply_merged(batch)
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.error(f"[ls] 弹幕回复失败: {e}")
+
+    async def _reply_single(self, item: dict):
+        """逐条模式：一条弹幕 → 一句回复；礼物/关注用固定话术。"""
+        kind = item.get("kind") or "danmaku"
+        sender = item.get("sender") or "观众"
+        content = (item.get("content") or "").strip()
+        if kind == "gift":
+            await self.push_priority(f"谢谢{sender}的{content}！", source="gift",
+                                     metadata={"sender": sender})
+            return
+        if kind == "follow":
+            await self.push_priority(f"欢迎{sender}关注直播间！", source="follow",
+                                     metadata={"sender": sender})
+            return
+        if self.llm is None or not content:
+            return
+        reply = await self.llm.generate_reply(content, sender)
+        if reply:
+            logger.info(f"[ls] 弹幕回复 [{sender}]: {reply[:60]}")
+            await self.push_priority(reply, source="danmaku",
+                                     metadata={"sender": sender, "original": content})
+
+    async def _reply_merged(self, batch: list):
+        """聚合模式：N 条 → LLM 合并成【一句】；判定全都不值得回应时返回空 → 不回。"""
+        if self.llm is None:
+            return
+        merged = await self.llm.generate_merged_reply(
+            batch, policy=self._policy, max_chars=self._max_chars)
+
+        # merged is None = 调用失败（多半是推理模型把 token 吃光）→ 降级逐条回，别丢弹幕
+        if merged is None:
+            logger.warning(f"[ls] 合并回复失败，降级为逐条回复这 {len(batch)} 条")
+            for it in batch:
+                try:
+                    await self._reply_single(it)
+                except Exception as e:
+                    logger.error(f"[ls] 降级逐条回复失败: {e}")
+            return
+
+        await self._emit({
+            "type": "danmaku_batch",
+            "count": len(batch),
+            "merged": merged,
+            "items": [{"kind": b.get("kind"), "sender": b.get("sender"),
+                       "content": (b.get("content") or "")[:60]} for b in batch],
+        })
+        if merged:
+            logger.info(f"[ls] 弹幕合并成一句（{len(batch)} 条）: {merged[:60]}")
+            await self.push_priority(merged, source="danmaku", metadata={
+                "batch_count": len(batch), "merged": True,
+                "senders": [b.get("sender") for b in batch],
+            })
+        else:
+            logger.info(f"[ls] 这 {len(batch)} 条判定为无需回应（跳过，不占队列）: "
+                        + " | ".join((b.get("content") or "")[:24] for b in batch))
 
     async def ingest(self, msg):
         """外部来源的弹幕塞进来（Windows 侧转发的抖音弹幕走这里）。
 
-        走的路径和采集器回调完全一致：广播事件 → 逐条生成回复 → 插队播报。
+        走的路径和采集器回调完全一致：广播事件 → 入缓冲 → 按当前模式回复并插队播报。
         """
         await self._on_danmaku(msg)
 
