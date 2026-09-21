@@ -117,7 +117,15 @@ class TaskManager:
             task.progress = 100
             self._notify(task)
             logger.info(f"Task {task_id} completed successfully")
-        except Exception as e:
+        except BaseException as e:
+            # ⚠️ 这里必须是 BaseException，不能是 Exception。
+            # 实测（2026-09-21，Ubuntu + RTX 5060 Ti）：某次 musetalk 训练的任务
+            #   只跑了 0.015s、finally 已经写了 end_time，但 status 仍是 "running"，
+            #   日志里**既没有 completed 也没有 failed** ——
+            #   因为抛出的是 Exception 之外的东西（sys.exit() 之类的 BaseException），
+            #   `except Exception` 抓不到，异常逃逸到 ThreadPoolExecutor 被静默吞掉。
+            #   用户看到的表现就是「点了训练没反应、进度永远 0、日志一片空白」。
+            # 捕获 BaseException 之后，任何失败都会落到日志和任务状态里。
             task.status = "failed"
             # 保留完整 traceback：只记 str(e) 会丢掉出错位置，
             # 排查时只能看到 'NoneType' and 'int' 这种无上下文的信息。
@@ -128,6 +136,18 @@ class TaskManager:
                          f"{_tb.format_exc()}")
         finally:
             task.end_time = time.time()
+            # 兜底：无论上面怎么结束，绝不能让任务停在 "running"。
+            # 否则前端永远显示「进度 0 / 进行中」，用户看到的就是「训练没反应」，
+            # 而且没有任何线索可查。这里强制落一个终止态 + 日志。
+            if task.status == "running":
+                task.status = "failed"
+                if not task.error_msg:
+                    task.error_msg = "任务异常结束（未捕获的 BaseException，详见日志）"
+                self._notify(task)
+                logger.error(
+                    f"Task {task_id} 异常结束：status 仍是 running，已强制标记 failed"
+                    f"（耗时 {task.end_time - task.start_time:.3f}s）"
+                    f" —— 正常路径不会走到这里，说明异常没被 except 捕获")
 
     def _notify(self, task):
         if not task.notify_url:
