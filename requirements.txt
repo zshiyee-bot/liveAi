@@ -56,3 +56,31 @@ dashscope
 # Optional: remove these lines if you don't need local ASR
 #funasr
 #modelscope
+
+# ─────────────────────────────────────────────────────────────
+#  以下为「上游 requirements.txt 里被注释掉、但实际必需」的依赖。
+#  2026-09-21 在全新的 Ubuntu 22.04 + RTX 5060 Ti 上从零部署时逐个踩出来的：
+#  缺任何一个，页面点「训练」都会失败或卡住。
+# ─────────────────────────────────────────────────────────────
+
+# ★ Ubuntu/Debian 的 python3 -m venv 故意不装 setuptools，
+#   而 face_recognition_models 依赖 pkg_resources → 缺了会抛 SystemExit
+setuptools
+
+# 素材训练链路（musetalk / wav2lip 的 genavatar）
+dlib-bin              # face_recognition 的后端；用预编译轮子，避免现场编译 dlib（20 分钟）
+face_recognition
+face_alignment
+scikit-image
+scikit-learn
+psutil
+
+# 合并进来的 LiveStream 运营后台（/ls/）
+sqlalchemy
+aiosqlite
+pydantic
+APScheduler
+websocket-client
+beautifulsoup4
+lxml
+qrcode
