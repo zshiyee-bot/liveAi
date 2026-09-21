@@ -749,9 +749,13 @@ async def api_mock_danmaku(request):
     body = await _body(request)
     kind = (body.get('msg_type') or body.get('type') or 'danmaku').strip()
     sender = (body.get('sender') or '测试观众').strip()
-    content = (body.get('content') or '').strip()
+    # 兼容前端可能用的各种字段名。实测：网页上点「模拟弹幕」会在两台机器上都返回
+    # 400 Bad Request（/ls/api/mock/danmaku），就是这里 content 取不到值导致的。
+    # 模拟弹幕本来就是测试功能，没给内容时给个默认值即可，不该报错拦住用户。
+    content = (body.get('content') or body.get('text') or body.get('message')
+               or body.get('msg') or '').strip()
     if not content:
-        return fail("content 不能为空")
+        content = '这是一条模拟弹幕'
     await runtime.mock_danmaku(kind, sender, content)
     return reply({"code": 0, "msg": "ok"})
 
