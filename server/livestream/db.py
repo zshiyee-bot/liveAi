@@ -44,7 +44,7 @@ def _migrate_add_columns(conn):
         "persona": [
             ("danmaku_policy", "TEXT DEFAULT ''"),
             ("danmaku_batch_trigger", "INTEGER DEFAULT 3"),
-            ("danmaku_batch_wait", "FLOAT DEFAULT 3.0"),
+            ("danmaku_batch_wait", "FLOAT DEFAULT 6.0"),
             ("danmaku_max_chars", "INTEGER DEFAULT 60"),
         ],
     }

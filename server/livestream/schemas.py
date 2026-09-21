@@ -29,7 +29,7 @@ class PersonaResponse(BaseModel):
     forbidden_topics: list[str]
     danmaku_policy: str = ""
     danmaku_batch_trigger: int = 3
-    danmaku_batch_wait: float = 3.0
+    danmaku_batch_wait: float = 6.0
     danmaku_max_chars: int = 60
     updated_at: str | None = None
 

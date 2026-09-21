@@ -291,7 +291,7 @@ async def api_persona_put(request):
     if runtime.running:
         runtime._policy = d.get('danmaku_policy') or ""
         runtime._batch_trigger = max(1, int(d.get('danmaku_batch_trigger') or 3))
-        runtime._batch_wait = float(d.get('danmaku_batch_wait') or 3.0)
+        runtime._batch_wait = float(d.get('danmaku_batch_wait') or 6.0)
         runtime._max_chars = int(d.get('danmaku_max_chars') or 60)
     return reply(d)
 
@@ -755,7 +755,9 @@ async def api_mock_danmaku(request):
     content = (body.get('content') or body.get('text') or body.get('message')
                or body.get('msg') or '').strip()
     if not content:
-        content = '这是一条模拟弹幕'
+        # 默认文案必须是一句「值得回应」的话 —— 之前是「这是一条模拟弹幕」，
+        # LLM 按人设判定为无意义测试内容 → 回 SKIP → 用户看到「发弹幕没反应」。
+        content = '主播你好，今天播到几点呀？'
     await runtime.mock_danmaku(kind, sender, content)
     return reply({"code": 0, "msg": "ok"})
 

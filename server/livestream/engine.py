@@ -5,12 +5,14 @@
 #  （backend/app/api.py:446-629）。合并进 LiveTalking 后抽成一个类：
 #    · 预送流水线：始终「1 条在播 + 1 条已预送」→ 话术之间零空白
 #    · 弹幕插队：当前这句一定说完，回复紧跟其后；已预送的那条抽回后补发
-#    · 弹幕聚合：积压 >2 条（或等 3 秒）→ 一次 LLM 调用 → 合并成「一句话」
+#    · 弹幕聚合：攒满 3 条 → 立刻收回最前 3 条合并成「一句话」；
+#                 不足 3 条 → 等下一条弹幕来凑批，或等满超时秒数后单独回一句
 #    · 兜底看门狗：事件丢了也能推进，绝不因为没有 end 事件停摆
 #  与 HTTP 无关，便于单测；routes.py 只做参数解析与状态查询。
 ###############################################################################
 
 import asyncio
+import time
 import uuid
 
 from utils.logger import logger
@@ -37,8 +39,8 @@ class LiveStreamRuntime:
 
         # 弹幕聚合
         self._danmaku_buf: list = []
-        self._batch_trigger = 3              # 积压 >2 条即触发
-        self._batch_wait = 3.0
+        self._batch_trigger = 3              # 未回复弹幕攒满 3 条 → 立即合并回一句
+        self._batch_wait = 6.0               # 不足 3 条：等下一条来凑批，或等满 6 秒单独回
         self._max_chars = 60
         self._policy = ""
 
@@ -106,7 +108,7 @@ class LiveStreamRuntime:
         persona = persona or {}
         self._policy = persona.get("danmaku_policy") or ""
         self._batch_trigger = max(1, int(persona.get("danmaku_batch_trigger") or 3))
-        self._batch_wait = float(persona.get("danmaku_batch_wait") or 3.0)
+        self._batch_wait = float(persona.get("danmaku_batch_wait") or 6.0)
         self._max_chars = int(persona.get("danmaku_max_chars") or 60)
         logger.info(f"[ls] 弹幕聚合设定: 触发条数={self._batch_trigger} 等待={self._batch_wait}s "
                     f"上限={self._max_chars}字 策略={'有' if self._policy else '无'}")
@@ -342,17 +344,36 @@ class LiveStreamRuntime:
         return {"code": 0, "msg": "ok"}
 
     async def _danmaku_aggregator(self):
-        """积压 >2 条（或等满兜底秒数）→ 一次 LLM 调用 → 合并成一句话术。"""
+        """弹幕聚合（实时排队版）：
+           · 未回复弹幕攒满 batch_trigger 条 → 立刻「收回」最前这几条 → 一次 LLM 调用 → 合成一句话
+           · 不足 trigger 条 → 等下一条弹幕来凑批；等满 batch_wait 秒仍不足 → 这几条单独回一句
+           · 回复走 push_priority 插队：当前正在播的那句一定说完，回复紧跟其后
+        """
+        batch_start = None           # 当前这批「第一条」弹幕的入缓冲时刻
         while self.running:
-            await asyncio.sleep(0.2)
-            if not self._danmaku_buf:
+            await asyncio.sleep(0.1)
+            try:
+                if not self._danmaku_buf:
+                    batch_start = None
+                    continue
+                now = time.time()
+                if batch_start is None:
+                    batch_start = now
+                n = len(self._danmaku_buf)
+                if n >= self._batch_trigger:
+                    take = self._batch_trigger        # 攒满：只收回 trigger 条，多出来的留给下一批
+                elif now - batch_start >= self._batch_wait:
+                    take = n                          # 超时：1~2 条也单独回一句，不让用户干等
+                else:
+                    continue
+                batch = self._danmaku_buf[:take]
+                del self._danmaku_buf[:take]
+                batch_start = None                    # 剩余弹幕重新起算等待窗口
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.error(f"[ls] 弹幕聚合读取异常: {e}")
                 continue
-            waited = 0.0
-            while len(self._danmaku_buf) < self._batch_trigger and waited < self._batch_wait:
-                await asyncio.sleep(0.15)
-                waited += 0.15
-            batch = list(self._danmaku_buf)
-            self._danmaku_buf.clear()
             try:
                 merged = await self.llm.generate_merged_reply(
                     batch, policy=self._policy, max_chars=self._max_chars)
@@ -378,7 +399,8 @@ class LiveStreamRuntime:
                 except Exception as e:
                     logger.error(f"[ls] 弹幕插队失败: {e}")
             else:
-                logger.info(f"[ls] 这 {len(batch)} 条弹幕判定为无需回应（跳过，不占队列）")
+                logger.info(f"[ls] 这 {len(batch)} 条弹幕判定为无需回应（跳过，不占队列）: "
+                            + " | ".join((b.get("content") or "")[:24] for b in batch))
 
 
 # 全局单例

@@ -233,10 +233,22 @@ class LLMService:
             response = await self.client.chat.completions.create(
                 model=self.llm_model,
                 messages=messages,
-                max_tokens=300,
+                max_tokens=800,
                 temperature=0.8,
             )
-            reply = (response.choices[0].message.content or "").strip()
+            choice = response.choices[0]
+            reply = (choice.message.content or "").strip()
+            if not reply:
+                # 空串 ≠ SKIP，必须区分开：推理型模型（deepseek-flash / reasoner 之类）先输出
+                # reasoning_content，一旦推理把 max_tokens 吃光，content 就是空串。
+                # 之前这种情况被静默当成「无需回应」，日志里完全看不出来，白丢弹幕。
+                logger.warning(
+                    "[ls] LLM 返回空内容（model=%s, finish_reason=%s, usage=%s）—— "
+                    "通常是 max_tokens 被推理过程吃光、或模型名/额度有问题；本条按「无需回应」处理",
+                    self.llm_model, choice.finish_reason,
+                    getattr(getattr(response, "usage", None), "completion_tokens_details", None),
+                )
+                return ""
         except Exception as e:
             logger.error(f"LLM merged reply failed: {e}")
             return ""
