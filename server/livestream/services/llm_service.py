@@ -212,7 +212,10 @@ class LLMService:
     async def init_knowledge_base(self):
         """初始化知识库（从数据库加载文档并构建向量索引）"""
         try:
-            from app.services.knowledge_base import KnowledgeBase
+            # 合并进 LiveTalking 后包路径是 server.livestream.* —— 原来写的是上游的
+            # app.services.*，导致这里永远 ImportError、知识库永远起不来
+            # （日志表现为 "No module named 'app.services'; 'app' is not a package"）
+            from server.livestream.services.knowledge_base import KnowledgeBase
             self._knowledge_base = KnowledgeBase(
                 docs_path=_cfg.knowledge_docs_path,
                 persist_path=_cfg.chroma_persist_path,
