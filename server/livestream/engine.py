@@ -1,8 +1,11 @@
 ###############################################################################
 #  LiveStream 播放引擎（进程内版）
 #
-#  弹幕侧行为 = 上游 lipku/LiveStream 原版：每条弹幕单独交给 LLM 生成一句回复，
-#  进高优队列；礼物「谢谢X的Y！」、关注「欢迎X关注直播间！」。
+#  弹幕回复方式由人设决定（见 apply_persona / mode_desc）：
+#    · danmaku_batch_trigger == 1 → 逐条回复：每条弹幕单独交给 LLM 生成一句
+#    · danmaku_batch_trigger >= 2 → 聚合回复：攒够 N 条（或等满 batch_wait 秒）
+#      合并成【一句】；LLM 判定"全都不值得回应"就跳过
+#    礼物「谢谢X的Y！」、关注「欢迎X关注直播间！」；进场/分享等只广播不回复
 #
 #  播放调度比上游多一层「预送流水线」，目的是**消除两条话术之间的空白**：
 #    · 始终维持「1 条在播 + 1 条已预送」——播完一条立刻就有下一条在合成，
@@ -110,15 +113,16 @@ class LiveStreamRuntime:
         snap = await self.queue.snapshot()
         pending = list(self._inflight[1:])
         for it in pending:
+            is_script = it.source == "script"
             row = {
                 "id": it.id,
                 "type": it.type,
                 "source": it.source,
                 "content_preview": (it.content or "")[:80],
-                "level": it.level,
+                "level": "low" if is_script else "high",
                 "presend": True,          # 标记：已预送（前端不认识也无害）
             }
-            if it.source == "script":
+            if is_script:
                 snap.setdefault("low", []).append(row)
             else:
                 snap.setdefault("high", []).append(row)
@@ -276,6 +280,7 @@ class LiveStreamRuntime:
         if self.adapter is None:
             async with self._lock:
                 self._inflight = []
+            self._danmaku_buf = []
             return {"code": 0, "msg": "ok", "dropped": n}
         _sid, sess = self.adapter.resolve()
         if sess is not None and callable(getattr(sess, 'flush_talk', None)):
@@ -286,6 +291,8 @@ class LiveStreamRuntime:
                 logger.warning(f"[ls] 打断失败: {e}")
         async with self._lock:
             self._inflight = []
+        # 缓冲里的弹幕也要清掉，否则打断完聚合器还会把积压的弹幕回出来
+        self._danmaku_buf = []
         return {"code": 0, "msg": "ok", "dropped": n}
 
     # ── 预送流水线（消除话术之间的空白）──────────────────────────
@@ -317,7 +324,9 @@ class LiveStreamRuntime:
     async def _prefill(self):
         """把预送窗口填满。不阻塞等待：队列空就返回，靠 auto-fill / 弹幕再触发。"""
         async with self._lock:
-            while len(self._inflight) <= self._prefetch:
+            # 必须带 self.running：stop() 把 running 置 False 后，这里如果还在循环
+            # 会继续往会话里送 1~2 条 —— 表现为"点了停止还在说"。
+            while self.running and len(self._inflight) <= self._prefetch:
                 item = await self.queue.get_next()
                 if item is None:
                     # 队列干涸：auto-fill 每 3 秒才补一条，等它就是「话术之间出现空白」。
@@ -331,6 +340,12 @@ class LiveStreamRuntime:
                             item = None
                     if item is None:
                         break
+                if item.type == "video":
+                    # LiveTalking 侧没有 load_media/convert_custom_media，上游也没实现。
+                    # 明确报出来并跳过，别让一条视频话术把补位卡住。
+                    logger.warning(f"[ls] 跳过 video 类型话术（LiveTalking 无 load_media 接口）: "
+                                   f"{(item.content or '')[:60]}")
+                    continue
                 try:
                     await self._do_send(item)
                 except Exception as e:
@@ -418,10 +433,15 @@ class LiveStreamRuntime:
                 logger.warning(f"[ls] watchdog 异常: {e}")
 
     # ── 弹幕：入缓冲 → 逐条回 / 攒批合并 → 插队播报 ────────────────
+    # 参与回复的消息类型：进场(enter)/分享/下播等**只广播不回复**，与上游 LiveStream 一致。
+    # 不挡住的话，抖音/视频号的 "xxx 进入了直播间" 会被当成弹幕丢给 LLM 去回。
+    _REPLY_KINDS = ("danmaku", "gift", "follow")
+
     async def _on_danmaku(self, msg):
         """收到弹幕/礼物/关注：先广播给运营页，再塞进缓冲，由聚合器决定怎么回。"""
+        kind = getattr(msg, "msg_type", "danmaku") or "danmaku"
         await self._emit({
-            "type": getattr(msg, "msg_type", "danmaku"),
+            "type": kind,
             "platform": getattr(msg, "platform", ""),
             "sender": getattr(msg, "sender", ""),
             "content": getattr(msg, "content", ""),
@@ -429,13 +449,17 @@ class LiveStreamRuntime:
         })
         self.danmaku_count += 1
 
+        if kind not in self._REPLY_KINDS:
+            logger.debug("[ls] %s 事件只广播不回复：%s", kind, getattr(msg, "sender", ""))
+            return
+
         self._danmaku_buf.append({
-            "kind": getattr(msg, "msg_type", "danmaku"),
+            "kind": kind,
             "sender": getattr(msg, "sender", ""),
             "content": getattr(msg, "content", ""),
         })
         logger.info(f"[ls] 弹幕入缓冲（{len(self._danmaku_buf)}/{self._batch_trigger}）"
-                    f"[{getattr(msg, 'msg_type', '')}] {getattr(msg, 'sender', '')}: "
+                    f"[{kind}] {getattr(msg, 'sender', '')}: "
                     f"{(getattr(msg, 'content', '') or '')[:40]}")
 
     async def _danmaku_aggregator(self):
@@ -557,5 +581,5 @@ class LiveStreamRuntime:
         return {"code": 0, "msg": "ok"}
 
 
-# 全局单例（仅兼容旧引用；多房间模式下每个房间各自 new 一个）
-runtime = LiveStreamRuntime()
+# 注意：这里**不再有全局 runtime 单例** —— 多房间模式下每个房间在 routes._Room
+# 里各自 new 一个 LiveStreamRuntime()，全局单例会让所有房间共用一套队列/预送窗口。

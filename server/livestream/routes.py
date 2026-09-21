@@ -843,7 +843,7 @@ async def api_livestream_start(request):
     cfg = await get_settings_dict()
     persona = await get_persona()
     try:
-        res = await rm.runtime.start(
+        await rm.runtime.start(
             queue=rm.queue, llm=rm.llm, collector=rm.collector, adapter=rm.adapter,
             session_id=session_id, room_id=room_id, platform=platform,
             persona=persona,
@@ -933,7 +933,6 @@ def _douyin_parser():
 
 async def api_danmaku_forward(request):
     """接收 Windows 转发的原始弹幕：单个对象，或 {"items": [...]} 批量。"""
-    global _forward_seen
     await ensure_ready()
 
     want = (os.getenv("LS_DANMAKU_TOKEN", "") or "").strip()
