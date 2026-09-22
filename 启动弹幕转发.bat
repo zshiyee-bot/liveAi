@@ -17,6 +17,9 @@ echo [%date% %time%] ==== bat start (elevated=%LS_ELEVATED%) ==== >> "%LOG%"
 
 rem -------------------------------------------------------------------
 rem  EDIT THIS LINE: your LiveTalking server address
+rem    server runs on THIS pc  ->  set LS_SERVER=http://127.0.0.1:8063
+rem    server is another pc    ->  set LS_SERVER=http://192.168.1.50:8063
+rem  If you leave the example value the bat refuses to run and tells you.
 rem -------------------------------------------------------------------
 set LS_SERVER=http://192.168.1.10:8063
 
@@ -87,7 +90,6 @@ echo ============================================================
 echo  Danmaku forwarder
 echo    source : %LS_SOURCE%
 echo    target : %LS_SERVER%
-if /i "%LS_SERVER%"=="http://192.168.1.10:8063" echo    [WARN] LS_SERVER is still the example value - please edit this .bat
 if not "%LS_ROOM_KEY%"=="" echo    room   : %LS_ROOM_KEY%
 if /i "%LS_SOURCE%"=="taobao" echo    taobao : liveId=%LS_LIVE_ID%   every %LS_TAOBAO_INTERVAL%s, no grabber tool
 if /i "%LS_SOURCE%"=="both" echo    taobao : liveId=%LS_LIVE_ID%   every %LS_TAOBAO_INTERVAL%s
@@ -96,14 +98,20 @@ if "%NEED_GRABBER%"=="1" echo    grabber: %LS_GRABBER_MODE% mode, silent, auto s
 echo  Keep this window open while streaming. Ctrl+C to stop.
 echo ============================================================
 
+if /i "%LS_SERVER%"=="http://192.168.1.10:8063" goto :need_server
 if "%NEED_GRABBER%"=="1" goto :start_grabber
 goto :run_forwarder
 
 rem -------------------------------------------------------------------
 rem  start the bundled douyin grabber, silently
-rem  it needs admin rights to hook the live-companion process, so if we
-rem  are not elevated: keep THIS window, tell the user, wait for a key,
-rem  then relaunch elevated (exactly one UAC prompt).
+rem
+rem  NOTE: start it with /MIN (it gets its OWN console window), never /B.
+rem        /B shares our console, and the grabber hides its own console
+rem        (hideConsole=true) -> our window disappears too, which looks
+rem        exactly like "the bat flashed and closed".
+rem  It needs admin rights (it hooks/patches the live-companion app), so
+rem  if we are not elevated: keep THIS window, tell the user, wait for a
+rem  key, then relaunch elevated (exactly one UAC prompt).
 rem -------------------------------------------------------------------
 :start_grabber
 if exist "%CFGSRC%" copy /y "%CFGSRC%" "%GRABBER_DIR%\WssBarrageServer.exe.config" >nul
@@ -134,10 +142,11 @@ powershell -NoProfile -Command "$env:LS_ELEVATED='1'; Start-Process -FilePath '%
 exit /b
 
 :grabber_ok
-echo [START] douyin grabber, silent, no window ...
+echo [START] douyin grabber, silent (it hides its own console) ...
 echo [%date% %time%] starting grabber (%LS_GRABBER_MODE%) >> "%LOG%"
+echo [%date% %time%] killing leftover grabbers >> "%LOG%"
 taskkill /IM WssBarrageServer.exe /F >nul 2>&1
-start "DouyinBarrageGrab" /B "%GRABBER_EXE%"
+start "DouyinBarrageGrab" /MIN "%GRABBER_EXE%"
 echo [WAIT] 6 seconds for it to hook the live channel ...
 ping -n 7 127.0.0.1 >nul
 goto :run_forwarder
@@ -169,3 +178,26 @@ echo.
 echo [INFO] forwarder exited, code=%RC%
 echo  (this window can now be closed)
 pause
+exit /b 0
+
+rem -------------------------------------------------------------------
+rem  the server address was never edited -> stop and tell the user,
+rem  instead of silently running against a server that does not exist
+rem -------------------------------------------------------------------
+:need_server
+echo.
+echo  ------------------------------------------------------------
+echo   [STOP] LS_SERVER is still the example address:
+echo            %LS_SERVER%
+echo.
+echo   Open this .bat with Notepad, find the line
+echo            set LS_SERVER=...
+echo   and change it to your LiveTalking server:
+echo            set LS_SERVER=http://127.0.0.1:8063     (server on this PC)
+echo            set LS_SERVER=http://192.168.1.50:8063  (server elsewhere)
+echo   Save it, then double-click this .bat again.
+echo  ------------------------------------------------------------
+echo [%date% %time%] STOP: LS_SERVER was not edited >> "%LOG%"
+echo.
+pause
+exit /b 1
