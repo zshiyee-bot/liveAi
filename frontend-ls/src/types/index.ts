@@ -1,4 +1,4 @@
-﻿// ── Persona ──
+// ── Persona ──
 export interface PersonaConfig {
   id: number
   name: string
@@ -20,6 +20,7 @@ export interface Script {
   title: string
   type: 'text' | 'audio' | 'video'
   content: string
+  split_sep: string
   file_path: string | null
   tags: string[]
   enabled: boolean

@@ -42,6 +42,8 @@ class ScriptCreate(BaseModel):
     type: str = Field(default="text", pattern="^(text|audio|video)$")
     content: str = Field(default="")
     tags: list[str] = Field(default_factory=list)
+    # 分割符：填了（如 "。"）就把 content 切成多句，播放时一句一句送
+    split_sep: str = Field(default="", max_length=8)
 
 
 class ScriptUpdate(BaseModel):
@@ -49,6 +51,7 @@ class ScriptUpdate(BaseModel):
     content: str | None = None
     tags: list[str] | None = None
     enabled: bool | None = None
+    split_sep: str | None = Field(None, max_length=8)
 
 
 class ScriptResponse(BaseModel):
@@ -56,6 +59,7 @@ class ScriptResponse(BaseModel):
     title: str
     type: str
     content: str
+    split_sep: str = ""
     file_path: str | None = None
     tags: list[str]
     enabled: bool

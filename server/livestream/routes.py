@@ -518,7 +518,8 @@ async def api_scripts_create(request):
     if stype not in ('text', 'audio', 'video'):
         return fail(f"不支持的 type: {stype}")
     async with async_session() as s:
-        r = Script(title=title[:200], type=stype, content=body.get('content') or '')
+        r = Script(title=title[:200], type=stype, content=body.get('content') or '',
+                   split_sep=str(body.get('split_sep') or '')[:8])
         tags = body.get('tags')
         if isinstance(tags, list):
             r.tags = json.dumps(tags, ensure_ascii=False)
@@ -526,6 +527,43 @@ async def api_scripts_create(request):
         await s.commit()
         await s.refresh(r)
         return reply(r.to_dict())
+
+
+async def api_scripts_ai_generate(request):
+    """AI 生成话术：按用户要求生成 N 条（多轮 = 多调几次，降低雷同）。
+
+    只返回生成结果、**不落库** —— 前端填进「内容」框让用户确认/修改后再保存。
+    """
+    await ensure_ready()
+    body = await _body(request)
+    req = str(body.get('requirements') or body.get('prompt') or '').strip()
+    try:
+        per_round = max(1, min(50, int(body.get('count') or body.get('per_round') or 5)))
+        rounds = max(1, min(10, int(body.get('rounds') or 1)))
+        max_chars = max(10, min(200, int(body.get('max_chars') or 40)))
+    except Exception:
+        return fail("参数不对：count/rounds/max_chars 都要是数字")
+
+    llm = LS.llm
+    if llm is None or getattr(llm, 'client', None) is None:
+        return fail("LLM 未配置：请先在「系统配置」里填好 API Key 并点「保存并重载」")
+
+    items: list = []
+    seen = set()
+    for _i in range(rounds):
+        got = await llm.generate_scripts(req, count=per_round, max_chars=max_chars)
+        if got is None:
+            if not items:
+                return fail("AI 生成失败：LLM 没返回可用内容（多半是 key/模型名的问题，看日志）", 500)
+            break
+        for g in got:
+            if g not in seen:
+                seen.add(g)
+                items.append(g)
+    if not items:
+        return fail("AI 没能生成有效话术，换个描述再试", 500)
+    logger.info(f"[ls] AI 生成话术 {len(items)} 条（{rounds} 轮 × {per_round} 条，要求={req[:24]!r}）")
+    return reply({"code": 0, "msg": "ok", "items": items})
 
 
 async def api_scripts_update(request):
@@ -540,6 +578,8 @@ async def api_scripts_update(request):
             r.title = str(body['title'])[:200]
         if body.get('content') is not None:
             r.content = str(body['content'])
+        if body.get('split_sep') is not None:
+            r.split_sep = str(body['split_sep'])[:8]
         if body.get('enabled') is not None:
             r.enabled = bool(body['enabled'])
         if isinstance(body.get('tags'), list):
@@ -1087,6 +1127,7 @@ def setup_livestream_routes(app):
 
     app.router.add_get(f"{p}/api/scripts", api_scripts_list)
     app.router.add_post(f"{p}/api/scripts", api_scripts_create)
+    app.router.add_post(f"{p}/api/scripts/ai_generate", api_scripts_ai_generate)
     app.router.add_post(f"{p}/api/scripts/upload-file", api_scripts_upload)
     app.router.add_put(f"{p}/api/scripts/{{sid}}", api_scripts_update)
     app.router.add_delete(f"{p}/api/scripts/{{sid}}", api_scripts_delete)

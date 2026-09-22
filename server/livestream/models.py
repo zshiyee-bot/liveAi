@@ -82,6 +82,10 @@ class Script(Base):
     title: Mapped[str] = mapped_column(String(200), default="")
     type: Mapped[str] = mapped_column(String(20), default="text")
     content: Mapped[str] = mapped_column(Text, default="")
+    # 话术分割符（如 "。"）：填了就把这条话术按它切成多句 —— 列表里仍显示为 1 条，
+    # 但播放时会**一句一句**送进队列，于是弹幕插队只需等当前这一小句，
+    # 而不是等一整段长话术（实测那条 305 字的话术会挡住弹幕 90 秒）。
+    split_sep: Mapped[str] = mapped_column(String(8), default="")
     file_path: Mapped[str | None] = mapped_column(String(500), nullable=True)
     tags: Mapped[str] = mapped_column(Text, default="[]")
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
@@ -106,6 +110,7 @@ class Script(Base):
             "title": self.title,
             "type": self.type,
             "content": self.content,
+            "split_sep": self.split_sep or "",
             "file_path": self.file_path,
             "tags": self.tags_list,
             "enabled": self.enabled,

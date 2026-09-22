@@ -6,9 +6,21 @@ export async function getScripts(params?: { enabled_only?: boolean; type_filter?
   return data
 }
 
-export async function createScript(payload: { title: string; type: string; content: string; tags: string[] }): Promise<Script> {
+export async function createScript(payload: { title: string; type: string; content: string; tags: string[]; split_sep?: string }): Promise<Script> {
   const { data } = await client.post('/api/scripts', payload)
   return data
+}
+
+/** AI 生成话术：只生成、不落库 —— 前端填进「内容」框让用户确认后再保存。
+ *  多轮 = 多调几次，降低雷同；生成慢，超时放宽到 3 分钟。 */
+export async function aiGenerateScripts(payload: {
+  requirements: string
+  count: number
+  rounds: number
+  max_chars?: number
+}): Promise<string[]> {
+  const { data } = await client.post('/api/scripts/ai_generate', payload, { timeout: 180000 })
+  return data.items || []
 }
 
 export async function updateScript(id: number, payload: Partial<Script>): Promise<Script> {

@@ -3,6 +3,7 @@
 ###############################################################################
 
 import os
+import re
 from typing import AsyncIterator
 
 from openai import AsyncOpenAI
@@ -277,6 +278,71 @@ class LLMService:
         if len(reply) > limit:
             reply = reply[:limit]
         return reply
+
+    # ── 话术生成（话术管理里的「AI 生成话术」）──────────────────────
+
+    async def generate_scripts(self, requirements: str, count: int = 5,
+                               max_chars: int = 40):
+        """按用户要求生成一批主播口播话术。
+
+        返回：list[str]（每条一句，已清洗）；调用失败返回 None（调用方好区分）。
+        """
+        if self.client is None:
+            return None
+        count = max(1, min(50, int(count or 5)))
+        max_chars = max(10, min(200, int(max_chars or 40)))
+
+        p = self.persona
+        parts = [
+            f"你是{p.get('name', '小助手')}，一位正在直播的主播。",
+            f"性格特点：{p.get('personality', '热情友好')}",
+            f"说话风格：{p.get('style', '轻松活泼')}",
+            f"知识范围：{p.get('knowledge_scope', '日常闲聊')}",
+            "",
+            f"请生成 {count} 条可以直接朗读的直播口播话术。",
+            f"要求：每条不超过 {max_chars} 个字；口语化、自然，像真人随口说的；",
+            "各条之间话题和措辞都不要雷同（不要只是换几个字）；",
+            "不要编号、不要 emoji、不要引号、不要任何解释说明；",
+            "**一行一条**，只输出话术本身。",
+            "",
+            "主播本人给出的要求（优先满足）：",
+            requirements.strip() or "（未填写特殊要求，围绕上面的人设自由发挥）",
+        ]
+        messages = [
+            {"role": "system", "content": "\n".join(parts)},
+            {"role": "user", "content": f"请直接给出这 {count} 条话术，一行一条。"},
+        ]
+
+        try:
+            response = await self.client.chat.completions.create(
+                model=self.llm_model,
+                messages=messages,
+                max_tokens=2000,      # 一次多条，留足（推理型模型的 reasoning 也算这里）
+                temperature=0.95,     # 话术要多样，温度调高一点
+            )
+            choice = response.choices[0]
+            reply = (choice.message.content or "").strip()
+            if not reply:
+                logger.warning(
+                    "[ls] 生成话术返回空内容（model=%s, finish_reason=%s, usage=%s）",
+                    self.llm_model, choice.finish_reason,
+                    getattr(getattr(response, "usage", None), "completion_tokens_details", None))
+                return None
+        except Exception as e:
+            logger.error(f"LLM generate scripts failed: {e}")
+            return None
+
+        out: list[str] = []
+        for ln in reply.split("\n"):
+            # 去掉模型爱加的编号（"1."、"1、"、"1)")、引号、markdown 记号
+            ln = re.sub(r"^\s*(?:[-*•]|\d+\s*[.、)．])\s*", "", ln or "").strip()
+            ln = ln.strip('"').strip("'").strip("“”").strip("`").strip()
+            if len(ln) >= 2:
+                out.append(ln)
+        if not out:
+            return None
+        logger.info(f"[ls] AI 生成话术 {len(out)} 条（要求={requirements[:24]!r}）")
+        return out[:count]
 
     async def generate_reply_stream(self, message: str, sender: str) -> AsyncIterator[str]:
         """流式生成弹幕回复，按标点分句 yield"""

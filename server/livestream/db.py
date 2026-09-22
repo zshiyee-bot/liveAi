@@ -48,6 +48,10 @@ def _migrate_add_columns(conn):
             ("danmaku_batch_wait", "FLOAT DEFAULT 3.0"),
             ("danmaku_max_chars", "INTEGER DEFAULT 60"),
         ],
+        # 话术分割符：填了就把一条长话术切成多句、逐句播
+        "script": [
+            ("split_sep", "VARCHAR(8) DEFAULT ''"),
+        ],
     }
     for table, cols in wanted.items():
         try:

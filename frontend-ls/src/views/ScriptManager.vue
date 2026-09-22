@@ -24,6 +24,9 @@
         </el-table-column>
         <el-table-column label="内容预览" min-width="200">
           <template #default="{ row }">
+            <el-tag v-if="splitCount(row) > 1" size="small" type="warning" style="margin-right: 6px">
+              分句「{{ row.split_sep || '换行' }}」{{ splitCount(row) }} 句
+            </el-tag>
             <span style="font-size: 13px; color: #666">{{ row.content?.slice(0, 80) || row.file_path || '-' }}</span>
           </template>
         </el-table-column>
@@ -64,6 +67,7 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import type { UploadFile } from 'element-plus'
 import { useScriptsStore } from '@/stores/scripts'
 import { deleteScript, toggleScript, uploadFile } from '@/api/scripts'
+import { splitScriptText } from '@/utils/split'
 import ScriptForm from '@/components/scripts/ScriptForm.vue'
 
 const store = useScriptsStore()
@@ -72,6 +76,11 @@ onMounted(() => store.fetchAll())
 
 const TYPE_LABELS: Record<string, string> = { text: '文字', audio: '音频', video: '视频' }
 function typeLabel(t: string): string { return TYPE_LABELS[t] || t }
+
+// 与后端 server/livestream/services/script_manager.py:split_script_text 保持一致
+function splitCount(row: any): number {
+  return splitScriptText(row?.content || '', row?.split_sep || '').length
+}
 
 async function onCreated() {
   await store.fetchAll()

@@ -26,6 +26,9 @@ class QueueItem:
     source: str = "script"   # "script" | "danmaku" | "gift" | "follow"
     level: str = "low"       # "high" | "low"
     metadata: dict = field(default_factory=dict)  # {sender, original_message, script_id, ...}
+    # 分割后的多句（话术管理里配的「分割符」）：入队时会被摊平成多条队列项，
+    # 于是播放是"一句一句"的 —— 弹幕插队只要等当前这一小句，不用等整段长话术。
+    parts: list = field(default_factory=list)
 
 
 class PlayQueue:
@@ -57,11 +60,33 @@ class PlayQueue:
 
     # ── 入队 ──────────────────────────────────────────────────────
 
+    @staticmethod
+    def _expand(item: QueueItem) -> list:
+        """把「一条含多句的话术」摊平成多条队列项（分割符功能）。
+
+        只在入队时展开，DB 里那条话术仍然是 1 行 → 话术管理列表显示 1 条；
+        播放队列里变成 N 句，一句播完再取下一句。
+        """
+        parts = [p for p in (getattr(item, "parts", None) or []) if p and p.strip()]
+        if len(parts) <= 1:
+            item.parts = []
+            return [item]
+        total = len(parts)
+        out = []
+        for i, p in enumerate(parts):
+            out.append(QueueItem(
+                # 第 1 句沿用原 id（前端/撤回都认得它），其余各给新 id，方便各自撤回
+                id=item.id if i == 0 else uuid.uuid4().hex[:12],
+                type=item.type, content=p, source=item.source, level=item.level,
+                metadata={**(item.metadata or {}), "split_index": i + 1, "split_total": total},
+            ))
+        return out
+
     async def put_high(self, item: QueueItem):
         """高优先级入队（追加到高优队尾，同优先级 FIFO）"""
         item.level = "high"
         async with self._lock:
-            self._high.append(item)
+            self._high.extend(self._expand(item))
         logger.info(f"Queue put_high: [{item.source}] {item.content[:50]}... (high={len(self._high)}, low={len(self._low)})")
         await self._notify_change()
 
@@ -69,7 +94,7 @@ class PlayQueue:
         """低优先级入队（追加到低优队尾，同优先级 FIFO）"""
         item.level = "low"
         async with self._lock:
-            self._low.append(item)
+            self._low.extend(self._expand(item))
         logger.info(f"Queue put_low: [{item.source}] {item.content[:50]}... (high={len(self._high)}, low={len(self._low)})")
         await self._notify_change()
 
