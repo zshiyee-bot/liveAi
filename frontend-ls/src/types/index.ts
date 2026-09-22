@@ -15,12 +15,24 @@ export interface PersonaConfig {
 }
 
 // ── Script ──
+export interface ScriptAiLoop {
+  enabled: boolean
+  requirements: string
+  per_segment: number
+  max_chars: number
+  total_minutes?: number
+  buffer?: string[]
+  batch_no?: number
+  generated?: number
+}
+
 export interface Script {
   id: number
   title: string
   type: 'text' | 'audio' | 'video'
   content: string
   split_sep: string
+  ai_loop?: ScriptAiLoop | null
   file_path: string | null
   tags: string[]
   enabled: boolean

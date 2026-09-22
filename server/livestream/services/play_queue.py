@@ -166,6 +166,13 @@ class PlayQueue:
             except asyncio.CancelledError:
                 pass
             self._auto_fill_task = None
+        # AI 循环话术：把还在后台续写的生成任务也掐掉，别在停播后继续烧 LLM 额度
+        sm = self._script_manager
+        if sm is not None and hasattr(sm, "cancel_loop_tasks"):
+            try:
+                sm.cancel_loop_tasks()
+            except Exception:
+                pass
         logger.info("Auto-fill stopped")
 
     async def _auto_fill_loop(self):

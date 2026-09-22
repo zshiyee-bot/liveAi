@@ -1,9 +1,16 @@
 ###############################################################################
 #  ScriptManager — 话术随机选取
+#
+#  · 普通话术：随机挑一条；配了「分割符」的先在入队前切成多句（逐句播）
+#  · AI 循环话术（ai_loop）：一次只取一句，缓冲快用完就后台再生成一段，
+#    永不停歇 —— 话术不会长期固定，也就不会被平台按"重复话术"检测
 ###############################################################################
 
+import asyncio
+import json
 import random
 import re
+import time
 from datetime import datetime
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -15,6 +22,13 @@ from utils.logger import logger
 
 # 切出来的片段短于这个长度就丢掉（避免只切出一个"。"）
 _SPLIT_MIN_LEN = 2
+
+# 循环话术：缓冲剩这么多句就提前生成下一段（不打断正在播的，纯后台）
+_LOOP_PREFETCH_AT = 3
+# 死循环保护：记住最近用过的这么多句，生成时尽量避开（避免换汤不换药）
+_LOOP_SEEN_MAX = 300
+# 生成失败后的冷却秒数（key 没配/模型报错时别疯狂重试刷日志）
+_LOOP_FAIL_COOLDOWN = 60.0
 
 
 def split_script_text(text: str, sep: str = "") -> list[str]:
@@ -47,12 +61,22 @@ def split_script_text(text: str, sep: str = "") -> list[str]:
 
 
 class ScriptManager:
-    """话术库管理 + 随机选取（避免短期重复）"""
+    """话术库管理 + 随机选取（避免短期重复）；AI 循环话术的续写也在这里"""
 
-    def __init__(self, db_session_factory):
+    def __init__(self, db_session_factory, llm=None):
         self._db_factory = db_session_factory
+        self._llm = llm
         self._recent_picks: list[int] = []
         self._max_recent = 5
+        # script_id -> {"buffer": [...未播], "seen": [...], "batch_no": int,
+        #               "generated": int, "task": Task|None, "fail_until": float}
+        self._loop_state: dict[int, dict] = {}
+
+    def set_llm(self, llm):
+        """延迟注入 LLM（rebuild_deps 里调用；没有它循环话术就只能用存货）"""
+        self._llm = llm
+
+    # ── 选取 ──────────────────────────────────────────────────────────
 
     async def random_pick(self) -> QueueItem | None:
         async with self._db_factory() as session:
@@ -77,13 +101,42 @@ class ScriptManager:
                 weights = [max_play - s.play_count for s in candidates]
 
             chosen = random.choices(candidates, weights=weights, k=1)[0]
-            chosen.play_count += 1
-            chosen.last_used_at = datetime.now()
-            await session.commit()
-
             self._recent_picks.append(chosen.id)
             if len(self._recent_picks) > self._max_recent:
                 self._recent_picks.pop(0)
+
+            # ── AI 循环话术：每句现取，缓冲快空就后台续写 ──────────────
+            loop_cfg = chosen.ai_loop_cfg if chosen.type == "text" else {}
+            if loop_cfg.get("enabled"):
+                content = await self._next_loop_part(chosen, loop_cfg)
+                if not content:
+                    # 还没生成出来（key 没配/模型失败）→ 这次不选它，下次再说
+                    return None
+                chosen.play_count += 1
+                chosen.last_used_at = datetime.now()
+                state = self._loop_state.get(chosen.id) or {}
+                loop_cfg = dict(loop_cfg)
+                loop_cfg["buffer"] = list(state.get("buffer") or [])
+                loop_cfg["seen"] = list(state.get("seen") or [])[-_LOOP_SEEN_MAX:]
+                loop_cfg["batch_no"] = int(state.get("batch_no") or 0)
+                loop_cfg["generated"] = int(state.get("generated") or 0)
+                chosen.ai_loop = json.dumps(loop_cfg, ensure_ascii=False)
+                await session.commit()
+                logger.info(f"Auto-fill picked AI 循环话术: [{chosen.id}] {chosen.title}"
+                            f"（剩 {len(state.get('buffer') or [])} 句，已生成 {loop_cfg['generated']} 句）")
+                return QueueItem(
+                    type="text",
+                    content=content,
+                    source="script",
+                    level="low",
+                    metadata={"script_id": chosen.id, "title": chosen.title,
+                              "ai_loop": True, "batch_no": loop_cfg["batch_no"]},
+                )
+
+            # ── 普通话术 ──────────────────────────────────────────────
+            chosen.play_count += 1
+            chosen.last_used_at = datetime.now()
+            await session.commit()
 
             content = chosen.content if chosen.type == "text" else (chosen.file_path or "")
             # 分割符：在入队前切好，写进 item.parts（PlayQueue 会把它们摊成多条，
@@ -107,3 +160,95 @@ class ScriptManager:
             else:
                 logger.info(f"Auto-fill picked script: [{chosen.id}] {chosen.title}")
             return item
+
+    # ── AI 循环话术 ───────────────────────────────────────────────────
+
+    def _state_of(self, script, cfg: dict) -> dict:
+        """拿（或按 DB 里的配置初始化）这条循环话术的运行时状态。"""
+        state = self._loop_state.get(script.id)
+        if state is None:
+            state = {
+                "buffer": [s for s in (cfg.get("buffer") or []) if s and s.strip()],
+                "seen": [s for s in (cfg.get("seen") or []) if s],
+                "batch_no": int(cfg.get("batch_no") or 0),
+                "generated": int(cfg.get("generated") or 0),
+                "task": None,
+                "fail_until": 0.0,
+            }
+            self._loop_state[script.id] = state
+        return state
+
+    async def _next_loop_part(self, script, cfg: dict) -> str | None:
+        """取下一句；缓冲空了就现等一段，快空了就后台先备好。"""
+        state = self._state_of(script, cfg)
+        if not state["buffer"]:
+            task = self._kick_refill(script, state, cfg, wait=True)
+            if task is not None:
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    raise
+                except Exception as e:
+                    logger.warning(f"[ls] AI 循环话术续写异常: {e}")
+        if not state["buffer"]:
+            return None
+        content = state["buffer"].pop(0)
+        if len(state["buffer"]) <= _LOOP_PREFETCH_AT:
+            self._kick_refill(script, state, cfg, wait=False)
+        return content
+
+    def _kick_refill(self, script, state: dict, cfg: dict, wait: bool = False):
+        """起一个后台任务生成下一段；wait=True 时当场等它出结果。"""
+        task = state.get("task")
+        if task is not None and not task.done():
+            return task          # 已经有人在生成了，别重复调
+        if not wait and time.time() < (state.get("fail_until") or 0):
+            return None          # 刚失败过，冷却中
+        snapshot = {
+            "requirements": cfg.get("requirements") or "",
+            "per_segment": int(cfg.get("per_segment") or 10),
+            "max_chars": int(cfg.get("max_chars") or 30),
+        }
+        task = asyncio.create_task(self._refill_task(script.id, state, snapshot))
+        state["task"] = task
+        return task
+
+    async def _refill_task(self, script_id: int, state: dict, cfg: dict):
+        """后台生成一段循环话术，结果塞进 state["buffer"]。失败只记日志、不抛。"""
+        req = cfg.get("requirements") or ""
+        count = max(1, min(50, int(cfg.get("per_segment") or 10)))
+        max_chars = max(10, min(200, int(cfg.get("max_chars") or 30)))
+        if self._llm is None or getattr(self._llm, "client", None) is None:
+            state["fail_until"] = time.time() + _LOOP_FAIL_COOLDOWN
+            logger.warning("[ls] AI 循环话术需要 LLM：请先在「系统配置」里填好 API Key 并保存重载")
+            return
+        try:
+            got = await self._llm.generate_scripts(req, count=count, max_chars=max_chars)
+        except Exception as e:
+            state["fail_until"] = time.time() + _LOOP_FAIL_COOLDOWN
+            logger.warning(f"[ls] AI 循环话术生成失败: {e}")
+            return
+        if not got:
+            state["fail_until"] = time.time() + _LOOP_FAIL_COOLDOWN
+            logger.warning("[ls] AI 循环话术没生成出内容（看 LLM 日志：key/模型名？）")
+            return
+
+        seen = set(state.get("seen") or [])
+        fresh = [g for g in got if g not in seen]
+        if not fresh:
+            fresh = list(got)        # 全撞车了 → 至少给点，不然永远空
+        state.setdefault("buffer", []).extend(fresh)
+        state["seen"] = (list(state.get("seen") or []) + fresh)[-_LOOP_SEEN_MAX:]
+        state["batch_no"] = int(state.get("batch_no") or 0) + 1
+        state["generated"] = int(state.get("generated") or 0) + len(fresh)
+        state["fail_until"] = 0.0
+        logger.info(f"[ls] AI 循环话术续写第 {state['batch_no']} 段：{len(fresh)} 句"
+                    f"（缓冲共 {len(state['buffer'])} 句，累计 {state['generated']} 句）")
+
+    def cancel_loop_tasks(self):
+        """停止直播时把还在跑的续写任务掐掉（否则白花钱调 LLM）。"""
+        for state in self._loop_state.values():
+            task = state.get("task")
+            if task is not None and not task.done():
+                task.cancel()
+            state["task"] = None

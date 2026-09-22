@@ -86,6 +86,11 @@ class Script(Base):
     # 但播放时会**一句一句**送进队列，于是弹幕插队只需等当前这一小句，
     # 而不是等一整段长话术（实测那条 305 字的话术会挡住弹幕 90 秒）。
     split_sep: Mapped[str] = mapped_column(String(8), default="")
+    # AI 循环话术（「AI 生成话术」里的循环模式）：JSON 字符串，存
+    # {enabled, requirements, per_segment, max_chars, buffer:[剩余句子], batch_no, generated, seen:[近期用过的]}
+    # 空字符串 = 普通话术。播放时每句在 random_pick 里现取，缓冲快用完就后台再生成一段，
+    # 于是话术永不重复、也不会因为写死一段被检测。
+    ai_loop: Mapped[str] = mapped_column(Text, default="")
     file_path: Mapped[str | None] = mapped_column(String(500), nullable=True)
     tags: Mapped[str] = mapped_column(Text, default="[]")
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
@@ -104,6 +109,17 @@ class Script(Base):
     def tags_list(self, value: list[str]):
         self.tags = json.dumps(value, ensure_ascii=False)
 
+    @property
+    def ai_loop_cfg(self) -> dict:
+        """解析 ai_loop JSON；坏数据当没有，绝不让它把整条话术搞崩。"""
+        if not self.ai_loop:
+            return {}
+        try:
+            data = json.loads(self.ai_loop)
+            return data if isinstance(data, dict) else {}
+        except Exception:
+            return {}
+
     def to_dict(self) -> dict:
         return {
             "id": self.id,
@@ -111,6 +127,7 @@ class Script(Base):
             "type": self.type,
             "content": self.content,
             "split_sep": self.split_sep or "",
+            "ai_loop": self.ai_loop_cfg or None,
             "file_path": self.file_path,
             "tags": self.tags_list,
             "enabled": self.enabled,

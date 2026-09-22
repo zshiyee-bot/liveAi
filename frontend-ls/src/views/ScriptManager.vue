@@ -24,6 +24,9 @@
         </el-table-column>
         <el-table-column label="内容预览" min-width="200">
           <template #default="{ row }">
+            <el-tag v-if="row.ai_loop?.enabled" size="small" type="success" style="margin-right: 6px">
+              AI 循环·剩 {{ row.ai_loop.buffer?.length ?? 0 }} 句
+            </el-tag>
             <el-tag v-if="splitCount(row) > 1" size="small" type="warning" style="margin-right: 6px">
               分句「{{ row.split_sep || '换行' }}」{{ splitCount(row) }} 句
             </el-tag>

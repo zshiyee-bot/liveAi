@@ -23,6 +23,20 @@ export async function aiGenerateScripts(payload: {
   return data.items || []
 }
 
+/** 新建「AI 循环话术」：先按直播时长生成第一段，之后播放中自动一段接一段续写。
+ *  生成慢（第一段可能 50 条），超时放宽到 3 分钟。 */
+export async function createAiLoopScript(payload: {
+  title?: string
+  requirements: string
+  per_segment: number
+  max_chars: number
+  total_minutes?: number
+  tags?: string[]
+}): Promise<Script> {
+  const { data } = await client.post('/api/scripts/ai_loop', payload, { timeout: 180000 })
+  return data
+}
+
 export async function updateScript(id: number, payload: Partial<Script>): Promise<Script> {
   const { data } = await client.put(`/api/scripts/${id}`, payload)
   return data

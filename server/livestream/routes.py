@@ -311,7 +311,7 @@ async def rebuild_deps(reason: str = "startup", rm: _Room = None):
         embedding_model=cfg.get('embedding_model', ''),
     )
     await llm.init_knowledge_base()
-    queue = PlayQueue(script_manager=ScriptManager(async_session))
+    queue = PlayQueue(script_manager=ScriptManager(async_session, llm=llm))
     queue.set_on_change(lambda rm=rm: _broadcast_queue_to(rm))
     rm.llm = llm
     rm.queue = queue
@@ -566,6 +566,65 @@ async def api_scripts_ai_generate(request):
     return reply({"code": 0, "msg": "ok", "items": items})
 
 
+async def api_scripts_ai_loop(request):
+    """新建一条「AI 循环话术」：先按直播时长生成第一段，之后播放中自动一段接一段续写。
+
+    和 ai_generate 的区别：generate 是"一次性给一批，用户确认后自己保存"；
+    这里是"存成一条特殊话术"，播放时每句现取、缓冲快空就后台续写 —— 永不停歇，
+    话术不会长期固定（避免被平台按重复话术检测）。
+    """
+    await ensure_ready()
+    body = await _body(request)
+    req = str(body.get('requirements') or body.get('prompt') or '').strip()
+    if not req:
+        return fail("请先填写「想生成什么话术」的要求")
+    try:
+        per_segment = max(3, min(50, int(body.get('per_segment') or 10)))
+        max_chars = max(10, min(200, int(body.get('max_chars') or 30)))
+        total_minutes = max(0, min(24 * 60, int(body.get('total_minutes') or 0)))
+    except Exception:
+        return fail("参数不对：per_segment/max_chars/total_minutes 都要是数字")
+
+    llm = LS.llm
+    if llm is None or getattr(llm, 'client', None) is None:
+        return fail("LLM 未配置：请先在「系统配置」里填好 API Key 并点「保存并重载」")
+
+    # 第一段条数：按直播时长折算（估算每条朗读 ≈ 字数/5 + 0.8 秒），上限 50 条
+    first_count = per_segment
+    if total_minutes:
+        sec_per_line = max(2.0, max_chars / 5.0 + 0.8)
+        first_count = max(per_segment, min(50, int(round(total_minutes * 60 / sec_per_line))))
+
+    got = await llm.generate_scripts(req, count=first_count, max_chars=max_chars)
+    if not got:
+        return fail("AI 生成失败：LLM 没返回可用内容（多半是 key/模型名的问题，看日志）", 500)
+
+    title = str(body.get('title') or '').strip() or (req[:20] or 'AI 循环话术')
+    cfg = {
+        "enabled": True,
+        "requirements": req,
+        "per_segment": per_segment,
+        "max_chars": max_chars,
+        "total_minutes": total_minutes,
+        "buffer": got,       # 还没播的句子（播放时一句一句取走）
+        "seen": got,         # 记着用过的，下一段尽量避开
+        "batch_no": 1,
+        "generated": len(got),
+    }
+    async with async_session() as s:
+        r = Script(title=title[:200], type='text', content='\n'.join(got),
+                   ai_loop=json.dumps(cfg, ensure_ascii=False))
+        tags = body.get('tags')
+        if isinstance(tags, list):
+            r.tags = json.dumps(tags, ensure_ascii=False)
+        s.add(r)
+        await s.commit()
+        await s.refresh(r)
+        logger.info(f"[ls] 新建 AI 循环话术 [{r.id}] {r.title}：首段 {len(got)} 句"
+                    f"（每段 {per_segment} 句 / 每条 ≤{max_chars} 字 / 时长参数 {total_minutes} 分）")
+        return reply(r.to_dict())
+
+
 async def api_scripts_update(request):
     await ensure_ready()
     sid = request.match_info['sid']
@@ -580,6 +639,8 @@ async def api_scripts_update(request):
             r.content = str(body['content'])
         if body.get('split_sep') is not None:
             r.split_sep = str(body['split_sep'])[:8]
+        if body.get('ai_loop') is not None:
+            r.ai_loop = json.dumps(body['ai_loop'], ensure_ascii=False)
         if body.get('enabled') is not None:
             r.enabled = bool(body['enabled'])
         if isinstance(body.get('tags'), list):
@@ -1128,6 +1189,7 @@ def setup_livestream_routes(app):
     app.router.add_get(f"{p}/api/scripts", api_scripts_list)
     app.router.add_post(f"{p}/api/scripts", api_scripts_create)
     app.router.add_post(f"{p}/api/scripts/ai_generate", api_scripts_ai_generate)
+    app.router.add_post(f"{p}/api/scripts/ai_loop", api_scripts_ai_loop)
     app.router.add_post(f"{p}/api/scripts/upload-file", api_scripts_upload)
     app.router.add_put(f"{p}/api/scripts/{{sid}}", api_scripts_update)
     app.router.add_delete(f"{p}/api/scripts/{{sid}}", api_scripts_delete)

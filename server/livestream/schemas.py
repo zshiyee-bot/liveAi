@@ -44,6 +44,8 @@ class ScriptCreate(BaseModel):
     tags: list[str] = Field(default_factory=list)
     # 分割符：填了（如 "。"）就把 content 切成多句，播放时一句一句送
     split_sep: str = Field(default="", max_length=8)
+    # AI 循环话术配置（一般由 /api/scripts/ai_loop 生成，不手填）
+    ai_loop: dict | None = None
 
 
 class ScriptUpdate(BaseModel):
@@ -52,6 +54,7 @@ class ScriptUpdate(BaseModel):
     tags: list[str] | None = None
     enabled: bool | None = None
     split_sep: str | None = Field(None, max_length=8)
+    ai_loop: dict | None = None
 
 
 class ScriptResponse(BaseModel):
@@ -60,6 +63,7 @@ class ScriptResponse(BaseModel):
     type: str
     content: str
     split_sep: str = ""
+    ai_loop: dict | None = None
     file_path: str | None = None
     tags: list[str]
     enabled: bool

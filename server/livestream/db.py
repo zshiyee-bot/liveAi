@@ -49,8 +49,10 @@ def _migrate_add_columns(conn):
             ("danmaku_max_chars", "INTEGER DEFAULT 60"),
         ],
         # 话术分割符：填了就把一条长话术切成多句、逐句播
+        # ai_loop：AI 循环话术的配置 JSON（要求/每段条数/剩余句子缓冲…）
         "script": [
             ("split_sep", "VARCHAR(8) DEFAULT ''"),
+            ("ai_loop", "TEXT DEFAULT ''"),
         ],
     }
     for table, cols in wanted.items():
