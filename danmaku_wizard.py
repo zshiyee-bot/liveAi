@@ -62,6 +62,14 @@ def save_cfg(cfg: dict):
         print(f"  [警告] 配置保存失败（不影响本次运行）：{e}")
 
 
+def pause(msg: str = "\n  按回车退出...") -> None:
+    """等一个回车；没有输入（被重定向/管道跑）也不报错。"""
+    try:
+        input(msg)
+    except (EOFError, KeyboardInterrupt):
+        pass
+
+
 def ask_choice(prompt: str, choices: dict, default: str) -> str:
     """带菜单的选择题：choices = {"1": ("标签", 值)}"""
     while True:
@@ -196,11 +204,98 @@ def start_grabber(mode: str) -> subprocess.Popen | None:
 
 
 def stop_grabber():
+    """收掉抓包工具。先用温和方式（让它自己恢复系统代理），不行再强杀。"""
+    for args, wait in ((["taskkill", "/IM", "WssBarrageServer.exe"], 8),
+                       (["taskkill", "/IM", "WssBarrageServer.exe", "/F"], 10)):
+        try:
+            subprocess.run(args, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=wait)
+        except Exception:
+            pass
+        time.sleep(1.5)
+        if not _proc_alive("WssBarrageServer.exe"):
+            break
+    fix_proxy_residue()          # 兜底：万一它没把系统代理改回来
+
+
+def _proc_alive(name: str) -> bool:
     try:
-        subprocess.run(["taskkill", "/IM", "WssBarrageServer.exe", "/F"],
-                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=10)
+        out = subprocess.run(["tasklist", "/FI", f"IMAGENAME eq {name}"],
+                             capture_output=True, text=True, timeout=10).stdout or ""
+        return name.lower() in out.lower()
+    except Exception:
+        return False
+
+
+# ── 系统代理保护（浏览器模式会改系统代理，被强杀就会"断网"）────────────
+PROXY_KEY = r"Software\Microsoft\Windows\CurrentVersion\Internet Settings"
+GRABBER_PROXY_PORT = "8827"          # tools/DouyinBarrageGrab 配置里的 proxyPort
+
+
+def _reg_get(name):
+    try:
+        import winreg
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, PROXY_KEY) as k:
+            return winreg.QueryValueEx(k, name)[0]
+    except Exception:
+        return None
+
+
+def _reg_set(name, value, kind):
+    try:
+        import winreg
+        with winreg.CreateKeyEx(winreg.HKEY_CURRENT_USER, PROXY_KEY, 0, winreg.KEY_SET_VALUE) as k:
+            winreg.SetValueEx(k, name, 0, kind, value)
+        return True
+    except Exception:
+        return False
+
+
+def _notify_proxy_changed():
+    """告诉系统/浏览器"代理设置变了"，不用重启浏览器。"""
+    try:
+        import ctypes
+        ctypes.windll.wininet.InternetSetOptionW(0, 39, 0, 0)     # SETTINGS_CHANGED
+        ctypes.windll.wininet.InternetSetOptionW(0, 37, 0, 0)     # REFRESH
     except Exception:
         pass
+
+
+def proxy_snapshot() -> dict:
+    return {"ProxyEnable": _reg_get("ProxyEnable"), "ProxyServer": _reg_get("ProxyServer"),
+            "ProxyOverride": _reg_get("ProxyOverride"), "AutoConfigURL": _reg_get("AutoConfigURL")}
+
+
+def proxy_restore(snap: dict):
+    """把开抓包之前的代理设置原样放回去。"""
+    if not snap:
+        return
+    import winreg
+    if snap.get("ProxyEnable") is not None:
+        _reg_set("ProxyEnable", int(snap["ProxyEnable"]), winreg.REG_DWORD)
+    for k in ("ProxyServer", "ProxyOverride", "AutoConfigURL"):
+        if snap.get(k) is not None:
+            _reg_set(k, snap[k], winreg.REG_SZ)
+    _notify_proxy_changed()
+
+
+def fix_proxy_residue(verbose: bool = False) -> bool:
+    """急救：系统代理还指着抓包工具的端口(8827)，但工具已经不在 → 关掉它。
+
+    这就是"退掉抓弹幕服务之后就断网"的原因：抓包工具设了系统代理，
+    被强杀时没来得及改回来，浏览器还在往一个死掉的代理发请求。
+    """
+    srv = str(_reg_get("ProxyServer") or "")
+    enable = _reg_get("ProxyEnable")
+    if GRABBER_PROXY_PORT in srv and int(enable or 0) == 1:
+        import winreg
+        _reg_set("ProxyEnable", 0, winreg.REG_DWORD)      # 必须用 REG_DWORD(4)，写错类型不生效
+        _notify_proxy_changed()
+        print("  [代理急救] 检测到系统代理还指向抓包工具的 127.0.0.1:8827（工具已退出），"
+              "已自动关闭系统代理，网络恢复正常。")
+        return True
+    if verbose:
+        print(f"  [代理检查] 当前 ProxyEnable={enable} ProxyServer={srv or '(空)'} —— 没有残留。")
+    return False
 
 
 # ── 向导 ─────────────────────────────────────────────────────────────
@@ -225,8 +320,9 @@ def ask_questions(old: dict) -> dict:
     if platform in ("douyin", "both"):
         mode = ask_choice(
             "② 抖音用哪种方式抓？",
-            {"1": ("直播伴侣 —— 我自己开播时用（不用开浏览器，推荐）", "companion"),
-             "2": ("网页/浏览器 —— 抓别人的直播间（要保持那个网页开着）", "browser")},
+            {"1": ("直播伴侣 —— 我自己开播时用（不开浏览器、不动系统代理，推荐）", "companion"),
+             "2": ("网页/浏览器 —— 抓别人的直播间（⚠️ 会临时改系统代理；退出时自动恢复，"
+                   "万一没恢复就双击「急救-网页打不开就双击我.bat」）", "browser")},
             {"companion": "1", "browser": "2"}.get(mode, "1"))
     cfg["douyin_mode"] = mode
 
@@ -314,6 +410,7 @@ def run(cfg: dict) -> int:
 
     print_summary(cfg)
 
+    proxy_snap = None
     if need_grabber:
         if not _is_admin():
             print()
@@ -322,14 +419,21 @@ def run(cfg: dict) -> int:
             if not _elevate_self([os.path.abspath(__file__), "--elevated"]):
                 print("  ✗ 没有拿到管理员权限，抖音这条抓不了。")
                 print("    （淘宝那条不需要管理员权限，可以把平台改成「淘宝直播」再试）")
-                input("  按回车退出...")
+                pause()
                 return 1
             return 0
         mode = cfg.get("douyin_mode", "companion")
         print()
         print(f"  正在静默启动抖音抓包工具（{MODE_LABEL.get(mode, mode)}）...")
+        # 浏览器模式会改系统代理 → 先把原设置存下来，退出时恢复；被强杀也能下次急救
+        proxy_snap = proxy_snapshot() if mode == "browser" else None
+        if proxy_snap is not None:
+            print("  （这个模式会临时改系统代理，我退出时会自动帮你改回来）")
+            # 再上一道保险：就算脚本被异常终止，也尽量把代理恢复原样
+            import atexit
+            atexit.register(lambda s=proxy_snap: proxy_restore(s))
         if start_grabber(mode) is None:
-            input("  按回车退出...")
+            pause()
             return 1
         print("  等 6 秒让它接上弹幕通道...")
         time.sleep(6)
@@ -357,7 +461,7 @@ def run(cfg: dict) -> int:
         if not args.live_id:
             print("  [错误] 淘宝直播需要直播间号（liveId），请重新运行向导填写。")
             stop_grabber()
-            input("  按回车退出...")
+            pause()
             return 1
         threads.append(threading.Thread(target=F.taobao_source,
                                         args=(args, forwarder, stop), name="taobao", daemon=True))
@@ -386,6 +490,9 @@ def run(cfg: dict) -> int:
         forwarder.flush()
         if need_grabber:
             stop_grabber()
+        if proxy_snap:
+            proxy_restore(proxy_snap)      # 把系统代理改回原样（本来没开就还是关着）
+            print("  系统代理已恢复原状。")
         print(f"  已停止：共转发 {forwarder.sent} 条，失败 {forwarder.fails} 次")
     return 0
 
@@ -400,6 +507,8 @@ def main() -> int:
     ap = argparse.ArgumentParser(description="弹幕转发向导")
     ap.add_argument("--elevated", action="store_true", help="内部用：已提权，别重复提问")
     ap.add_argument("--reset", action="store_true", help="忘掉上次的选择")
+    ap.add_argument("--fix-proxy", action="store_true",
+                    help="急救：退出抓包工具后网页打不开/断网时，运行这个把系统代理关掉")
     ap.add_argument("--yes", action="store_true", help="不问，直接用记住的配置")
     # 高级用法：直接给参数就跳过向导（兼容老的命令行方式）
     ap.add_argument("--server")
@@ -408,6 +517,19 @@ def main() -> int:
     ap.add_argument("--key")
     ap.add_argument("--token")
     args, _unknown = ap.parse_known_args()
+
+    if args.fix_proxy:
+        print()
+        print("=" * 62)
+        print(" 系统代理急救 —— 退出抓包工具后网页打不开时用这个")
+        print("=" * 62)
+        if not fix_proxy_residue(verbose=True):
+            print("  没发现抓包工具留下的代理残留。")
+            print("  如果还是上不了网，手动检查：设置 → 网络和 Internet → 代理 → 关掉『使用代理服务器』")
+        pause()
+        return 0
+
+    fix_proxy_residue()          # 上次被强杀留下的残留，开机先清掉
 
     if args.reset and os.path.exists(CFG_PATH):
         os.remove(CFG_PATH)
@@ -425,7 +547,7 @@ def main() -> int:
     if args.elevated or args.yes:
         if not cfg:
             print("  [错误] 没有记住的配置，请先正常运行一次向导。")
-            input("  按回车退出...")
+            pause()
             return 1
         return run(cfg)
 
@@ -441,7 +563,7 @@ def main() -> int:
         import traceback
         print(f"\n  [出错] {e}")
         traceback.print_exc()
-        input("  按回车退出...")
+        pause()
         return 1
 
 
