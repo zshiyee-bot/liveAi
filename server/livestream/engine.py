@@ -112,8 +112,18 @@ class LiveStreamRuntime:
         if self.queue is None:
             return {"high": [], "low": []}
         snap = await self.queue.snapshot()
-        pending = list(self._inflight[1:])
-        for it in pending:
+        rows = []
+        # 【正在播的那一条】也放进快照（playing=True，排在最前面）。
+        # 为什么必须放：前端「正在播放」那一行是靠 playback_started 事件设 currentItem 的，
+        # 而每次 queue_update 都会把它清空 —— 话术库为空时队列里又没别的东西可看，
+        # 于是就变成「有语音、面板全空」。放进快照后，面板无论如何都能显示它在念什么。
+        if self._inflight:
+            cur = self._inflight[0]
+            rows.append((cur, True))
+        # 已预送、马上播的那些（零接缝预送窗口）
+        for it in list(self._inflight[1:]):
+            rows.append((it, False))
+        for it, playing in rows:
             is_script = it.source == "script"
             row = {
                 "id": it.id,
@@ -121,12 +131,13 @@ class LiveStreamRuntime:
                 "source": it.source,
                 "content_preview": (it.content or "")[:80],
                 "level": "low" if is_script else "high",
-                "presend": True,          # 标记：已预送（前端不认识也无害）
+                "presend": not playing,
+                "playing": playing,       # 前端不认识也无害
             }
             if is_script:
-                snap.setdefault("low", []).append(row)
+                snap.setdefault("low", []).insert(0 if playing else len(snap.get("low", [])), row)
             else:
-                snap.setdefault("high", []).append(row)
+                snap.setdefault("high", []).insert(0 if playing else len(snap.get("high", [])), row)
         return snap
 
     async def _emit_playing(self):
