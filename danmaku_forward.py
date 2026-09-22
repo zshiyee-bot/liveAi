@@ -58,9 +58,12 @@ except ImportError:
     sys.exit(1)
 
 
-# 点赞消息（Type=2）在服务器侧本来就会被丢掉，而且它是量最大的一类
-# （点赞风暴一秒几十条），所以在源头就不过网，省带宽也省服务器 CPU。
-_SKIP_TYPES = {2}
+# 不在源头就砍掉的类型（按 ape 方言的编号，normalize() 之后才判断）：
+#   2 = 点赞：量最大（点赞风暴一秒几十条），服务器侧本来也会丢
+#   3 = 进场（"xxx 进入了直播间"）：量也很大而且没有任何互动价值，
+#       转发过来只会把运营页的弹幕流刷乱，所以默认丢掉。
+#   想保留进场：加 --keep-enter（或设置 LS_KEEP_ENTER=1）
+_SKIP_TYPES = {2, 3}
 
 # ── 报文方言 ──────────────────────────────────────────────────────────
 # 抓抖音的工具有两家主流，**Type 编号和字段名不一样**，接错了会"弹幕被当进场回、
@@ -288,7 +291,11 @@ def relay_source(args, fwd: Forwarder, stop: threading.Event):
                 if obj is None:
                     fwd.dropped += 1
                     continue
-                if obj.get("Type") in _SKIP_TYPES:
+                skip = _SKIP_TYPES
+                if args.keep_enter:
+                    skip = _SKIP_TYPES - {3}      # 用户要求保留进场
+                if obj.get("Type") in skip:
+                    fwd.dropped += 1
                     continue
                 show(obj)
                 fwd.push(obj)
@@ -449,6 +456,10 @@ def main() -> int:
                     help="数据源：relay=抓包工具（默认）/ taobao=淘宝直播 / both=两个都要")
     ap.add_argument("--relay", default=os.getenv("LS_RELAY_WS", "ws://127.0.0.1:8888"),
                     help="抓包工具的 WebSocket 地址（source=relay/both 用）")
+    ap.add_argument("--keep-enter", action="store_true",
+                    default=(os.getenv("LS_KEEP_ENTER", "") or "").strip().lower()
+                    in ("1", "true", "yes", "on"),
+                    help="保留「进入直播间」消息（默认丢掉：量太大、把弹幕流刷乱）")
     ap.add_argument("--dialect", default=os.getenv("LS_DIALECT", "auto"), choices=_DIALECTS,
                     help="抓包工具的报文方言：auto=自动猜（默认）/ ape=DouyinBarrageGrab / "
                          "wushuai=BarrageGrab")
