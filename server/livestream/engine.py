@@ -144,8 +144,13 @@ class LiveStreamRuntime:
             # 已经没有在播的内容了 → 必须**显式**告诉前端「清掉正在播放」。
             # 原来这里是直接 return（什么都不发），前端 currentItem 就永远停在最后一条：
             # 明明没弹幕、没语音了，「正在播放」还挂着上一条（用户实测就是这个）。
-            await self._emit({"type": "playback_ended"})
+            # 但只在"从有到无"这个转变时报一次 —— 否则 start() 时也会发一个假事件
+            #（自测实测：刚起播就报了一次 playback_ended，此时根本没播过任何东西）。
+            if getattr(self, "_had_playing", False):
+                self._had_playing = False
+                await self._emit({"type": "playback_ended"})
             return
+        self._had_playing = True
         cur = self._inflight[0]
         await self._emit({
             "type": "playback_started",
