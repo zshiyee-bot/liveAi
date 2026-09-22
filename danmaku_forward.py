@@ -117,6 +117,31 @@ def normalize(obj: dict, dialect: str = "ape") -> dict | None:
             "ProcessName": obj.get("ProcessName") or obj.get("processName") or ""}
 
 
+def describe(obj: dict) -> str:
+    """从 ape 格式报文里取出「类型 昵称: 内容」，用来在窗口里打印。
+
+    抓包工具是"抓本机正在播放的流量"，没有房间号可填 —— 所以能不能确认抓的是哪个房间，
+    最直接的办法就是把抓到的每条弹幕打出来。
+    """
+    data = obj.get("Data") if obj.get("Data") is not None else obj.get("data")
+    if isinstance(data, str):
+        try:
+            data = json.loads(data)
+        except Exception:
+            data = {}
+    if not isinstance(data, dict):
+        data = {}
+    user = data.get("User") or data.get("user") or {}
+    nick = (user.get("Nickname") or user.get("nickname") or user.get("NickName")
+            or "观众") if isinstance(user, dict) else "观众"
+    t = obj.get("Type") if obj.get("Type") is not None else obj.get("type") or 0
+    label = {1: "弹幕", 2: "点赞", 3: "进场", 4: "关注", 5: "礼物"}.get(t, f"类型{t}")
+    body = data.get("Content") or data.get("content") or ""
+    if t == 5:
+        body = f"{data.get('GiftName') or data.get('giftName') or '礼物'} x{data.get('GiftCount') or data.get('giftCount') or 1}"
+    return f"{label} {nick}: {body}".strip() if body else f"{label} {nick}"
+
+
 def build_url(server: str) -> str:
     s = (server or "").strip().rstrip("/")
     if not s:
@@ -197,6 +222,24 @@ class Forwarder:
 def relay_source(args, fwd: Forwarder, stop: threading.Event):
     seen_dialects: set = set()
     t_reach_err = 0.0
+    # 打印节流：一秒最多打 6 条，超了就只打每 10 条（弹幕风暴时别把窗口刷爆）
+    print_win: list = [0.0, 0]          # [本秒起点, 本秒已打条数]
+    suppressed = [0]
+
+    def show(obj: dict):
+        now = time.time()
+        if now - print_win[0] >= 1.0:
+            if suppressed[0]:
+                print(f"        …（上一秒还有 {suppressed[0]} 条没打印）")
+                suppressed[0] = 0
+            print_win[0] = now
+            print_win[1] = 0
+        if print_win[1] < 6:
+            print(f"   [收到] {describe(obj)}")
+        else:
+            suppressed[0] += 1
+        print_win[1] += 1
+
     while not stop.is_set():
         try:
             ws = websocket.create_connection(args.relay, timeout=15)
@@ -247,6 +290,7 @@ def relay_source(args, fwd: Forwarder, stop: threading.Event):
                     continue
                 if obj.get("Type") in _SKIP_TYPES:
                     continue
+                show(obj)
                 fwd.push(obj)
                 if len(fwd._pending) >= _FLUSH_MAX:
                     fwd.flush()
