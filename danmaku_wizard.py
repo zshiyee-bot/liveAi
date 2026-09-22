@@ -94,6 +94,59 @@ def ask_room_id(prompt: str, hint: str) -> str:
         print("  ✗ 没看出数字，把链接整个粘进来也行。")
 
 
+def fetch_rooms(server: str) -> dict:
+    """问服务器现在有哪些「放映间」（= 运营页里分开的直播控制面板 / 房间）。
+
+    返回 {房间号: "正在直播"|"空闲"}；连不上就返回 {}（那就让用户手输）。
+    """
+    try:
+        import requests
+        base = (server or "").strip().rstrip("/")
+        if not base.startswith(("http://", "https://")):
+            base = "http://" + base
+        r = requests.get(base + "/ls/api/diag", timeout=6)
+        data = (r.json() or {}).get("data") or {}
+        rooms = data.get("rooms") or {}
+        out = {}
+        if isinstance(rooms, dict):
+            for key, info in rooms.items():
+                info = info if isinstance(info, dict) else {}
+                out[str(key)] = "正在直播" if info.get("running") else "空闲"
+        if out:
+            return out
+        # 老接口兜底：只有默认房间
+        return {"default": "正在直播" if data.get("running") else "空闲"}
+    except Exception:
+        return {}
+
+
+def ask_room(cfg: dict) -> str:
+    """选推给哪个放映间（房间标识）。列出服务器上已有的房间给用户挑。"""
+    print()
+    print("⑤ 要把弹幕推到哪个「放映间」？")
+    print("    （放映间 = 运营页里分开的直播控制面板，多个房间互不干扰）")
+    print("    只开一场直播 → 直接回车走默认房间")
+    rooms = fetch_rooms(cfg.get("server") or "")
+    keys = list(rooms.keys())
+    if keys:
+        print()
+        print("    服务器上现在的房间：")
+        for i, k in enumerate(keys, 1):
+            tag = "" if k != "default" else "   ← 默认房间"
+            print(f"      {i}) {k}（{rooms[k]}）{tag}")
+        print("      （也可以直接输入一个新房名，比如 roomC）")
+    else:
+        print("    （连不上服务器拿房间列表，直接手输房间名也行）")
+    cur = cfg.get("room_key") or ""
+    print(f"    上次用的是：{cur or '默认房间'}")
+    raw = input("  房间标识（回车=默认房间）: ").strip()
+    if not raw:
+        return cur if cur else ""
+    if raw.isdigit() and keys and 1 <= int(raw) <= len(keys):
+        return keys[int(raw) - 1]
+    return raw
+
+
 # ── 抓包工具（抖音才需要）────────────────────────────────────────────
 
 def _is_admin() -> bool:
@@ -194,11 +247,7 @@ def ask_questions(old: dict) -> dict:
     raw = input(f"  服务器地址（回车={default_server}）: ").strip()
     cfg["server"] = raw or default_server
 
-    print()
-    print("⑤ 房间标识：一台服务器同时带多场直播时才需要（用来区分互不干扰）")
-    print("    只开一场 → 直接回车（走默认房间）")
-    raw = input(f"  房间标识（回车={cfg.get('room_key') or '默认房间'}）: ").strip()
-    cfg["room_key"] = raw or cfg.get("room_key", "")
+    cfg["room_key"] = ask_room(cfg)
 
     save_cfg(cfg)
     print()
