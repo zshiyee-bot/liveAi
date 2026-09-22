@@ -1,10 +1,23 @@
 <template>
   <div>
     <h1 style="margin: 0 0 20px 0; font-size: 22px">话术管理</h1>
-    <el-card style="margin-bottom: 20px">
-      <template #header><span><el-icon><Plus /></el-icon> 添加话术</span></template>
-      <ScriptForm @created="onCreated" />
-    </el-card>
+    <el-row :gutter="20" style="margin-bottom: 20px">
+      <el-col :xs="24" :md="11">
+        <el-card style="height: 100%">
+          <template #header><span><el-icon><Plus /></el-icon> 添加话术</span></template>
+          <ScriptForm @created="onCreated" />
+        </el-card>
+      </el-col>
+      <el-col :xs="24" :md="13">
+        <el-card style="height: 100%">
+          <template #header>
+            <span><el-icon><MagicStick /></el-icon> AI 生成话术</span>
+            <el-tag size="small" type="info" style="margin-left: 8px">生成一批 / 循环生成</el-tag>
+          </template>
+          <ScriptAiForm @created="onCreated" />
+        </el-card>
+      </el-col>
+    </el-row>
     <el-card>
       <template #header>
         <span><el-icon><Document /></el-icon> 话术列表</span>
@@ -72,6 +85,7 @@ import { useScriptsStore } from '@/stores/scripts'
 import { deleteScript, toggleScript, uploadFile } from '@/api/scripts'
 import { splitScriptText } from '@/utils/split'
 import ScriptForm from '@/components/scripts/ScriptForm.vue'
+import ScriptAiForm from '@/components/scripts/ScriptAiForm.vue'
 
 const store = useScriptsStore()
 

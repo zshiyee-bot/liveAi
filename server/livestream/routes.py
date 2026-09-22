@@ -26,7 +26,7 @@ from server.livestream.models import Persona, Script, AppSettings, KnowledgeDocu
 from server.livestream.adapter import adapter, LocalAvatarAdapter
 from server.livestream.engine import LiveStreamRuntime
 from server.livestream.services.play_queue import PlayQueue
-from server.livestream.services.script_manager import ScriptManager
+from server.livestream.services.script_manager import ScriptManager, split_script_text
 from server.livestream.services.llm_service import LLMService
 from server.livestream.services.danmaku.manager import MultiPlatformCollector
 
@@ -566,6 +566,48 @@ async def api_scripts_ai_generate(request):
     return reply({"code": 0, "msg": "ok", "items": items})
 
 
+async def api_scripts_batch_create(request):
+    """批量新建话术 —— AI 生成一批之后一次性保存（每条一行话术）。
+
+    和单条 create 共用同一张表；split_sep 可以整体给（body.split_sep），
+    也可以每条各自带（items[i].split_sep）。落库后**一条话术一个记录**，
+    列表里就是 N 条（和手工一条条加完全一样）。
+    """
+    await ensure_ready()
+    body = await _body(request)
+    items = body.get('items')
+    if not isinstance(items, list) or not items:
+        return fail("items 不能为空")
+    if len(items) > 200:
+        return fail("一次最多保存 200 条")
+    default_sep = str(body.get('split_sep') or '')[:8]
+    default_tags = body.get('tags') if isinstance(body.get('tags'), list) else None
+
+    async with async_session() as s:
+        made = []
+        for it in items:
+            if not isinstance(it, dict):
+                continue
+            content = str(it.get('content') or '').strip()
+            if not content:
+                continue
+            title = str(it.get('title') or '').strip() or content[:20]
+            sep = str(it.get('split_sep') if it.get('split_sep') is not None else default_sep)[:8]
+            tags = it.get('tags') if isinstance(it.get('tags'), list) else default_tags
+            r = Script(title=title[:200], type='text', content=content, split_sep=sep)
+            if tags:
+                r.tags = json.dumps(tags, ensure_ascii=False)
+            s.add(r)
+            made.append(r)
+        if not made:
+            return fail("没有可保存的内容")
+        await s.commit()
+        for r in made:
+            await s.refresh(r)
+        logger.info(f"[ls] 批量新建话术 {len(made)} 条（分割符={default_sep!r}）")
+        return reply({"code": 0, "msg": "ok", "items": [r.to_dict() for r in made]})
+
+
 async def api_scripts_ai_loop(request):
     """新建一条「AI 循环话术」：先按直播时长生成第一段，之后播放中自动一段接一段续写。
 
@@ -599,6 +641,15 @@ async def api_scripts_ai_loop(request):
     if not got:
         return fail("AI 生成失败：LLM 没返回可用内容（多半是 key/模型名的问题，看日志）", 500)
 
+    # 分割符：生成出来的每句再按分割符拆细（和「添加话术」的分割符同一套逻辑），
+    # 于是循环话术送进队列的每一句都是最短的、弹幕插队只需等这一小句
+    sep = str(body.get('split_sep') or '')[:8]
+    flat: list[str] = []
+    for g in got:
+        flat.extend(split_script_text(g, sep) or [g])
+    if not flat:
+        return fail("AI 生成的内容被分割符切没了，换个分割符试试", 400)
+
     title = str(body.get('title') or '').strip() or (req[:20] or 'AI 循环话术')
     cfg = {
         "enabled": True,
@@ -606,13 +657,14 @@ async def api_scripts_ai_loop(request):
         "per_segment": per_segment,
         "max_chars": max_chars,
         "total_minutes": total_minutes,
-        "buffer": got,       # 还没播的句子（播放时一句一句取走）
-        "seen": got,         # 记着用过的，下一段尽量避开
+        "split_sep": sep,
+        "buffer": flat,      # 还没播的句子（播放时一句一句取走）
+        "seen": flat,        # 记着用过的，下一段尽量避开
         "batch_no": 1,
-        "generated": len(got),
+        "generated": len(flat),
     }
     async with async_session() as s:
-        r = Script(title=title[:200], type='text', content='\n'.join(got),
+        r = Script(title=title[:200], type='text', content='\n'.join(flat),
                    ai_loop=json.dumps(cfg, ensure_ascii=False))
         tags = body.get('tags')
         if isinstance(tags, list):
@@ -620,8 +672,9 @@ async def api_scripts_ai_loop(request):
         s.add(r)
         await s.commit()
         await s.refresh(r)
-        logger.info(f"[ls] 新建 AI 循环话术 [{r.id}] {r.title}：首段 {len(got)} 句"
-                    f"（每段 {per_segment} 句 / 每条 ≤{max_chars} 字 / 时长参数 {total_minutes} 分）")
+        logger.info(f"[ls] 新建 AI 循环话术 [{r.id}] {r.title}：首段 {len(flat)} 句"
+                    f"（每段 {per_segment} 句 / 每条 ≤{max_chars} 字 / 分割符 {sep!r}"
+                    f" / 时长参数 {total_minutes} 分）")
         return reply(r.to_dict())
 
 
@@ -1189,6 +1242,7 @@ def setup_livestream_routes(app):
     app.router.add_get(f"{p}/api/scripts", api_scripts_list)
     app.router.add_post(f"{p}/api/scripts", api_scripts_create)
     app.router.add_post(f"{p}/api/scripts/ai_generate", api_scripts_ai_generate)
+    app.router.add_post(f"{p}/api/scripts/batch", api_scripts_batch_create)
     app.router.add_post(f"{p}/api/scripts/ai_loop", api_scripts_ai_loop)
     app.router.add_post(f"{p}/api/scripts/upload-file", api_scripts_upload)
     app.router.add_put(f"{p}/api/scripts/{{sid}}", api_scripts_update)

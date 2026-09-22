@@ -23,6 +23,16 @@ export async function aiGenerateScripts(payload: {
   return data.items || []
 }
 
+/** 批量保存话术（AI 生成一批后一次性落库）：一个 items 元素 = 一条话术记录 */
+export async function saveScriptsBatch(payload: {
+  items: Array<{ title?: string; content: string; split_sep?: string }>
+  split_sep?: string
+  tags?: string[]
+}): Promise<Script[]> {
+  const { data } = await client.post('/api/scripts/batch', payload, { timeout: 60000 })
+  return data.items || []
+}
+
 /** 新建「AI 循环话术」：先按直播时长生成第一段，之后播放中自动一段接一段续写。
  *  生成慢（第一段可能 50 条），超时放宽到 3 分钟。 */
 export async function createAiLoopScript(payload: {
@@ -31,6 +41,7 @@ export async function createAiLoopScript(payload: {
   per_segment: number
   max_chars: number
   total_minutes?: number
+  split_sep?: string
   tags?: string[]
 }): Promise<Script> {
   const { data } = await client.post('/api/scripts/ai_loop', payload, { timeout: 180000 })

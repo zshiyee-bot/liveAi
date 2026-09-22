@@ -208,6 +208,7 @@ class ScriptManager:
             "requirements": cfg.get("requirements") or "",
             "per_segment": int(cfg.get("per_segment") or 10),
             "max_chars": int(cfg.get("max_chars") or 30),
+            "split_sep": cfg.get("split_sep") or "",
         }
         task = asyncio.create_task(self._refill_task(script.id, state, snapshot))
         state["task"] = task
@@ -233,10 +234,20 @@ class ScriptManager:
             logger.warning("[ls] AI 循环话术没生成出内容（看 LLM 日志：key/模型名？）")
             return
 
+        # 分割符：新生成的每句也按分割符再拆细（和创建时同一套逻辑）
+        sep = cfg.get("split_sep") or ""
+        flat: list[str] = []
+        for g in got:
+            flat.extend(split_script_text(g, sep) or [g])
+        if not flat:
+            state["fail_until"] = time.time() + _LOOP_FAIL_COOLDOWN
+            logger.warning("[ls] AI 循环话术续写被分割符切没了，跳过这一段")
+            return
+
         seen = set(state.get("seen") or [])
-        fresh = [g for g in got if g not in seen]
+        fresh = [g for g in flat if g not in seen]
         if not fresh:
-            fresh = list(got)        # 全撞车了 → 至少给点，不然永远空
+            fresh = list(flat)       # 全撞车了 → 至少给点，不然永远空
         state.setdefault("buffer", []).extend(fresh)
         state["seen"] = (list(state.get("seen") or []) + fresh)[-_LOOP_SEEN_MAX:]
         state["batch_no"] = int(state.get("batch_no") or 0) + 1
