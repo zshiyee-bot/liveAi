@@ -250,10 +250,16 @@ async def _broadcast_queue_to(rm: _Room):
     """队列一变就推给前端。前端 stores/queue.ts 没有轮询兜底，队列显示全靠这个事件。"""
     if not rm.ws_clients or rm.queue is None:
         return
+    # 用 runtime 的快照：它带 playing 字段（正在播的那条 / null），前端靠它同步
+    # 「正在播放」那一行 —— 播完变 null 就会清掉。以前这里只发 PlayQueue 的快照
+    # （没有 playing），于是同一个队列有两套格式，前端时好时坏。
     try:
-        snap = await rm.queue.snapshot()
+        snap = await rm.runtime.snapshot()
     except Exception:
-        return
+        try:
+            snap = await rm.queue.snapshot()
+        except Exception:
+            return
     await _broadcast_to(rm, {"type": "queue_update", "data": snap})
 
 
