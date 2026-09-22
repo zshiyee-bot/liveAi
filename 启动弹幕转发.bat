@@ -19,6 +19,12 @@ set LS_ROOM_KEY=
 
 rem  Local DouyinBarrageGrab websocket (default 8888; usually no change)
 set LS_RELAY_WS=ws://127.0.0.1:8888
+
+rem  报文方言 / message dialect of the grabber:
+rem    auto    = 自动识别（默认，看字段特征判断） / detect automatically
+rem    ape     = DouyinBarrageGrab (ape-byte)    / 抖音抓包经典版（推荐）
+rem    wushuai = BarrageGrab (wushuaihua520)     / 另一家的开源抖音版
+set LS_DIALECT=auto
 rem ===================================================================
 
 if not exist "%~dp0python\python.exe" (
@@ -35,7 +41,8 @@ if not exist "%~dp0danmaku_forward.py" (
 
 echo ============================================================
 echo  Danmaku forwarder
-echo    relay  : %LS_RELAY_WS%   (DouyinBarrageGrab)
+echo    relay  : %LS_RELAY_WS%   (DouyinBarrageGrab / BarrageGrab)
+echo    dialect: %LS_DIALECT%
 echo    target : %LS_SERVER%
 if not "%LS_ROOM_KEY%"=="" echo    room   : %LS_ROOM_KEY%
 echo  Keep this window open while streaming. Ctrl+C to stop.
@@ -44,6 +51,7 @@ echo ============================================================
 set EXTRA=
 if not "%LS_DANMAKU_TOKEN%"=="" set EXTRA=%EXTRA% --token "%LS_DANMAKU_TOKEN%"
 if not "%LS_ROOM_KEY%"=="" set EXTRA=%EXTRA% --key "%LS_ROOM_KEY%"
+if not "%LS_DIALECT%"=="" set EXTRA=%EXTRA% --dialect "%LS_DIALECT%"
 
 "%~dp0python\python.exe" "%~dp0danmaku_forward.py" --server "%LS_SERVER%" --relay "%LS_RELAY_WS%" %EXTRA% %*
 echo.

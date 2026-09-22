@@ -53,8 +53,59 @@ except ImportError:
 # （点赞风暴一秒几十条），所以在源头就不过网，省带宽也省服务器 CPU。
 _SKIP_TYPES = {2}
 
+# ── 报文方言 ──────────────────────────────────────────────────────────
+# 抓抖音的工具有两家主流，**Type 编号和字段名不一样**，接错了会"弹幕被当进场回、
+# 关注被丢掉、昵称变未知"。服务器侧是按 ape 那套写的，所以在转发器里统一掉：
+#
+#   ape    （默认，DouyinBarrageGrab / ape-byte）
+#          Type 1=弹幕 2=点赞 3=进场 4=关注 5=礼物      Data = JSON 字符串
+#   wushuai（BarrageGrab / wushuaihua520 的开源抖音版）
+#          Type 1=进场 2=关注 3=弹幕 4=点赞 5=礼物  6=分享 7=统计 8=状态 9=粉丝团
+#          Data = 对象，且用户昵称字段是 NickName（大写 N）
+_DIALECTS = ("auto", "ape", "wushuai")
+_WUSHUAI_TYPE_MAP = {1: 3, 2: 4, 3: 1, 4: 2, 5: 5}      # 6/7/8/9 一律丢
+_DIALECT_NOTE = {"ape": "DouyinBarrageGrab(ape-byte)",
+                 "wushuai": "BarrageGrab(wushuaihua520)"}
+
 _FLUSH_MAX = 30              # 攒够这么多条就发一包
 _FLUSH_IDLE = 0.5            # 或者空闲这么久就发一包（秒）
+
+
+def detect_dialect(obj: dict) -> str:
+    """按特征猜方言：wushuai 那套的用户字段是 NickName（大写 N），ape 是 Nickname。"""
+    data = obj.get("Data") if obj.get("Data") is not None else obj.get("data")
+    if not isinstance(data, dict):
+        return "ape"
+    user = data.get("User") or data.get("user") or {}
+    if isinstance(user, dict) and "NickName" in user and "Nickname" not in user:
+        return "wushuai"
+    if "MemberCount" in data:
+        return "wushuai"
+    return "ape"
+
+
+def normalize(obj: dict, dialect: str = "ape") -> dict | None:
+    """把不同工具的报文统一成服务器认的 ape 格式；返回 None 表示这条不要。"""
+    if dialect == "auto":
+        dialect = detect_dialect(obj)
+    if dialect != "wushuai":
+        return obj                      # ape：服务器就是按这套写的，原样透传
+
+    typ = obj.get("Type") if obj.get("Type") is not None else obj.get("type")
+    new_type = _WUSHUAI_TYPE_MAP.get(typ)
+    if new_type is None:
+        return None                     # 分享/统计/状态变更/粉丝团 → 丢
+
+    data = obj.get("Data") if obj.get("Data") is not None else obj.get("data")
+    if isinstance(data, dict):
+        data = dict(data)
+        user = data.get("User") or data.get("user")
+        if isinstance(user, dict) and "NickName" in user and "Nickname" not in user:
+            user = dict(user)
+            user["Nickname"] = user["NickName"]     # 服务器只认 Nickname/nickname
+            data["User"] = user
+    return {"Type": new_type, "Data": data,
+            "ProcessName": obj.get("ProcessName") or obj.get("processName") or ""}
 
 
 def build_url(server: str) -> str:
@@ -83,6 +134,9 @@ def main() -> int:
                     help="本机 DouyinBarrageGrab 的 WebSocket 地址")
     ap.add_argument("--key", default=os.getenv("LS_ROOM_KEY", ""),
                     help="房间标识：一台服务器带多场直播时用来区分（同一房间要填一样的值）")
+    ap.add_argument("--dialect", default=os.getenv("LS_DIALECT", "auto"), choices=_DIALECTS,
+                    help="抓包工具的报文方言：auto=自动猜（默认）/ ape=DouyinBarrageGrab / "
+                         "wushuai=BarrageGrab")
     args = ap.parse_args()
 
     url = build_url(args.server)
@@ -98,6 +152,8 @@ def main() -> int:
     print(f"   转发目标 : {url}")
     print(f"   房间标识 : {args.key or '(未设置 → 服务器默认房间)'}")
     print(f"   鉴权口令 : {'已设置' if args.token else '未设置（服务器没配 token 就不用管）'}")
+    print(f"   报文方言 : {args.dialect}" + (f"（{_DIALECT_NOTE[args.dialect]}）" if args.dialect in _DIALECT_NOTE else
+                                          "（按字段特征自动识别，日志里会显示每条被判成哪种）"))
     print("   按 Ctrl+C 停止")
     print("=" * 64)
 
@@ -105,6 +161,8 @@ def main() -> int:
     pending: list = []
     sent = 0
     fails = 0
+    dropped = 0
+    seen_dialects: set = set()
     last_note = ""
     last_note_room = [""]        # 只提示一次"归到哪个房间"
     t_report = time.time()
@@ -186,6 +244,18 @@ def main() -> int:
                         continue                     # 不是 JSON 就丢，别打断管道
                     if not isinstance(obj, dict):
                         continue
+                    # 方言归一：让 ape / wushuai 两家的报文都能直接喂给服务器
+                    dialect = args.dialect
+                    if dialect == "auto":
+                        dialect = detect_dialect(obj)
+                        if dialect not in seen_dialects:
+                            seen_dialects.add(dialect)
+                            print(f"[识别] 判定报文方言为 {dialect}"
+                                  f"（{_DIALECT_NOTE[dialect]}）；不对就用 --dialect ape|wushuai 强制指定")
+                    obj = normalize(obj, dialect)
+                    if obj is None:
+                        dropped += 1
+                        continue
                     if obj.get("Type") in _SKIP_TYPES:
                         continue
                     pending.append(obj)
@@ -200,7 +270,8 @@ def main() -> int:
 
             time.sleep(3)
     except KeyboardInterrupt:
-        print(f"\n[退出] 共转发 {sent} 条弹幕，失败 {fails} 次")
+        print(f"\n[退出] 共转发 {sent} 条弹幕，失败 {fails} 次"
+              + (f"，丢弃 {dropped} 条（统计/分享等无关类型）" if dropped else ""))
         return 0
 
 
