@@ -145,6 +145,65 @@ def describe(obj: dict) -> str:
     return f"{label} {nick}: {body}".strip() if body else f"{label} {nick}"
 
 
+# 去重窗口（秒）：同一个直播间开了两个浏览器窗口/两份播放器时，抓包工具会把同一条
+# 弹幕抓两遍推过来，运营页上就变成「一条消息显示两次」。5 秒内同一条只算一次。
+_DEDUP_WINDOW = 5.0
+
+
+class Deduper:
+    """按 MsgId 去重（没有 MsgId 就按 类型+昵称+内容），带时间窗和容量上限。
+
+    用 MsgId 是最准的：同一条弹幕经两个连接下发时，MsgId 是一样的。
+    没有 MsgId 的（老版工具）就退化成按内容去重 —— 不同人发同样的话仍会被保留，
+    因为键里带了昵称。
+    """
+
+    def __init__(self, window: float = _DEDUP_WINDOW, cap: int = 500):
+        self.window = window
+        self.cap = cap
+        self._seen: "collections.OrderedDict[str, float]" = collections.OrderedDict()
+
+    @staticmethod
+    def _key(obj: dict) -> str:
+        data = obj.get("Data") if obj.get("Data") is not None else obj.get("data")
+        if isinstance(data, str):
+            try:
+                data = json.loads(data)
+            except Exception:
+                data = {}
+        if not isinstance(data, dict):
+            data = {}
+        mid = data.get("MsgId") or data.get("msgId")
+        if mid:
+            return f"id:{mid}"
+        user = data.get("User") or data.get("user") or {}
+        nick = ""
+        if isinstance(user, dict):
+            nick = user.get("Nickname") or user.get("nickname") or user.get("NickName") or ""
+        return f"{obj.get('Type')}|{nick}|{data.get('Content') or data.get('content') or ''}"
+
+    def is_dup(self, obj: dict) -> bool:
+        """True = 这条刚从别的连接收过，别再转发。"""
+        key = self._key(obj)
+        if not key or key.endswith("||"):
+            return False
+        now = time.time()
+        while self._seen:                        # 清掉过期的
+            k, t = next(iter(self._seen.items()))
+            if now - t > self.window:
+                self._seen.popitem(last=False)
+            else:
+                break
+        if key in self._seen:
+            self._seen[key] = now
+            self._seen.move_to_end(key)
+            return True
+        self._seen[key] = now
+        while len(self._seen) > self.cap:
+            self._seen.popitem(last=False)
+        return False
+
+
 def build_url(server: str) -> str:
     s = (server or "").strip().rstrip("/")
     if not s:
@@ -224,6 +283,7 @@ class Forwarder:
 
 def relay_source(args, fwd: Forwarder, stop: threading.Event):
     seen_dialects: set = set()
+    dedup = Deduper()
     t_reach_err = 0.0
     # 打印节流：一秒最多打 6 条，超了就只打每 10 条（弹幕风暴时别把窗口刷爆）
     print_win: list = [0.0, 0]          # [本秒起点, 本秒已打条数]
@@ -295,6 +355,10 @@ def relay_source(args, fwd: Forwarder, stop: threading.Event):
                 if args.keep_enter:
                     skip = _SKIP_TYPES - {3}      # 用户要求保留进场
                 if obj.get("Type") in skip:
+                    fwd.dropped += 1
+                    continue
+                if dedup.is_dup(obj):
+                    # 同一个直播间开了两份 → 同一条会到两次，这里只留第一次
                     fwd.dropped += 1
                     continue
                 show(obj)
