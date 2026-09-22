@@ -20,6 +20,7 @@
 ###############################################################################
 
 import asyncio
+import re
 import time
 
 from utils.logger import logger
@@ -49,7 +50,7 @@ class LiveStreamRuntime:
         #   _batch_trigger == 1 → 逐条回复；>= 2 → 攒够 N 条（或等满 _batch_wait 秒）合并成一句
         self._danmaku_buf: list = []
         self._batch_trigger = 3
-        self._batch_wait = 6.0
+        self._batch_wait = 3.0
         self._max_chars = 60
         self._policy = ""
 
@@ -75,9 +76,9 @@ class LiveStreamRuntime:
         except Exception:
             self._batch_trigger = 3
         try:
-            self._batch_wait = max(0.5, min(30.0, float(persona.get("danmaku_batch_wait") or 6.0)))
+            self._batch_wait = max(0.5, min(30.0, float(persona.get("danmaku_batch_wait") or 3.0)))
         except Exception:
-            self._batch_wait = 6.0
+            self._batch_wait = 3.0
         try:
             self._max_chars = max(10, min(200, int(persona.get("danmaku_max_chars") or 60)))
         except Exception:
@@ -526,7 +527,8 @@ class LiveStreamRuntime:
             return
         reply = await self.llm.generate_reply(content, sender)
         if reply:
-            logger.info(f"[ls] 弹幕回复 [{sender}]: {reply[:60]}")
+            # 日志打全，别截断 —— 排查"这句到底提没提到我的问题"时全靠它
+            logger.info(f"[ls] 弹幕回复 ← {sender}: {content[:24]!r} → {reply}（{len(reply)} 字）")
             await self.push_priority(reply, source="danmaku",
                                      metadata={"sender": sender, "original": content})
 
@@ -534,6 +536,14 @@ class LiveStreamRuntime:
         """聚合模式：N 条 → LLM 合并成【一句】；判定全都不值得回应时返回空 → 不回。"""
         if self.llm is None:
             return
+
+        # 只有一条时**不要**走"合并"那套：那个 prompt 又长又要求合并，推理型模型
+        # 要烧掉上千 token（实测 4~10 秒），单条根本不需要合并。
+        # 直接走轻量的逐条回复（1~2 秒），也正是「等下一条来或超时就单独回一句」的本意。
+        if len(batch) == 1:
+            await self._reply_single(batch[0])
+            return
+
         merged = await self.llm.generate_merged_reply(
             batch, policy=self._policy, max_chars=self._max_chars)
 
@@ -555,7 +565,11 @@ class LiveStreamRuntime:
                        "content": (b.get("content") or "")[:60]} for b in batch],
         })
         if merged:
-            logger.info(f"[ls] 弹幕合并成一句（{len(batch)} 条）: {merged[:60]}")
+            # 打全：包含"这一批到底是哪几条" + "合并后到底说了什么"，避免再出现
+            # 「看队列只有一条，怀疑有一条没被提及」这种只能靠猜的情况。
+            items_txt = " | ".join((b.get("content") or "")[:20] for b in batch)
+            logger.info(f"[ls] 弹幕合并成一句（{len(batch)} 条：{items_txt}）→ {merged}"
+                        f"（{len(merged)} 字）")
             await self.push_priority(merged, source="danmaku", metadata={
                 "batch_count": len(batch), "merged": True,
                 "senders": [b.get("sender") for b in batch],
@@ -563,6 +577,28 @@ class LiveStreamRuntime:
         else:
             logger.info(f"[ls] 这 {len(batch)} 条判定为无需回应（跳过，不占队列）: "
                         + " | ".join((b.get("content") or "")[:24] for b in batch))
+            # 兜底：只要批里有"像样的内容"，就绝不能一条都不回。
+            # 实测坑：两条一模一样的弹幕会被 LLM 按「重复内容忽略不提」整批跳过 →
+            # 观众看到的是"我明明发了问题，一个字都没回"。prompt 已改，这里再加一道代码级保险。
+            # 纯表情 / 纯符号 / 短刷屏（"666"、"啊啊啊"）依旧跳过。
+            def _solid(txt) -> int:
+                return len(re.sub(r"[\s\W_]+", "", str(txt or "")))
+
+            cand = None
+            for b in batch:
+                if b.get("kind") in ("gift", "follow"):
+                    cand = b
+                    break
+                if _solid(b.get("content")) >= 4 and _solid(b.get("content")) > _solid(
+                        (cand or {}).get("content")):
+                    cand = b
+            if cand is not None:
+                logger.info("[ls] 但批里有实质内容 → 兜底回一条给观众：%s",
+                            (cand.get("content") or "")[:24])
+                try:
+                    await self._reply_single(cand)
+                except Exception as e:
+                    logger.error(f"[ls] 兜底回复失败: {e}")
 
     async def ingest(self, msg):
         """外部来源的弹幕塞进来（Windows 侧转发的抖音弹幕走这里）。

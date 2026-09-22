@@ -93,7 +93,7 @@ const form = reactive({
   forbidden_topics: [] as string[],
   danmaku_policy: '',
   danmaku_batch_trigger: 3,
-  danmaku_batch_wait: 6,
+  danmaku_batch_wait: 3,
   danmaku_max_chars: 60,
 })
 
@@ -128,7 +128,7 @@ onMounted(async () => {
   form.forbidden_topics = [...p.forbidden_topics]
   form.danmaku_policy = p.danmaku_policy || ''
   form.danmaku_batch_trigger = p.danmaku_batch_trigger || 3
-  form.danmaku_batch_wait = p.danmaku_batch_wait || 6
+  form.danmaku_batch_wait = p.danmaku_batch_wait || 3
   form.danmaku_max_chars = p.danmaku_max_chars || 60
 })
 
@@ -152,7 +152,7 @@ function handleReset() {
     form.forbidden_topics = [...p.forbidden_topics]
   form.danmaku_policy = p.danmaku_policy || ''
   form.danmaku_batch_trigger = p.danmaku_batch_trigger || 3
-  form.danmaku_batch_wait = p.danmaku_batch_wait || 6
+  form.danmaku_batch_wait = p.danmaku_batch_wait || 3
   form.danmaku_max_chars = p.danmaku_max_chars || 60
   })
 }

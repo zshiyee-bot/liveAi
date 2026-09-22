@@ -13,7 +13,7 @@ export const usePersonaStore = defineStore('persona', () => {
     forbidden_topics: [],
     danmaku_policy: '',
     danmaku_batch_trigger: 3,
-    danmaku_batch_wait: 6,
+    danmaku_batch_wait: 3,
     danmaku_max_chars: 60,
     updated_at: null,
   })

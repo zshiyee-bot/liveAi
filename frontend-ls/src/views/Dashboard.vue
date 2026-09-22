@@ -84,7 +84,9 @@
           <el-input v-model="mockContent" size="small" placeholder="内容" @keyup.enter="sendMock" />
         </el-col>
         <el-col :span="2">
-          <el-button size="small" type="primary" @click="sendMock" :loading="mockSending">发送</el-button>
+          <!-- 注意：故意不加 :loading —— Element 的 loading 会把按钮禁用，
+               连点两下时第二下会被丢掉，测试弹幕聚合时会误以为"只发出去一条" -->
+          <el-button size="small" type="primary" @click="sendMock">发送</el-button>
         </el-col>
         <el-col :span="9">
           <el-button size="small" @click="quickMock('danmaku', '观众A', '主播好厉害！')">弹幕</el-button>
