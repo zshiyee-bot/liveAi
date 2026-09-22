@@ -149,7 +149,12 @@ class PlayQueue:
     # ── 自动补位 ──────────────────────────────────────────────────
 
     async def start_auto_fill(self, min_size: int = 2, interval: float = 3.0):
-        """启动自动补位后台任务"""
+        """启动自动补位后台任务（幂等：重复调用不会堆积多个循环）"""
+        # 每次「开始直播」都会调到这里 —— 必须先把上一轮的循环停掉。
+        # 否则点几次开播就积几个循环在跑：日志按 N 倍速度刷屏、队列状态被反复搅动、
+        # 前端「正在播放」那一行刚写上去就被冲掉（用户实测：话术库为空时，
+        # 弹幕的 LLM 回复有声音但队列面板完全不显示）。
+        await self.stop_auto_fill()
         self._min_size = min_size
         self._fill_interval = interval
         self._running = True
@@ -176,16 +181,23 @@ class PlayQueue:
         logger.info("Auto-fill stopped")
 
     async def _auto_fill_loop(self):
-        """后台循环：低优队列不足时自动从话术库补位"""
+        """后台循环：低优队列不足时自动从话术库补位。
+
+        话术库为空时**退避**（30 秒后再看）：既别刷日志，也别反复搅动队列状态。
+        """
+        empty_wait = 30.0
         while self._running:
+            wait = self._fill_interval
             try:
                 if self.low_length < self._min_size and self._script_manager:
                     script_item = await self._script_manager.random_pick()
                     if script_item:
                         await self.put_low(script_item)
+                    else:
+                        wait = empty_wait          # 没话术可补 → 退避
             except Exception as e:
                 logger.warning(f"Auto-fill error: {e}")
-            await asyncio.sleep(self._fill_interval)
+            await asyncio.sleep(wait)
 
     def set_script_manager(self, script_manager):
         """设置话术管理器（延迟注入）"""

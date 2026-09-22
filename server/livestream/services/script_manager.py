@@ -85,7 +85,14 @@ class ScriptManager:
             scripts = result.scalars().all()
 
             if not scripts:
-                logger.warning("No active scripts available for auto-fill")
+                # 话术库为空时别刷屏：这个 warning 以前被快速循环打到日志爆炸，
+                # 把真正有用的信息全冲掉。顺便把"该怎么解决"写在提示里。
+                now = time.time()
+                if now - getattr(self, "_empty_warn_at", 0.0) > 60:
+                    self._empty_warn_at = now
+                    logger.warning("No active scripts available for auto-fill"
+                                   "（话术库是空的：播放队列里只会有弹幕回复，"
+                                   "去「话术管理」加一条就恢复正常）")
                 return None
 
             candidates = [s for s in scripts if s.id not in self._recent_picks]
