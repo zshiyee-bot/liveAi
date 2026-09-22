@@ -49,3 +49,8 @@ _ttsfix_backup_*
 _wm_backup_*
 _chk_*.js
 _frames.npz
+
+# 打包进 Windows 版的第三方抖音抓包工具（4.6MB 二进制，不进 git）
+# 需要时从 https://gitee.com/apebyte/dy-barrage-grab/releases 下 Release_V2.8.0.zip
+# 解压到 最终\tzlive-Windows-v1.0-final\tools\DouyinBarrageGrab\
+tools/
