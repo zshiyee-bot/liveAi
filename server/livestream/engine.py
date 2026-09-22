@@ -110,34 +110,28 @@ class LiveStreamRuntime:
         再取同一把锁会死锁。列表切片不会让出事件循环，读到的视图足够一致。
         """
         if self.queue is None:
-            return {"high": [], "low": []}
+            return {"high": [], "low": [], "playing": None}
         snap = await self.queue.snapshot()
-        rows = []
-        # 【正在播的那一条】也放进快照（playing=True，排在最前面）。
-        # 为什么必须放：前端「正在播放」那一行是靠 playback_started 事件设 currentItem 的，
-        # 而每次 queue_update 都会把它清空 —— 话术库为空时队列里又没别的东西可看，
-        # 于是就变成「有语音、面板全空」。放进快照后，面板无论如何都能显示它在念什么。
-        if self._inflight:
-            cur = self._inflight[0]
-            rows.append((cur, True))
-        # 已预送、马上播的那些（零接缝预送窗口）
-        for it in list(self._inflight[1:]):
-            rows.append((it, False))
-        for it, playing in rows:
-            is_script = it.source == "script"
-            row = {
+
+        def _row(it, playing: bool) -> dict:
+            return {
                 "id": it.id,
                 "type": it.type,
                 "source": it.source,
                 "content_preview": (it.content or "")[:80],
-                "level": "low" if is_script else "high",
+                # 低优只放话术，其余（弹幕/礼物/关注）算高优
+                "level": "low" if it.source == "script" else "high",
                 "presend": not playing,
-                "playing": playing,       # 前端不认识也无害
+                "playing": playing,
             }
-            if is_script:
-                snap.setdefault("low", []).insert(0 if playing else len(snap.get("low", [])), row)
-            else:
-                snap.setdefault("high", []).insert(0 if playing else len(snap.get("high", [])), row)
+
+        # 「正在播」单独一个字段给前端（不要混进 high/low：前端本来就有一行
+        # 「正在播放」，混进去会重复显示）。播完了这里就是 None，
+        # 前端每次 queue_update 都会用它同步 —— 不会再挂着上一条。
+        snap["playing"] = _row(self._inflight[0], True) if self._inflight else None
+        # 「已预送、马上播」的那些（零接缝预送窗口）并回 high/low
+        for it in list(self._inflight[1:]):
+            snap.setdefault("low" if it.source == "script" else "high", []).append(_row(it, False))
         return snap
 
     async def _emit_playing(self):
@@ -147,6 +141,10 @@ class LiveStreamRuntime:
         没有它就别报 —— 否则前端会一直显示上一条已经播完的内容。
         """
         if not self._inflight:
+            # 已经没有在播的内容了 → 必须**显式**告诉前端「清掉正在播放」。
+            # 原来这里是直接 return（什么都不发），前端 currentItem 就永远停在最后一条：
+            # 明明没弹幕、没语音了，「正在播放」还挂着上一条（用户实测就是这个）。
+            await self._emit({"type": "playback_ended"})
             return
         cur = self._inflight[0]
         await self._emit({
