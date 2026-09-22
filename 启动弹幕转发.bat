@@ -1,13 +1,20 @@
 @echo off
+rem ===================================================================
+rem  Danmaku forwarder (qidong danmu zhuanfa)
+rem
+rem  NOTE: keep this file ASCII-only, CRLF line endings and NO BOM.
+rem        cmd.exe mis-parses Chinese text in .bat while chcp 65001 is on.
+rem        Chinese help is printed by the python program below / see the doc.
+rem ===================================================================
 chcp 65001 >nul 2>&1
 setlocal
 cd /d "%~dp0"
 set PYTHONUTF8=1
 set PYTHONIOENCODING=utf-8
 
-rem ===================================================================
+rem -------------------------------------------------------------------
 rem  EDIT THIS LINE: your LiveTalking server address
-rem  ===================================================================
+rem -------------------------------------------------------------------
 set LS_SERVER=http://192.168.1.10:8063
 
 rem  If the server has LS_DANMAKU_TOKEN set, put the same value here
@@ -17,15 +24,27 @@ rem  Room key: only needed when one server hosts several live rooms.
 rem  Leave empty for a single-room setup.
 set LS_ROOM_KEY=
 
+rem  Data source:
+rem    relay  = grabber tool over websocket (douyin / kuaishou ...)
+rem    taobao = taobao live: official mtop polling, NO grabber tool needed
+rem    both   = run both sources at the same time
+set LS_SOURCE=relay
+
+rem  --- source=relay (douyin / kuaishou) ---
 rem  Local DouyinBarrageGrab websocket (default 8888; usually no change)
 set LS_RELAY_WS=ws://127.0.0.1:8888
-
-rem  报文方言 / message dialect of the grabber:
-rem    auto    = 自动识别（默认，看字段特征判断） / detect automatically
-rem    ape     = DouyinBarrageGrab (ape-byte)    / 抖音抓包经典版（推荐）
-rem    wushuai = BarrageGrab (wushuaihua520)     / 另一家的开源抖音版
+rem  Message dialect: auto | ape (DouyinBarrageGrab, recommended) | wushuai (BarrageGrab)
 set LS_DIALECT=auto
-rem ===================================================================
+
+rem  --- source=taobao ---
+rem  Taobao live room id: the number after "liveId=" in the address bar, e.g.
+rem    https://tbzb.taobao.com/live?...&liveId=2318604422529278  ->  2318604422529278
+set LS_LIVE_ID=
+rem  Poll interval in seconds (do not go below 2, or taobao may rate-limit you)
+set LS_TAOBAO_INTERVAL=3
+rem  On start also send the last N old comments (0 = only new ones, 3 = see it work at once)
+set LS_TAOBAO_REPLAY=0
+rem -------------------------------------------------------------------
 
 if not exist "%~dp0python\python.exe" (
   echo [ERROR] python\python.exe not found.
@@ -41,10 +60,13 @@ if not exist "%~dp0danmaku_forward.py" (
 
 echo ============================================================
 echo  Danmaku forwarder
-echo    relay  : %LS_RELAY_WS%   (DouyinBarrageGrab / BarrageGrab)
-echo    dialect: %LS_DIALECT%
+echo    source : %LS_SOURCE%
 echo    target : %LS_SERVER%
+if /i "%LS_SERVER%"=="http://192.168.1.10:8063" echo    [WARN] LS_SERVER is still the example value - please edit this .bat
 if not "%LS_ROOM_KEY%"=="" echo    room   : %LS_ROOM_KEY%
+if /i "%LS_SOURCE%"=="taobao" echo    taobao : liveId=%LS_LIVE_ID%  (every %LS_TAOBAO_INTERVAL%s, no grabber tool)
+if /i "%LS_SOURCE%"=="both" echo    taobao : liveId=%LS_LIVE_ID%  (every %LS_TAOBAO_INTERVAL%s)
+if /i "%LS_SOURCE%"=="relay" echo    relay  : %LS_RELAY_WS%   dialect=%LS_DIALECT%
 echo  Keep this window open while streaming. Ctrl+C to stop.
 echo ============================================================
 
@@ -52,6 +74,10 @@ set EXTRA=
 if not "%LS_DANMAKU_TOKEN%"=="" set EXTRA=%EXTRA% --token "%LS_DANMAKU_TOKEN%"
 if not "%LS_ROOM_KEY%"=="" set EXTRA=%EXTRA% --key "%LS_ROOM_KEY%"
 if not "%LS_DIALECT%"=="" set EXTRA=%EXTRA% --dialect "%LS_DIALECT%"
+if not "%LS_SOURCE%"=="" set EXTRA=%EXTRA% --source "%LS_SOURCE%"
+if not "%LS_LIVE_ID%"=="" set EXTRA=%EXTRA% --live-id "%LS_LIVE_ID%"
+if not "%LS_TAOBAO_INTERVAL%"=="" set EXTRA=%EXTRA% --interval "%LS_TAOBAO_INTERVAL%"
+if not "%LS_TAOBAO_REPLAY%"=="" set EXTRA=%EXTRA% --replay-backlog "%LS_TAOBAO_REPLAY%"
 
 "%~dp0python\python.exe" "%~dp0danmaku_forward.py" --server "%LS_SERVER%" --relay "%LS_RELAY_WS%" %EXTRA% %*
 echo.

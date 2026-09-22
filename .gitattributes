@@ -1,0 +1,8 @@
+# 换行符规则（重要）：
+#   .bat 必须是 CRLF —— cmd.exe 用 LF 换行会解析错乱（goto/标签、多字节字符都会出问题），
+#   而 .bat 里带中文 + chcp 65001 也会让 cmd 解析错位，所以 .bat 一律只写 ASCII、CRLF、无 BOM。
+#   交付包里的 .bat 是 CRLF；从 GitHub 网页下载 zip 时也靠这条规则保证。
+*.bat   text eol=crlf
+*.cmd   text eol=crlf
+*.ps1   text eol=crlf
+*.sh    text eol=lf
