@@ -11,6 +11,9 @@ setlocal
 cd /d "%~dp0"
 set PYTHONUTF8=1
 set PYTHONIOENCODING=utf-8
+set LOG=%~dp0_danmaku_run.log
+echo. >> "%LOG%"
+echo [%date% %time%] ==== bat start (elevated=%LS_ELEVATED%) ==== >> "%LOG%"
 
 rem -------------------------------------------------------------------
 rem  EDIT THIS LINE: your LiveTalking server address
@@ -62,8 +65,8 @@ set CFGSRC=%GRABBER_DIR%\config-companion.xml
 if /i "%LS_GRABBER_MODE%"=="browser" set CFGSRC=%GRABBER_DIR%\config-browser.xml
 
 if not exist "%~dp0python\python.exe" (
-  echo [ERROR] python\python.exe not found.
-  echo         Please run this inside the full portable package.
+  echo [ERROR] python\python.exe not found - please run this inside the full package.
+  echo [ERROR] python\python.exe not found >> "%LOG%"
   pause
   exit /b 1
 )
@@ -98,22 +101,41 @@ goto :run_forwarder
 
 rem -------------------------------------------------------------------
 rem  start the bundled douyin grabber, silently
+rem  it needs admin rights to hook the live-companion process, so if we
+rem  are not elevated: keep THIS window, tell the user, wait for a key,
+rem  then relaunch elevated (exactly one UAC prompt).
 rem -------------------------------------------------------------------
 :start_grabber
 if exist "%CFGSRC%" copy /y "%CFGSRC%" "%GRABBER_DIR%\WssBarrageServer.exe.config" >nul
 
-net session >nul 2>&1
+rem already relaunched as admin? do not check again (avoids a UAC loop)
+if "%LS_ELEVATED%"=="1" goto :grabber_ok
+rem robust check: only an elevated process has the High Mandatory Level SID
+whoami /groups 2>nul | find /i "S-1-16-12288" >nul 2>&1
 if not errorlevel 1 goto :grabber_ok
 
 echo.
-echo  [NOTE] the douyin grabber needs administrator rights.
-echo         A UAC window will pop up, please click YES.
+echo  ------------------------------------------------------------
+echo   [ADMIN NEEDED] The douyin grabber must run as administrator
+echo                  (it has to hook into the live-companion app).
 echo.
+echo   Press any key, then a UAC window will pop up:
+echo        *** PLEASE CLICK YES ***
+echo.
+echo   Nothing happened? Close this and right-click the .bat -
+echo   "Run as administrator".
+echo  ------------------------------------------------------------
+echo.
+echo [%date% %time%] not elevated - asking for UAC >> "%LOG%"
+pause
+
+echo [%date% %time%] launching elevated instance ... >> "%LOG%"
 powershell -NoProfile -Command "$env:LS_ELEVATED='1'; Start-Process -FilePath '%~f0' -Verb RunAs"
 exit /b
 
 :grabber_ok
 echo [START] douyin grabber, silent, no window ...
+echo [%date% %time%] starting grabber (%LS_GRABBER_MODE%) >> "%LOG%"
 taskkill /IM WssBarrageServer.exe /F >nul 2>&1
 start "DouyinBarrageGrab" /B "%GRABBER_EXE%"
 echo [WAIT] 6 seconds for it to hook the live channel ...
@@ -133,8 +155,10 @@ if not "%LS_LIVE_ID%"=="" set EXTRA=%EXTRA% --live-id "%LS_LIVE_ID%"
 if not "%LS_TAOBAO_INTERVAL%"=="" set EXTRA=%EXTRA% --interval "%LS_TAOBAO_INTERVAL%"
 if not "%LS_TAOBAO_REPLAY%"=="" set EXTRA=%EXTRA% --replay-backlog "%LS_TAOBAO_REPLAY%"
 
+echo [%date% %time%] forwarder start: source=%LS_SOURCE% target=%LS_SERVER% >> "%LOG%"
 "%~dp0python\python.exe" "%~dp0danmaku_forward.py" --server "%LS_SERVER%" --relay "%LS_RELAY_WS%" %EXTRA% %*
 set RC=%ERRORLEVEL%
+echo [%date% %time%] forwarder exited, code=%RC% >> "%LOG%"
 
 if not "%NEED_GRABBER%"=="1" goto :finish
 echo [CLEAN] stopping the douyin grabber ...
@@ -143,4 +167,5 @@ taskkill /IM WssBarrageServer.exe /F >nul 2>&1
 :finish
 echo.
 echo [INFO] forwarder exited, code=%RC%
+echo  (this window can now be closed)
 pause
