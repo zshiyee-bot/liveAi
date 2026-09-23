@@ -29,7 +29,7 @@ from server.livestream.services.play_queue import QueueItem, PlayQueue
 from server.livestream.services.tts_style import strip_all_and_rate, effective_rate
 from server.livestream.services.danmaku_filter import (
     DEFAULT_FALLBACK, clean_msg, clean_name, hit_block_word, is_noise,
-    looks_like_injection, parse_templates, parse_words, pick_templates,
+    looks_like_injection, parse_templates, parse_words, pick_template,
     render_reply, sanitize_reply,
 )
 
@@ -182,9 +182,9 @@ class LiveStreamRuntime:
         """
         name = clean_name(sender, self._name_max, self._block_words) if (self._call_name and allow_name) else ""
         m = clean_msg(msg, self._msg_max, self._block_words) if self._read_msg else ""
-        tpls = pick_templates(self._templates, allow_name=self._call_name and allow_name,
-                              allow_msg=self._read_msg, has_name=bool(name), has_msg=bool(m))
-        out = render_reply(random.choice(tpls), name, m, reply)
+        tpl = pick_template(self._templates, allow_name=self._call_name and allow_name,
+                            allow_msg=self._read_msg, has_name=bool(name), has_msg=bool(m))
+        out = render_reply(tpl, name, m, reply)
         # 套完再洗一次（防止模板本身拼出怪东西）；**不截断** —— 正文已经限过长了，
         # 这里再按正文长度截会把刚加上的称呼/原文又砍掉。
         return sanitize_reply(out, 0, self._fallback)

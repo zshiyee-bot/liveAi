@@ -239,36 +239,86 @@ DEFAULT_TEMPLATES = [
 ]
 
 
-def parse_templates(raw: str) -> list[str]:
-    """模板列表：一行一个，空行忽略。"""
-    if not (raw or "").strip():
-        return []
-    out = []
+def parse_templates(raw: str) -> list[tuple[str, float]]:
+    """模板列表：一行一个，可选权重。返回 [(模板, 权重), ...]
+
+    权重写法（按优先级）：
+      · `模板<TAB>权重` —— 界面上的列表编辑器生成的就是这种
+      · `模板 *2` / `模板 x2` / `模板 #2` —— 手写时也能用
+      · 不写 = 权重 1
+    权重 0 = 这条不用（比删掉更好：留着方便以后调回来）。
+    """
+    out: list[tuple[str, float]] = []
+    seen: set[str] = set()
     for line in (raw or "").replace("\r", "\n").split("\n"):
         t = line.strip()
-        if t and t not in out:
-            out.append(t)
+        if not t:
+            continue
+        w = 1.0
+        if "\t" in t:
+            t, _, tail = t.rpartition("\t")
+            t = t.strip()
+            try:
+                w = float(str(tail).strip() or 1)
+            except Exception:
+                w = 1.0
+        else:
+            m = re.search(r"[\s]+[*x×#]\s*(\d+(?:\.\d+)?)\s*$", t)
+            if m:
+                try:
+                    w = float(m.group(1))
+                    t = t[:m.start()].strip()
+                except Exception:
+                    w = 1.0
+        if not t or t in seen:
+            continue
+        seen.add(t)
+        out.append((t, max(0.0, min(100.0, w))))
     return out
 
 
-def pick_templates(templates: list[str], *, allow_name: bool, allow_msg: bool,
-                   has_name: bool, has_msg: bool) -> list[str]:
-    """筛出这次真正能用的模板。
+def default_templates() -> list[tuple[str, float]]:
+    """内置默认模板（权重都一样）。"""
+    return [(t, 1.0) for t in DEFAULT_TEMPLATES]
+
+
+def usable_templates(templates: list[tuple[str, float]], *, allow_name: bool, allow_msg: bool,
+                     has_name: bool, has_msg: bool) -> list[tuple[str, float]]:
+    """筛出这次真正能用的模板（保留权重）。
 
     两个总闸（allow_*）关掉时，带对应占位符的模板整行失效；
     再看这次实际有没有可用的名字/原文（has_*），没有也跳过 ——
     否则会念出「，主播就在直播间」这种缺主语的怪句。
+    权重 0 的条目不参与。
     """
-    out: list[str] = []
-    for t in (templates or DEFAULT_TEMPLATES):
-        if "{reply}" not in t:
+    src = templates or default_templates()
+    out: list[tuple[str, float]] = []
+    for t, w in src:
+        if w <= 0 or "{reply}" not in t:
             continue
         if "{name}" in t and not (allow_name and has_name):
             continue
         if "{msg}" in t and not (allow_msg and has_msg):
             continue
-        out.append(t)
-    return out or ["{reply}"]
+        out.append((t, w))
+    return out or [("{reply}", 1.0)]
+
+
+def pick_template(templates: list[tuple[str, float]], *, allow_name: bool, allow_msg: bool,
+                  has_name: bool, has_msg: bool) -> str:
+    """按**权重**随机挑一条 —— 权重 3 和权重 1 就是 3:1 的出现比例。"""
+    usable = usable_templates(templates, allow_name=allow_name, allow_msg=allow_msg,
+                              has_name=has_name, has_msg=has_msg)
+    total = sum(w for _, w in usable)
+    if total <= 0:
+        return usable[0][0]
+    r = random.uniform(0, total)
+    acc = 0.0
+    for t, w in usable:
+        acc += w
+        if r <= acc:
+            return t
+    return usable[-1][0]
 
 
 def render_reply(template: str, name: str, msg: str, reply: str) -> str:

@@ -134,21 +134,25 @@
     </el-form-item>
     <el-form-item label="回复模板">
       <div style="width: 100%">
-        <el-input
-          v-model="form.danmaku_reply_templates"
-          type="textarea"
-          :rows="5"
-          placeholder="一行一个，运行时随机挑一条用"
-        />
+        <div v-for="(row, i) in tplRows" :key="i" class="tpl-row">
+          <el-input v-model="row.text" size="small" placeholder="如：{name}宝子，{reply}" style="flex: 1" />
+          <el-input-number v-model="row.weight" size="small" :min="0" :max="100" :step="1" style="width: 110px" />
+          <span class="tpl-w">权重</span>
+          <el-button size="small" text type="danger" @click="removeTpl(i)">删除</el-button>
+        </div>
+        <div class="tpl-empty" v-if="!tplRows.length">
+          现在用的是<b>内置默认模板</b>（13 条念法，权重都相等）。点下面「填入推荐模板」就能在默认基础上改。
+        </div>
         <div style="margin-top: 6px">
+          <el-button size="small" @click="addTpl">+ 添加一条</el-button>
           <el-button size="small" @click="usePresetTemplates">填入推荐模板</el-button>
-          <el-button size="small" text @click="form.danmaku_reply_templates = ''">清空（用内置默认）</el-button>
+          <el-button size="small" text @click="clearTpl">清空（用内置默认）</el-button>
         </div>
         <div class="hint-block">
           占位符：<code>{reply}</code> = AI 生成的回复正文 ｜
           <code>{name}</code> = 观众昵称 ｜ <code>{msg}</code> = 弹幕原文。<br>
-          一行一个、<b>随机挑一条念</b>，所以多写几行就是"多种念法混用"（换着来才像真人）。<br>
-          上面两个开关关掉时，带对应占位符的行会<b>自动跳过</b>；昵称/原文洗不出来时也会跳过。
+          <b>权重 = 相对比例</b>：权重 3 和权重 1 就是 3:1 的出现次数（不是百分比，不用凑总数）。<br>
+          <b>权重填 0 = 这条不用</b>（留着方便以后调回来）；<b>只留一条</b>就是固定只用这一种念法。
         </div>
       </div>
     </el-form-item>
@@ -172,9 +176,10 @@
         <b>会说成：「{{ demoRendered }}」</b>
       </div>
       <div class="preview-tpl">
-        <div style="font-weight: 600; margin: 8px 0 4px">模板可用情况：</div>
+        <div style="font-weight: 600; margin: 8px 0 4px">模板实际占比（按当前开关和权重算）：</div>
         <div v-for="(t, i) in templateStatus" :key="i" :style="{ color: t.ok ? '#67c23a' : '#c0c4cc' }">
           {{ t.ok ? '✓' : '✗' }} {{ t.text }}
+          <b v-if="t.ok"> {{ t.pct }}%</b>
           <span v-if="!t.ok" style="color: #f56c6c; font-size: 12px"> —— {{ t.why }}</span>
         </div>
       </div>
@@ -199,24 +204,6 @@ const store = usePersonaStore()
 const saving = ref(false)
 
 const DEMO_REPLY = '主播就在直播间'
-const PRESET_TEMPLATES = [
-  // ① 不带称呼
-  '{reply}',
-  '说到这个，{reply}',
-  '来，我统一回一下，{reply}',
-  '有人问{msg}，{reply}',
-  '{msg}，{reply}',
-  // ② 带称呼（几种后缀混用）
-  '{name}，{reply}',
-  '来，{name}，{reply}',
-  '{name}宝子，{reply}',
-  '{name}家人，{reply}',
-  '{name}宝宝，{reply}',
-  '{name}这个问题问得好，{reply}',
-  // ③ 带称呼 + 复述原文
-  '{name}问{msg}，{reply}',
-  '刚才{name}问{msg}，{reply}',
-].join('\n')
 
 const DEFAULT_TEMPLATE_LINES = [
   '{reply}', '说到这个，{reply}', '来，我统一回一下，{reply}',
@@ -255,6 +242,51 @@ const form = reactive({
 const demoName = ref('小明')
 const demoMsg = ref('主播在哪里')
 
+// ── 模板列表（模板 + 权重）。存储格式：一行一个 `模板<TAB>权重` ──
+const tplRows = ref<{ text: string; weight: number }[]>([])
+
+function parseTpl(raw: string): { text: string; weight: number }[] {
+  return String(raw || '')
+    .split(/\r?\n/)
+    .map((l) => l.trim())
+    .filter(Boolean)
+    .map((line) => {
+      let text = line
+      let weight = 1
+      if (line.includes('\t')) {
+        const i = line.lastIndexOf('\t')
+        text = line.slice(0, i).trim()
+        const w = Number(line.slice(i + 1).trim())
+        weight = Number.isFinite(w) ? w : 1
+      } else {
+        const m = line.match(/[\s]+[*x×#]\s*(\d+(?:\.\d+)?)\s*$/)
+        if (m) {
+          text = line.slice(0, m.index).trim()
+          weight = Number(m[1])
+        }
+      }
+      return { text, weight: Math.max(0, Math.min(100, weight)) }
+    })
+    .filter((r) => r.text)
+}
+
+function serializeTpl(rows: { text: string; weight: number }[]): string {
+  return rows
+    .filter((r) => r.text.trim())
+    .map((r) => `${r.text.trim()}\t${r.weight}`)
+    .join('\n')
+}
+
+function addTpl() {
+  tplRows.value.push({ text: '{reply}', weight: 1 })
+}
+function removeTpl(i: number) {
+  tplRows.value.splice(i, 1)
+}
+function clearTpl() {
+  tplRows.value = []
+}
+
 // ── 预览用的清洗（与后端 services/danmaku_filter.py 同规则，只用于界面示意）──
 const SPEAK_KEEP = /[^\u4e00-\u9fff\u3040-\u30ff\uac00-\ud7afA-Za-z0-9]/g
 function speakable(s: string): string {
@@ -274,11 +306,10 @@ function cleanMsg(s: string, max: number): string {
 }
 
 const usableTemplates = computed(() => {
-  const lines = String(form.danmaku_reply_templates || '')
-    .split(/\r?\n/)
-    .map((l) => l.trim())
-    .filter(Boolean)
-  return lines.length ? lines : [...DEFAULT_TEMPLATE_LINES]
+  if (tplRows.value.length) {
+    return tplRows.value.filter((r) => r.text.trim()).map((r) => ({ text: r.text.trim(), weight: r.weight }))
+  }
+  return DEFAULT_TEMPLATE_LINES.map((t) => ({ text: t, weight: 1 }))
 })
 
 function renderTpl(tpl: string, name: string, msg: string, reply: string): string {
@@ -291,32 +322,38 @@ function renderTpl(tpl: string, name: string, msg: string, reply: string): strin
     .trim()
 }
 
-/** 每个模板当前能不能用，不能用是因为哪个开关 */
+/** 每条模板当前能不能用 + 实际占比（权重 / 可用权重之和） */
 const templateStatus = computed(() => {
   const name = form.danmaku_call_name ? cleanName(demoName.value, form.danmaku_name_max) : ''
   const msg = form.danmaku_read_msg ? cleanMsg(demoMsg.value, form.danmaku_read_msg_max) : ''
-  return usableTemplates.value.map((t) => {
-    if (!t.includes('{reply}')) return { text: t, ok: false, why: '缺 {reply} 占位符' }
-    if (t.includes('{name}') && !form.danmaku_call_name) return { text: t, ok: false, why: '「读观众名字」关着' }
-    if (t.includes('{name}') && !name) return { text: t, ok: false, why: '这个昵称念不出来（纯数字/像账号）' }
-    if (t.includes('{msg}') && !form.danmaku_read_msg) return { text: t, ok: false, why: '「念弹幕原文」关着' }
-    if (t.includes('{msg}') && !msg) return { text: t, ok: false, why: '这条弹幕太长了，不念原文' }
-    return { text: t, ok: true, why: '' }
+  const rows = usableTemplates.value
+  const judged = rows.map((r) => {
+    const t = r.text
+    if (!t.includes('{reply}')) return { text: t, weight: r.weight, ok: false, why: '缺 {reply} 占位符' }
+    if (t.includes('{name}') && !form.danmaku_call_name) return { text: t, weight: r.weight, ok: false, why: '「读观众名字」关着' }
+    if (t.includes('{name}') && !name) return { text: t, weight: r.weight, ok: false, why: '这个昵称念不出来（纯数字/像账号）' }
+    if (t.includes('{msg}') && !form.danmaku_read_msg) return { text: t, weight: r.weight, ok: false, why: '「念弹幕原文」关着' }
+    if (t.includes('{msg}') && !msg) return { text: t, weight: r.weight, ok: false, why: '这条弹幕太长了，不念原文' }
+    if (r.weight <= 0) return { text: t, weight: r.weight, ok: false, why: '权重为 0（这条不用）' }
+    return { text: t, weight: r.weight, ok: true, why: '' }
   })
+  const total = judged.filter((x) => x.ok).reduce((n, x) => n + x.weight, 0)
+  return judged.map((x) => ({ ...x, pct: total > 0 && x.ok ? Math.round((x.weight / total) * 100) : 0 }))
 })
 
-/** 预览：用第一条可用的模板渲染（运行时是随机挑一条） */
+/** 预览：用占比最高的那条渲染（运行时是按权重随机挑） */
 const demoRendered = computed(() => {
   const name = form.danmaku_call_name ? cleanName(demoName.value, form.danmaku_name_max) : ''
   const msg = form.danmaku_read_msg ? cleanMsg(demoMsg.value, form.danmaku_read_msg_max) : ''
-  const firstOk = templateStatus.value.find((t) => t.ok)
-  if (!firstOk) return DEMO_REPLY
-  return renderTpl(firstOk.text, name, msg, DEMO_REPLY)
+  const ok = templateStatus.value.filter((t) => t.ok)
+  if (!ok.length) return DEMO_REPLY
+  const top = ok.reduce((a, b) => (b.weight > a.weight ? b : a), ok[0])
+  return renderTpl(top.text, name, msg, DEMO_REPLY)
 })
 
 function usePresetTemplates() {
-  form.danmaku_reply_templates = PRESET_TEMPLATES
-  ElMessage.success('已填入推荐模板（可自己改）')
+  tplRows.value = DEFAULT_TEMPLATE_LINES.map((t) => ({ text: t, weight: 1 }))
+  ElMessage.success('已填入推荐模板（13 条，权重可单独调）')
 }
 
 const previewText = computed(() => {
@@ -369,6 +406,7 @@ function fill(p: any) {
   form.danmaku_name_max = p.danmaku_name_max || 6
   form.danmaku_read_msg_max = p.danmaku_read_msg_max || 24
   form.danmaku_reply_templates = p.danmaku_reply_templates || ''
+  tplRows.value = parseTpl(form.danmaku_reply_templates)
 }
 
 onMounted(async () => {
@@ -379,6 +417,8 @@ onMounted(async () => {
 async function handleSave() {
   saving.value = true
   try {
+    // 模板列表 → 文本（一行一个 `模板<TAB>权重`）再提交
+    form.danmaku_reply_templates = serializeTpl(tplRows.value)
     await updatePersona({ ...form })
     ElMessage.success('人设已保存')
   } finally {
@@ -430,5 +470,21 @@ async function handleReset() {
 .preview-tpl {
   margin-top: 6px;
   font-size: 12px;
+}
+.tpl-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 6px;
+}
+.tpl-w {
+  font-size: 12px;
+  color: #909399;
+}
+.tpl-empty {
+  font-size: 12px;
+  color: #909399;
+  line-height: 1.7;
+  margin-bottom: 4px;
 }
 </style>
