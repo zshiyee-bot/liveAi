@@ -18,6 +18,7 @@ export async function aiGenerateScripts(payload: {
   count: number
   rounds: number
   max_chars?: number
+  with_style?: boolean
 }): Promise<string[]> {
   const { data } = await client.post('/api/scripts/ai_generate', payload, { timeout: 180000 })
   return data.items || []
@@ -42,6 +43,7 @@ export async function createAiLoopScript(payload: {
   max_chars: number
   total_minutes?: number
   split_sep?: string
+  with_style?: boolean
   tags?: string[]
 }): Promise<Script> {
   const { data } = await client.post('/api/scripts/ai_loop', payload, { timeout: 180000 })

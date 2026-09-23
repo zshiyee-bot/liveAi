@@ -7,6 +7,19 @@
       </el-radio-group>
     </el-form-item>
 
+    <el-form-item label="语气">
+      <div style="display: flex; align-items: center; gap: 10px; flex-wrap: wrap">
+        <el-switch v-model="ai.withStyle" />
+        <span style="font-size: 13px; color: #606266">
+          让 AI 按内容自己决定快慢（{{ ai.withStyle ? '开' : '关' }}）
+        </span>
+      </div>
+      <div style="font-size: 12px; color: #909399; line-height: 1.7; margin-top: 4px">
+        开：每条行首会带 <code>[快]</code>/<code>[慢]</code> 这类标签，播放时按其调整语速（标签不会被念出来）。<br/>
+        <b>注意</b>：实测"一句内切成多段各自语速"会有<b>剥离感</b>（上句下句不打杠），所以默认<b>建议关</b>用；
+        开着时也只控制"一条一个语速"更自然。关掉 = 生成干净正文、播放用默认语速。
+      </div>
+    </el-form-item>
     <el-form-item v-if="ai.mode === 'loop'" label="标题">
       <el-input v-model="ai.title" placeholder="留空就按下面的要求自动起名" />
     </el-form-item>
@@ -108,6 +121,7 @@ const emit = defineEmits<{ created: [] }>()
 
 const ai = reactive({
   mode: 'once' as 'once' | 'loop',
+  withStyle: false,
   title: '',
   requirements: '',
   splitSep: '',
@@ -148,6 +162,7 @@ async function handleGenerate() {
       requirements: ai.requirements.trim(),
       count: ai.count,
       rounds: ai.rounds,
+      with_style: ai.withStyle,
       // 不传 max_chars：交给后端在 15~45 字之间随机（每条长短不一，更像真人、防模板检测）
     })
     if (!items.length) {
@@ -199,6 +214,7 @@ async function handleLoop() {
       max_chars: ai.maxChars,
       total_minutes: ai.totalMinutes,
       split_sep: ai.splitSep,
+      with_style: ai.withStyle,
     })
     ElMessage.success(
       `已创建循环话术「${script.title}」（首段 ${script.ai_loop?.buffer?.length ?? 0} 句，开播后自动续写）`

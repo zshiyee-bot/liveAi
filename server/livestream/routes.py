@@ -555,10 +555,18 @@ async def api_scripts_ai_generate(request):
     if llm is None or getattr(llm, 'client', None) is None:
         return fail("LLM 未配置：请先在「系统配置」里填好 API Key 并点「保存并重载」")
 
+    with_style = bool(body.get('with_style'))
+    try:
+        from server.livestream.services.tts_style import set_enabled as _set_tts_style
+        _set_tts_style(with_style)      # 生成时选的语气开关 = 播放时的总开关（一个开关管到底）
+    except Exception:
+        pass
+
     items: list = []
     seen = set()
     for _i in range(rounds):
-        got = await llm.generate_scripts(req, count=per_round, max_chars=max_chars)
+        got = await llm.generate_scripts(req, count=per_round, max_chars=max_chars,
+                                         with_style=with_style)
         if got is None:
             if not items:
                 return fail("AI 生成失败：模型没返回正文内容。最常见的原因是"
@@ -638,6 +646,14 @@ async def api_scripts_ai_loop(request):
     except Exception:
         return fail("参数不对：per_segment/max_chars/total_minutes 都要是数字")
 
+    with_style = bool(body.get('with_style'))
+    try:
+        from server.livestream.services.tts_style import set_enabled as _set_tts_style
+        _set_tts_style(with_style)
+    except Exception:
+        pass
+
+
     llm = LS.llm
     if llm is None or getattr(llm, 'client', None) is None:
         return fail("LLM 未配置：请先在「系统配置」里填好 API Key 并点「保存并重载」")
@@ -648,7 +664,8 @@ async def api_scripts_ai_loop(request):
         sec_per_line = max(2.0, max_chars / 5.0 + 0.8)
         first_count = max(per_segment, min(50, int(round(total_minutes * 60 / sec_per_line))))
 
-    got = await llm.generate_scripts(req, count=first_count, max_chars=max_chars)
+    got = await llm.generate_scripts(req, count=first_count, max_chars=max_chars,
+                                     with_style=with_style)
     if not got:
         return fail("AI 生成失败：LLM 没返回可用内容（多半是 key/模型名的问题，看日志）", 500)
 

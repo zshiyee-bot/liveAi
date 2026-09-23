@@ -129,3 +129,19 @@ def split_style_segments(text: str) -> list[str]:
         if head:
             out[0] = f"{head}{out[0]}"
     return out or [text]
+
+def strip_all_and_rate(text: str) -> tuple[str, int | None]:
+    """**不切段**的做法：把正文里所有语气标签剥掉，取「第一个标签」的语速作为整句语速。
+
+    为什么不按标签切成多段：实测那样会有明显剥离感（每段独立合成，语调气息重置，
+    上句下句不打杠）。所以一句只用一个语速，标签只当"提示"用。
+    """
+    text = text or ""
+    rate = None
+    for m in _ANY_TAG_RE.finditer(text):
+        w = (m.group(1) or "").strip()
+        if w in RATE_MAP and rate is None:
+            rate = RATE_MAP[w]
+    clean = _ANY_TAG_RE.sub("", text)
+    clean = re.sub(r"\s{2,}", " ", clean).strip()
+    return (clean or text), rate
