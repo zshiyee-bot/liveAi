@@ -560,7 +560,11 @@ async def api_scripts_ai_generate(request):
         got = await llm.generate_scripts(req, count=per_round, max_chars=max_chars)
         if got is None:
             if not items:
-                return fail("AI 生成失败：LLM 没返回可用内容（多半是 key/模型名的问题，看日志）", 500)
+                return fail("AI 生成失败：模型没返回正文内容。最常见的原因是"
+                            "用的是推理模型、token 预算被『思考』吃光了"
+                            "（日志里会写 reasoning_tokens=xxx / finish_reason=length）。"
+                            "两个办法：①「系统配置」把模型换成非推理模型（如 deepseek-chat）"
+                            "② 再点一次（程序已自动把预算翻倍重试过）", 500)
             break
         for g in got:
             if g not in seen:

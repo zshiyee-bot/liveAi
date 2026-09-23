@@ -313,23 +313,38 @@ class LLMService:
             {"role": "user", "content": f"请直接给出这 {count} 条话术，一行一条。"},
         ]
 
-        try:
-            response = await self.client.chat.completions.create(
-                model=self.llm_model,
-                messages=messages,
-                max_tokens=2000,      # 一次多条，留足（推理型模型的 reasoning 也算这里）
-                temperature=0.95,     # 话术要多样，温度调高一点
-            )
-            choice = response.choices[0]
-            reply = (choice.message.content or "").strip()
-            if not reply:
-                logger.warning(
-                    "[ls] 生成话术返回空内容（model=%s, finish_reason=%s, usage=%s）",
-                    self.llm_model, choice.finish_reason,
-                    getattr(getattr(response, "usage", None), "completion_tokens_details", None))
+        # 推理模型（deepseek-flash / o1 这类）会把 token 先花在"思考"上，
+        # 预算给少了会出现 finish_reason=length 且正文为空（实测 reasoning_tokens=2000 吃满）。
+        # 所以：① 预算给大 ② 撞到 length 且正文为空就自动翻倍重试一次 ③ 失败时打印真实原因
+        budgets = [4000, 8000]
+        reply = ""
+        last_choice = None
+        for attempt, budget in enumerate(budgets, 1):
+            try:
+                response = await self.client.chat.completions.create(
+                    model=self.llm_model,
+                    messages=messages,
+                    max_tokens=budget,    # 一次多条，留足（推理型模型的 reasoning 也算这里）
+                    temperature=0.95,     # 话术要多样，温度调高一点
+                )
+            except Exception as e:
+                logger.error(f"LLM generate scripts failed: {e}")
                 return None
-        except Exception as e:
-            logger.error(f"LLM generate scripts failed: {e}")
+            choice = response.choices[0]
+            last_choice = choice
+            reply = (choice.message.content or "").strip()
+            if reply:
+                break
+            usage = getattr(getattr(response, "usage", None), "completion_tokens_details", None)
+            logger.warning(
+                "[ls] 生成话术返回空内容（model=%s, finish_reason=%s, usage=%s, max_tokens=%s）",
+                self.llm_model, choice.finish_reason, usage, budget)
+            if choice.finish_reason != "length" or attempt == len(budgets):
+                return None
+            logger.warning("[ls] 模型把 token 全用在思考上了 → 把预算翻倍到 %s 再试一次",
+                           budgets[attempt])
+        if not reply:
+            _ = last_choice
             return None
 
         out: list[str] = []
