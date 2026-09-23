@@ -14,7 +14,58 @@ from utils.logger import logger
 # 标点符号列表 — 用于流式分句
 _PUNCTUATION = ",.!;:，。！？：；"
 
+# 语速标签（[快] [慢] 这类）。生成"已用过的话术"清单时要剥掉 ——
+# 给模型看的是正文，标签只会干扰它判断"开头是不是重复"。
+_STYLE_TAG_RE = re.compile(r"[\[【(（]\s*(?:很快|快|平|慢|很慢|正常)\s*[\]】)）]")
+
+# 开场方式 / 衔接感 —— 新写和改写都要遵守。
+# 用户实测反馈：多轮生成时每一轮的开头几乎一样（都是「哎，家人们…」），
+# 而且每条都从零开始铺垫，听着像广告片不像真人在直播间说话。
+_OPENING_RULES = [
+    "【开头必须多样 + 要有衔接感 —— 这是最容易被听出来的假】",
+    "· **同一批里不要每条都用同一个开头**：尤其「哎，家人们」「家人们」「宝子们」"
+    "这种称呼式开场，整批最多出现 1 次；换个说法、换个切入角度。",
+    "· 每条换一种切入姿势（下面只是参考，自己也可以再想）："
+    "直接抛问题（「凭啥别家几十块，咱这个要这个价？」）/ 接观众的话（「刚有姐妹在弹幕里问…」）"
+    "/ 说现象（「我发现很多人挑的时候只看价格…」）/ 先拦再转（「先别急着下单，我把话说清楚…」）"
+    "/ 指细节（「大家看这个位置…」）/ 报数据优惠（「这个规格这个月卖得最多…」）"
+    "/ 催单倒计时（「就剩最后几件了啊…」）。",
+    "· **每条都要有「接着聊」的感觉**：这些话是插在直播流里说的，不是宣传片的开头。"
+    "可以顺手承接（「刚才说到…」「接着上面这个说」「我再补一句」「说到这儿」），"
+    "**最忌讳每条都从零铺垫**（「今天给大家介绍一款…」这种一听就假）。",
+]
+
 _cfg = load_settings()
+
+
+# ── 话术查重 ─────────────────────────────────────────────────────────
+# 多轮生成时"开头撞车"只靠提示词是管不住的（模型会部分遵守）。
+# 用户实测：生成 3 轮，3 轮开头几乎一样 —— 所以在生成端再做一次**确定性**过滤。
+def norm_for_dup(text: str) -> str:
+    """归一化：剥掉语气标签 + 去掉全部标点/空白。只用于查重，不改原文。"""
+    t = _STYLE_TAG_RE.sub("", text or "")
+    return re.sub(r"\W+", "", t)          # \w 在 str 下含中文，正好把标点清掉
+
+
+def _bigrams(s: str) -> set:
+    return {s[i:i + 2] for i in range(len(s) - 1)} if len(s) >= 2 else ({s} if s else set())
+
+
+def too_similar(a: str, b: str) -> bool:
+    """两条话术算不算"撞车"。
+
+    · **开头 6 个字一样** → 撞车（用户最反感的就是这个：每条都「哎，家人们…」）
+    · 或者整条高度重合（bigram 覆盖率 ≥ 0.8）
+    """
+    na, nb = norm_for_dup(a), norm_for_dup(b)
+    if not na or not nb:
+        return False
+    if len(na) >= 6 and len(nb) >= 6 and na[:6] == nb[:6]:
+        return True
+    ba, bb = _bigrams(na), _bigrams(nb)
+    if not ba or not bb:
+        return False
+    return len(ba & bb) / min(len(ba), len(bb)) >= 0.8
 
 
 class LLMService:
@@ -63,10 +114,10 @@ class LLMService:
             mem.pop(0)
 
     def _build_messages(
-        self, message: str, sender: str, kb_context: str = ""
+        self, message: str, sender: str, kb_context: str = "", playing: str = ""
     ) -> list[dict]:
         """构建发给 LLM 的完整消息列表"""
-        system_prompt = self._build_system_prompt(kb_context)
+        system_prompt = self._build_system_prompt(kb_context, playing)
         messages = [{"role": "system", "content": system_prompt}]
         # 添加该用户的对话历史
         messages.extend(self._get_memory(sender))
@@ -74,8 +125,12 @@ class LLMService:
         messages.append({"role": "user", "content": f"[{sender}] {message}"})
         return messages
 
-    def _build_system_prompt(self, kb_context: str = "") -> str:
-        """根据人设构建 system prompt"""
+    def _build_system_prompt(self, kb_context: str = "", playing: str = "") -> str:
+        """根据人设构建 system prompt
+
+        playing = 此刻正在播的那句口播（engine 传进来的）。给模型一个"上文"，
+        它回复才能承上启下；否则每条弹幕都是从零开始的客服式应答，很违和。
+        """
         p = self.persona
         parts = [
             f"你是{p.get('name', '小助手')}，一位正在直播的主播。",
@@ -95,7 +150,19 @@ class LLMService:
             "3. 回复控制在1-2句话，适合TTS语音播报",
             "4. 不要使用表情符号和特殊字符",
             "5. 直接输出回复内容，不要加任何前缀或修饰",
+            "6. **要像真人在直播里顺口接话，不要像客服机器人**：能接上刚才在讲的内容就接一句"
+            "（「说到这个」「你这个问题问得正好」「刚还提到呢」「正好接着说」），"
+            "**别每条都从「你好」「谢谢」这种零起点开始**；",
+            "7. **不要每条回复都用同一个开头**：换着说，也别每条都喊「家人们」「宝子们」；",
+            "8. **不要复述观众的原话**，也不要念观众的账号名。",
         ])
+
+        if playing:
+            parts.append(
+                f"\n【你此刻正在讲的内容（上一条口播，给你衔接用）】\n{playing}\n"
+                "这条弹幕如果和它相关，就顺着它接一句（承上启下，像正在聊天）；"
+                "不相关就正常回答，**不要硬扯、也不要复述它**。"
+            )
 
         if kb_context:
             parts.append(f"\n参考知识：\n{kb_context}")
@@ -104,8 +171,11 @@ class LLMService:
 
     # ── 弹幕回复生成 ──────────────────────────────────────────────
 
-    async def generate_reply(self, message: str, sender: str) -> str:
-        """为弹幕生成回复（非流式，直接返回完整结果）"""
+    async def generate_reply(self, message: str, sender: str, playing: str = "") -> str:
+        """为弹幕生成回复（非流式，直接返回完整结果）
+
+        playing = 此刻正在播的那句（来自 engine），用来让回复承上启下。
+        """
         if self.client is None:
             return ""
 
@@ -119,7 +189,7 @@ class LLMService:
             except Exception as e:
                 logger.warning(f"Knowledge base search failed: {e}")
 
-        messages = self._build_messages(message, sender, kb_context)
+        messages = self._build_messages(message, sender, kb_context, playing)
 
         try:
             response = await self.client.chat.completions.create(
@@ -154,7 +224,7 @@ class LLMService:
     # ── 弹幕聚合回复：一批弹幕 → 一句话术（不是逐条回）─────────────
 
     async def generate_merged_reply(self, batch: list[dict], policy: str = "",
-                                    max_chars: int = 60):
+                                    max_chars: int = 60, playing: str = ""):
         """把「一批弹幕/礼物/关注」合并成【一句】自然的主播口播话术。
 
         batch 元素：{"kind": "danmaku"|"gift"|"follow", "sender": str, "content": str}
@@ -229,6 +299,10 @@ class LLMService:
             "【重要】每一条提问都必须在那句话里得到回应 —— 可以概括成一句，但绝不能漏掉其中某一条；",
             "礼物和关注必须顺带致谢；",
             "只有纯表情、无意义的刷屏才忽略；两条内容相同的弹幕只提一次，不要因为重复就一条都不回；",
+            "【承上启下】如果你此刻正讲到某个话题，就把回应**顺进去**，别像从零开始的客服回答；"
+            "但也不许硬扯、不许复述在讲的内容；",
+            "不要每次都用同一个开头（「刚有观众问」别连用两次就换个说法："
+            "「说到这个」「正好」「来，我统一回一下」…）；",
             "示例：输入「A问在哪」「B问多少钱」→ 输出：刚刚有观众问我们位置和价格，我们是在苏州，价格也不贵，两百块。",
             "如果全都不值得回应（比如全是表情），只输出：SKIP",
             "现在只输出这句话（或 SKIP），不要任何解释、前缀、后缀。",
@@ -237,6 +311,11 @@ class LLMService:
         policy = (policy or "").strip()
         if policy:
             parts.append(f"\n主播本人指定的弹幕回复策略（优先遵守）：\n{policy}")
+        if playing:
+            parts.append(
+                f"\n【你此刻正在讲的内容（上一条口播，给你衔接用）】\n{playing}\n"
+                "把上面这些回应**顺着它**说出来（承上启下），但不要复述它、也不要硬扯。"
+            )
         if kb_context:
             parts.append(f"\n参考知识（按上面观众问题的顺序检索而来；只用它回答事实性问题，"
                          f"不要照读原文，也不要把 A 问题的答案安到 B 问题上）：\n{kb_context}")
@@ -284,12 +363,17 @@ class LLMService:
 
     async def generate_scripts(self, requirements: str, count: int = 5,
                                max_chars: int = 0, min_chars: int = 0,
-                               with_style: bool = False):
+                               with_style: bool = False,
+                               avoid: list[str] | None = None):
         """按用户要求生成一批主播口播话术。
 
         **字数不再固定**：默认每次在 15~45 字之间抽一个随机区间，并要求各条**长短不一** ——
         真人口播本来就不会每条一样长，句式长度机械统一反而容易被平台判成模板话术。
         想强制固定字数时才传 max_chars（min_chars 一起传就按你给的区间）。
+
+        avoid：**已经生成过的话术**（多轮生成时把前几轮的结果传进来）。
+        不给它的话，每一轮都是独立请求，模型必然收敛到同一个开场 ——
+        用户实测"生成 3 轮，3 轮开头几乎一样"，就是没有这个上下文导致的。
 
         返回：list[str]（每条一句，已清洗）；调用失败返回 None（调用方好区分）。
         """
@@ -298,6 +382,27 @@ class LLMService:
         count = max(1, min(50, int(count or 5)))
         hi = int(max_chars or 0)
         lo = int(min_chars or 0)
+
+        # ── 把"已经生成过的"整理成一段清单，喂给模型 ──
+        # 只取前 N 条、每条截断，避免 prompt 被撑爆（多轮生成时 items 会越来越长）
+        avoid_block: list[str] = []
+        for s in (avoid or []):
+            t = _STYLE_TAG_RE.sub("", str(s or ""))
+            t = re.sub(r"\s+", " ", t).strip()
+            if not t:
+                continue
+            avoid_block.append(f"  · {t[:44]}")
+            if len(avoid_block) >= 12:
+                break
+        if avoid_block:
+            avoid_block = [
+                "",
+                "【下面这些已经生成过了 —— 这一轮必须避开】",
+                *avoid_block,
+                "要求：① 内容不要和它们重复（换角度：上次讲价格，这次就讲材质/场景/售后/发货）；"
+                "② **开场方式一定要换**：它们用过的开头词（尤其「哎，家人们」这类）这一轮不许再用；"
+                "③ 不要只是把它们的词序调一下、换几个字 —— 那还是重复。",
+            ]
 
         # 用户给的"要求"里如果是一整段完整文案（很长、带句号），那是要**改写**而不是让模型另写：
         # 必须按原文的**信息量和长度**改写，不能压缩成摘要、也不能丢卖点。
@@ -361,6 +466,8 @@ class LLMService:
                 f"知识范围：{p.get('knowledge_scope', '日常闲聊')}",
                 "",
                 *head,
+                *_OPENING_RULES,
+                *avoid_block,
             ]
             messages = [
                 {"role": "system", "content": "\n".join(parts)},
@@ -412,6 +519,8 @@ class LLMService:
             "⚠️ 如果上面那段要求里包含了一段**示例话术**：那只是给你参考语气和风格的样例。"
             f"请模仿它的口吻，写出 {count} 条**全新的、每条各自完整**的话术，"
             "**不要把那段样例拆成几段分别返回，也不要只换几个字就当成新的一条**。",
+            *_OPENING_RULES,
+            *avoid_block,
         ]
         messages = [
             {"role": "system", "content": "\n".join(parts)},

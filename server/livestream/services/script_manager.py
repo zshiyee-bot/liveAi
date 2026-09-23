@@ -18,6 +18,7 @@ from sqlalchemy import select, func
 
 from server.livestream.models import Script
 from server.livestream.services.play_queue import QueueItem
+from server.livestream.services.llm_service import too_similar
 from utils.logger import logger
 
 # 分隔符的「半角 / 全角」等价兜底。
@@ -282,6 +283,9 @@ class ScriptManager:
             got = await self._llm.generate_scripts(
                 req, count=count, max_chars=max_chars,
                 with_style=bool(cfg.get("with_style")),
+                # 把最近用过的句子喂回去：循环话术是**顺序播**的，一段接一段，
+                # 不给上下文的话每段开头会越来越像（都是「哎，家人们…」）。
+                avoid=list(state.get("seen") or [])[-12:],
             )
         except Exception as e:
             state["fail_until"] = time.time() + _LOOP_FAIL_COOLDOWN
@@ -303,7 +307,10 @@ class ScriptManager:
             return
 
         seen = set(state.get("seen") or [])
-        fresh = [g for g in flat if g not in seen]
+        # 精确重复 + 开头撞车/高度重合（too_similar）都要挡掉：
+        # 循环话术是一段接一段顺序播的，相邻两段开头一样会特别明显。
+        fresh = [g for g in flat
+                 if g not in seen and not any(too_similar(g, s) for s in list(seen)[-40:])]
         if not fresh:
             fresh = list(flat)       # 全撞车了 → 至少给点，不然永远空
         state.setdefault("buffer", []).extend(fresh)

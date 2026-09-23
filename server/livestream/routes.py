@@ -27,7 +27,7 @@ from server.livestream.adapter import adapter, LocalAvatarAdapter
 from server.livestream.engine import LiveStreamRuntime
 from server.livestream.services.play_queue import PlayQueue
 from server.livestream.services.script_manager import ScriptManager, split_script_text
-from server.livestream.services.llm_service import LLMService
+from server.livestream.services.llm_service import LLMService, too_similar
 from server.livestream.services.danmaku.manager import MultiPlatformCollector
 
 UPLOAD_DIR = os.path.join('data', 'livestream', 'uploads')
@@ -590,8 +590,34 @@ async def api_scripts_ai_generate(request):
     items: list = []
     seen = set()
     for _i in range(rounds):
-        got = await llm.generate_scripts(req, count=per_round, max_chars=max_chars,
-                                         with_style=with_style)
+        # 一轮可能要问两次：第一次生成的东西如果和前面撞车（开头一样/整条高度重合），
+        # 撞掉的那些会被记进 dropped 一起喂给下次 avoid，让模型重写。
+        # 光靠提示词管不住 —— 实测模型会部分遵守，所以这里做确定性过滤 + 重问一次。
+        fresh: list = []
+        dropped: list = []
+        got = None
+        for _attempt in range(2):
+            got = await llm.generate_scripts(
+                req, count=per_round, max_chars=max_chars,
+                with_style=with_style,
+                # ★ 把前几轮的结果喂回去：不传的话每一轮都是独立请求，
+                #   模型必然收敛到同一个开场 —— 用户实测「生成 3 轮，
+                #   3 轮开头几乎一样」就是这么来的。
+                avoid=items + dropped,
+            )
+            if got is None:
+                break
+            known = items + fresh
+            for g in got:
+                if g in seen:
+                    continue
+                if any(too_similar(g, k) for k in known):
+                    dropped.append(g)        # 撞车 → 下一轮不许再写
+                    continue
+                fresh.append(g)
+                seen.add(g)
+            if len(fresh) >= per_round:
+                break                        # 够了，不用再要
         if got is None:
             if not items:
                 return fail("AI 生成失败：模型没返回正文内容。最常见的原因是"
@@ -600,10 +626,10 @@ async def api_scripts_ai_generate(request):
                             "两个办法：①「系统配置」把模型换成非推理模型（如 deepseek-chat）"
                             "② 再点一次（程序已自动把预算翻倍重试过）", 500)
             break
-        for g in got:
-            if g not in seen:
-                seen.add(g)
-                items.append(g)
+        items.extend(fresh)
+        if dropped:
+            logger.info(f"[ls] 第 {_i + 1} 轮有 {len(dropped)} 条和已生成的撞车（开头一样/"
+                        f"高度重合），已丢弃并让模型重写")
     if not items:
         return fail("AI 没能生成有效话术，换个描述再试", 500)
     logger.info(f"[ls] AI 生成话术 {len(items)} 条（{rounds} 轮 × {per_round} 条，要求={req[:24]!r}）")

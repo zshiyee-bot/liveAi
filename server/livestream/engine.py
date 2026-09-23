@@ -556,6 +556,20 @@ class LiveStreamRuntime:
             except Exception as e:
                 logger.error(f"[ls] 弹幕回复失败: {e}")
 
+    def _playing_text(self, limit: int = 70) -> str:
+        """此刻正在播的那句（剥掉语气标签），给 LLM 当"承上启下"的上文用。
+
+        弹幕回复如果不给上下文，每条都是从零开始的客服式应答 ——
+        用户反馈的"很违和、不像真人在介绍"就是这个。尽力而为：拿不到就返回空串。
+        """
+        try:
+            if not self._inflight:
+                return ""
+            txt, _ = strip_all_and_rate(self._inflight[0].content or "")
+            return (txt or "")[:limit]
+        except Exception:
+            return ""
+
     async def _reply_single(self, item: dict):
         """逐条模式：一条弹幕 → 一句回复；礼物/关注用固定话术。"""
         kind = item.get("kind") or "danmaku"
@@ -571,7 +585,7 @@ class LiveStreamRuntime:
             return
         if self.llm is None or not content:
             return
-        reply = await self.llm.generate_reply(content, sender)
+        reply = await self.llm.generate_reply(content, sender, playing=self._playing_text())
         if reply:
             # 日志打全，别截断 —— 排查"这句到底提没提到我的问题"时全靠它
             logger.info(f"[ls] 弹幕回复 ← {sender}: {content[:24]!r} → {reply}（{len(reply)} 字）")
@@ -591,7 +605,8 @@ class LiveStreamRuntime:
             return
 
         merged = await self.llm.generate_merged_reply(
-            batch, policy=self._policy, max_chars=self._max_chars)
+            batch, policy=self._policy, max_chars=self._max_chars,
+            playing=self._playing_text())
 
         # merged is None = 调用失败（多半是推理模型把 token 吃光）→ 降级逐条回，别丢弹幕
         if merged is None:
