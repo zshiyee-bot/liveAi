@@ -47,6 +47,24 @@
           </template>
         </el-table-column>
         <el-table-column label="播放次数" width="80" prop="play_count" />
+        <el-table-column label="分割符" width="210">
+          <template #default="{ row }">
+            <!-- 直接在这里改：点一下就能全选重填、也能一键清空，
+                 不像以前弹个提示框还得先自己删掉旧值 -->
+            <template v-if="row.type === 'text'">
+              <el-input
+                v-model="row.split_sep"
+                size="small"
+                clearable
+                maxlength="8"
+                placeholder="留空 = 整条念，不分割"
+                @change="handleSepChange(row)"
+              />
+              <div class="sep-hint" :class="sepHint(row).cls">{{ sepHint(row).text }}</div>
+            </template>
+            <span v-else style="color: #c0c4cc">-</span>
+          </template>
+        </el-table-column>
         <el-table-column label="状态" width="80">
           <template #default="{ row }">
             <el-switch
@@ -56,11 +74,8 @@
             />
           </template>
         </el-table-column>
-        <el-table-column label="操作" width="210">
+        <el-table-column label="操作" width="140">
           <template #default="{ row }">
-            <el-button v-if="row.type === 'text'" size="small" type="primary" @click="handleSetSep(row)" text>
-              分割符
-            </el-button>
             <el-button size="small" type="danger" @click="handleDelete(row.id)" text>删除</el-button>
             <el-upload
               v-if="row.type === 'audio' || row.type === 'video' || !row.content"
@@ -102,27 +117,31 @@ function splitCount(row: any): number {
   return splitScriptText(row?.content || '', row?.split_sep || '').length
 }
 
-/** 给已经保存好的话术设置「分割符」（留空 = 不分割、整条念） */
-async function handleSetSep(row: any) {
+/** 列表里输入框下面那行小字：这一条到底会切成几句 */
+function sepHint(row: any): { text: string; cls: string } {
+  const sep = String(row?.split_sep || '').trim()
+  // 循环话术：句子在生成时就切好了，播放走缓冲区，改这里不影响已经在手的句子
+  if (row?.ai_loop?.enabled) {
+    return { text: sep ? `循环话术·续写按「${sep}」切` : '循环话术·生成时已切好', cls: 'info' }
+  }
+  if (!sep) return { text: '整条一起念（不分割）', cls: 'info' }
+  const n = splitCount(row)
+  if (n > 1) return { text: `会切成 ${n} 句`, cls: 'ok' }
+  return { text: '文案里找不到这个符号 → 不会分割', cls: 'warn' }
+}
+
+/** 直接在列表里改「分割符」（留空 = 不分割、整条一起念）*/
+async function handleSepChange(row: any) {
+  const sep = String(row?.split_sep || '').trim().slice(0, 8)
+  row.split_sep = sep
   try {
-    const { value } = await ElMessageBox.prompt(
-      `给「${row.title}」设置分割符：播放时会按它<b>一句一句</b>念；<b>留空 = 整条一起念</b>。<br/>例：<code>。</code> 或 <code>，</code> 或 <code>||</code>`,
-      '设置分割符',
-      {
-        inputValue: row.split_sep || '',
-        confirmButtonText: '保存',
-        cancelButtonText: '取消',
-        dangerouslyUseHTMLString: true,
-        inputPlaceholder: '留空 = 不分割',
-      }
-    )
-    const sep = String(value || '').slice(0, 8)
     await updateScript(row.id, { split_sep: sep } as any)
-    row.split_sep = sep
-    ElMessage.success(sep ? `已设为按「${sep}」逐句念` : '已设为整条一起念')
-    await store.fetchAll()
+    const n = splitCount(row)
+    if (!sep) ElMessage.success('已设为整条一起念（不分割）')
+    else if (n > 1) ElMessage.success(`已设为按「${sep}」切成 ${n} 句`)
+    else ElMessage.warning(`已保存「${sep}」，但这条文案里找不到这个符号，所以还是 1 句`)
   } catch {
-    // 取消 / 接口错误都由拦截器处理
+    await store.fetchAll()   // 保存失败 → 拉回真实状态，别让界面骗人
   }
 }
 
@@ -161,3 +180,14 @@ async function handleUpload(scriptId: number, file: UploadFile) {
   return false
 }
 </script>
+
+<style scoped>
+.sep-hint {
+  font-size: 12px;
+  line-height: 1.5;
+  margin-top: 2px;
+}
+.sep-hint.info { color: #909399; }
+.sep-hint.ok   { color: #e6a23c; }
+.sep-hint.warn { color: #f56c6c; }
+</style>

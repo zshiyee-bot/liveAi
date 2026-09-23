@@ -35,15 +35,23 @@
 
     <el-form-item label="分割符">
       <div style="width: 100%">
-        <el-input v-model="ai.splitSep" placeholder="例如：。 或 ， 或 ||（留空=生成多少条就存多少条）" style="max-width: 320px" />
+        <el-input
+          v-model="ai.splitSep"
+          clearable
+          maxlength="8"
+          placeholder="例如 。 或 ， 或 ||（留空 = 不分割）"
+          style="max-width: 320px"
+        />
         <div style="font-size: 12px; color: #909399; line-height: 1.7; margin-top: 4px">
-          <template v-if="ai.splitSep.trim()">
-            生成出来的每一条再按「{{ ai.splitSep }}」切成多句，播放时<b>一句一句送队列</b>。
-            <span v-if="splitPreview" style="color: #e6a23c">{{ splitPreview }}</span>
-          </template>
-          <template v-else>
-            AI 每次生成的内容本身就是一句一条，播放时已经是一句一句的；想再切细就填分割符。
-          </template>
+          填了才把生成的每一条再按这个符号切成多句：播放时<b>一句一句送队列</b>（弹幕插队不用等整条念完）；<b>留空 = 不分割</b>。
+          半角写 <code>.</code> 也能切全角的「。」（反过来也行）。
+        </div>
+        <div v-if="ai.splitSep.trim() && lines.length" style="font-size: 12px; line-height: 1.7">
+          <span v-if="splitStat?.miss" style="color: #f56c6c">
+            填了「{{ ai.splitSep.trim() }}」，但生成的内容里找不到这个符号 → 还是 1 条 1 句。
+            想真的切句，就在上面的「要求」里写明"每句用{{ ai.splitSep.trim() }}结尾"。
+          </span>
+          <span v-else style="color: #e6a23c">{{ splitPreview }}</span>
         </div>
       </div>
     </el-form-item>
@@ -143,12 +151,20 @@ const lines = computed(() =>
 )
 
 // 生成一批：预览「按分割符一共会切成几句」
+const splitStat = computed(() => {
+  const sep = ai.splitSep.trim()
+  if (!sep || !lines.value.length) return null
+  const perLine = lines.value.map((l) => splitScriptText(l, sep).length)
+  const total = perLine.reduce((n, c) => n + c, 0)
+  // 每条都只有 1 句 → 说明文案里压根没有这个符号（最常见的"填了没反应"）
+  return { total, miss: total <= lines.value.length, first: splitScriptText(lines.value[0], sep) }
+})
+
 const splitPreview = computed(() => {
-  if (!lines.value.length) return ''
-  const total = lines.value.reduce((n, l) => n + splitScriptText(l, ai.splitSep).length, 0)
-  const pieces = splitScriptText(lines.value[0], ai.splitSep)
-  if (pieces.length <= 1) return `${lines.value.length} 条，每条 1 句`
-  return `${lines.value.length} 条 → 共 ${total} 句，例：${pieces.slice(0, 3).map((p) => `「${p}」`).join('')}`
+  const st = splitStat.value
+  if (!st) return ''
+  if (st.miss) return ''
+  return `${lines.value.length} 条 → 共 ${st.total} 句，例：${st.first.slice(0, 3).map((p) => `「${p}」`).join('')}`
 })
 
 async function handleGenerate() {

@@ -20,13 +20,25 @@
     </el-form-item>
     <el-form-item v-if="form.type === 'text'" label="分割符">
       <div style="width: 100%">
-        <el-input v-model="form.splitSep" placeholder="例如：。 或 ， 或 ||（留空=不分割，整条念）" style="max-width: 320px" />
+        <el-input
+          v-model="form.splitSep"
+          clearable
+          maxlength="8"
+          placeholder="例如 。 或 ， 或 ||（留空 = 不分割）"
+          style="max-width: 320px"
+        />
         <div style="font-size: 12px; color: #909399; line-height: 1.7; margin-top: 4px">
-          填了才按这个符号切成多句，播放时<b>一句一句送进队列</b>（弹幕不用等整条念完）；<b>留空 = 整条一起念，不分割</b>。
+          填了才按这个符号切成多句：播放时<b>一句一句送进队列</b>（弹幕插队不用等整条念完）；<b>留空 = 整条一起念</b>。
+          半角写 <code>.</code> 也能切全角的「。」（反过来也行）。
+        </div>
+        <div style="font-size: 12px; line-height: 1.7">
           <span v-if="splitPieces.length > 1" style="color: #e6a23c">
             当前会切成 {{ splitPieces.length }} 句：{{ previewText }}
           </span>
-          <span v-else>当前只有 1 句（不会分割）。</span>
+          <span v-else-if="form.splitSep.trim()" style="color: #f56c6c">
+            当前只有 1 句 —— 这条文案里找不到「{{ form.splitSep.trim() }}」，所以不会分割。
+          </span>
+          <span v-else style="color: #909399">当前只有 1 句（整条一起念）。</span>
         </div>
       </div>
     </el-form-item>

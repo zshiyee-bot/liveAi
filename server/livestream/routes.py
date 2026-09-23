@@ -686,14 +686,19 @@ async def api_scripts_ai_loop(request):
         "max_chars": max_chars,
         "total_minutes": total_minutes,
         "split_sep": sep,
+        "with_style": with_style,   # 续写段也照这个来（否则首段有语气、后面没了）
         "buffer": flat,      # 还没播的句子（播放时一句一句取走）
         "seen": flat,        # 记着用过的，下一段尽量避开
         "batch_no": 1,
         "generated": len(flat),
     }
     async with async_session() as s:
+        # split_sep 也要落库：以前这里只存了 content/ai_loop，于是循环话术在列表里
+        # 永远不显示「分句「。」N 句」、用户改分割符也看不出效果 —— 和「添加话术」
+        # 那条路（split_sep 是常驻字段）不一致。内容本身已经是切好的句子，
+        # 再存上 sep 不会重复切（循环话术播放走 ai_loop.buffer，不走 parts 展开）。
         r = Script(title=title[:200], type='text', content='\n'.join(flat),
-                   ai_loop=json.dumps(cfg, ensure_ascii=False))
+                   split_sep=sep, ai_loop=json.dumps(cfg, ensure_ascii=False))
         tags = body.get('tags')
         if isinstance(tags, list):
             r.tags = json.dumps(tags, ensure_ascii=False)

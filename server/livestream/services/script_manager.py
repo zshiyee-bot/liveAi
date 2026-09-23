@@ -20,8 +20,54 @@ from server.livestream.models import Script
 from server.livestream.services.play_queue import QueueItem
 from utils.logger import logger
 
-# 切出来的片段短于这个长度就丢掉（避免只切出一个"。"）
-_SPLIT_MIN_LEN = 2
+# 分隔符的「半角 / 全角」等价兜底。
+# 实测最常见的坑：输入法给的是半角 "."，文案里却全是全角「。」（或反过来），
+# 按原样切一个都切不出来 —— 列表里显示"1 句"、播放也不分句，看着像功能坏了。
+# 规则：**先按用户填的原样切；一个都切不出来时才试等价符号**。
+# 原样能切就绝不替换，所以不会误伤 "199.5 元" 这种小数点里的符号。
+_SEP_EQUIV = {
+    ".": "。", ",": "，", "!": "！", "?": "？", ";": "；", ":": "：",
+    "。": ".", "，": ",", "！": "!", "？": "?", "；": ";", "：": ":",
+}
+
+
+def _resolve_seps(text: str, sep: str) -> list[str]:
+    """决定这次切句真正用哪个分隔符：优先用户填的，切不动才用它的等价值。"""
+    if sep in text:
+        return [sep]
+    alt = _SEP_EQUIV.get(sep)
+    if alt and alt in text:
+        return [alt]
+    return [sep]
+
+
+def _has_content(piece: str, seps: list[str]) -> bool:
+    """只由分隔符/空白组成的片段丢掉；**有实际字就保留，哪怕只有 1 个字**。
+
+    老写法是「长度 < 2 就丢」，卡在分隔符补回之后 —— 最后一段本来就没有分隔符，
+    于是 "甲||乙||丙" 里的 "丙"、"好。哦。嗯" 里的 "嗯" 会被整段丢掉（丢内容）。
+    现在只丢纯分隔符片段（"。"、"||" 这种），真实内容一个字都不少。
+    """
+    core = piece
+    for s in seps:
+        core = core.replace(s, "")
+    return bool(core.strip())
+
+
+def _split_keep(chunk: str, seps: list[str]) -> list[str]:
+    """按 seps 里任意一个切 chunk，**分隔符保留在句尾**（TTS 停顿更自然）。"""
+    pat = "(" + "|".join(re.escape(s) for s in sorted(seps, key=len, reverse=True) if s) + ")"
+    if pat == "()":
+        return [chunk.strip()] if chunk.strip() else []
+    toks = re.split(pat, chunk)
+    out: list[str] = []
+    for i in range(0, len(toks), 2):
+        piece = (toks[i] or "").strip()
+        if i + 1 < len(toks):
+            piece += toks[i + 1]           # 句尾补回分隔符（和原来的行为一致）
+        if piece and _has_content(piece, seps):
+            out.append(piece)
+    return out
 
 # 循环话术：缓冲剩这么多句就提前生成下一段（不打断正在播的，纯后台）
 _LOOP_PREFETCH_AT = 3
@@ -38,7 +84,11 @@ def split_script_text(text: str, sep: str = "") -> list[str]:
       想逐句念，用户自己填分割符（比如 "。"），或把每一句单独添加成一条话术。
     · 填了 sep → 先按换行拆成行，再按 sep 切；**分隔符保留在句尾**
       （"你好。" 这样 TTS 停顿更自然）
+    · 半角/全角的坑自动兜底：填 "." 而文案里写的是「。」也能切（见 _SEP_EQUIV）
     · 切不出多句 → 返回单元素列表
+
+    **同一条规则前后端各有一份实现**（前端 frontend-ls/src/utils/split.ts），
+    改这里记得同步改那边 —— 列表里的「N 句」预览用的是前端那份。
     """
     text = (text or "").strip()
     if not text:
@@ -47,18 +97,11 @@ def split_script_text(text: str, sep: str = "") -> list[str]:
     if not sep:
         return [text]                     # 留空 = 不分割（用户要求：想切就自己填）
 
+    seps = _resolve_seps(text, sep)
     chunks = [c.strip() for c in re.split(r"[\r\n]+", text) if c.strip()]
     out: list[str] = []
     for ch in chunks:
-        parts = ch.split(sep)
-        for i, p in enumerate(parts):
-            p = p.strip()
-            if not p:
-                continue
-            if i < len(parts) - 1:
-                p = p + sep          # 句尾补回分隔符
-            if len(p) >= _SPLIT_MIN_LEN:
-                out.append(p)
+        out.extend(_split_keep(ch, seps))
     return out or [text]
 
 
@@ -218,6 +261,9 @@ class ScriptManager:
             "per_segment": int(cfg.get("per_segment") or 10),
             "max_chars": int(cfg.get("max_chars") or 30),
             "split_sep": cfg.get("split_sep") or "",
+            # 语气标签也要跟着走：不然首段带 [快]/[慢]、续写段没有 →
+            # 听着前半段有快有慢、后面突然变平（用户反馈过的那种"不统一"）
+            "with_style": bool(cfg.get("with_style")),
         }
         task = asyncio.create_task(self._refill_task(script.id, state, snapshot))
         state["task"] = task
@@ -233,7 +279,10 @@ class ScriptManager:
             logger.warning("[ls] AI 循环话术需要 LLM：请先在「系统配置」里填好 API Key 并保存重载")
             return
         try:
-            got = await self._llm.generate_scripts(req, count=count, max_chars=max_chars)
+            got = await self._llm.generate_scripts(
+                req, count=count, max_chars=max_chars,
+                with_style=bool(cfg.get("with_style")),
+            )
         except Exception as e:
             state["fail_until"] = time.time() + _LOOP_FAIL_COOLDOWN
             logger.warning(f"[ls] AI 循环话术生成失败: {e}")
