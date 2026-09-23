@@ -56,8 +56,11 @@
             />
           </template>
         </el-table-column>
-        <el-table-column label="操作" width="120">
+        <el-table-column label="操作" width="210">
           <template #default="{ row }">
+            <el-button v-if="row.type === 'text'" size="small" type="primary" @click="handleSetSep(row)" text>
+              分割符
+            </el-button>
             <el-button size="small" type="danger" @click="handleDelete(row.id)" text>删除</el-button>
             <el-upload
               v-if="row.type === 'audio' || row.type === 'video' || !row.content"
@@ -82,7 +85,7 @@ import { onMounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import type { UploadFile } from 'element-plus'
 import { useScriptsStore } from '@/stores/scripts'
-import { deleteScript, toggleScript, uploadFile } from '@/api/scripts'
+import { deleteScript, toggleScript, uploadFile, updateScript } from '@/api/scripts'
 import { splitScriptText } from '@/utils/split'
 import ScriptForm from '@/components/scripts/ScriptForm.vue'
 import ScriptAiForm from '@/components/scripts/ScriptAiForm.vue'
@@ -97,6 +100,30 @@ function typeLabel(t: string): string { return TYPE_LABELS[t] || t }
 // 与后端 server/livestream/services/script_manager.py:split_script_text 保持一致
 function splitCount(row: any): number {
   return splitScriptText(row?.content || '', row?.split_sep || '').length
+}
+
+/** 给已经保存好的话术设置「分割符」（留空 = 不分割、整条念） */
+async function handleSetSep(row: any) {
+  try {
+    const { value } = await ElMessageBox.prompt(
+      `给「${row.title}」设置分割符：播放时会按它<b>一句一句</b>念；<b>留空 = 整条一起念</b>。<br/>例：<code>。</code> 或 <code>，</code> 或 <code>||</code>`,
+      '设置分割符',
+      {
+        inputValue: row.split_sep || '',
+        confirmButtonText: '保存',
+        cancelButtonText: '取消',
+        dangerouslyUseHTMLString: true,
+        inputPlaceholder: '留空 = 不分割',
+      }
+    )
+    const sep = String(value || '').slice(0, 8)
+    await updateScript(row.id, { split_sep: sep } as any)
+    row.split_sep = sep
+    ElMessage.success(sep ? `已设为按「${sep}」逐句念` : '已设为整条一起念')
+    await store.fetchAll()
+  } catch {
+    // 取消 / 接口错误都由拦截器处理
+  }
 }
 
 async function onCreated() {
