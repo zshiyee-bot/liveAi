@@ -158,6 +158,17 @@ def parse_args():
                     if _rid:
                         opt.doubao_resource_id = _rid
                         print('[config] 豆包 resource_id = %s（来自 data/tts_config.json）' % _rid)
+                # 括号内容过滤（0 = 不过滤，**默认关**）：话术里「（笑）」「（停顿）」这类
+                # 舞台提示不该念出来；实测开了之后 5.58s → 3.79s，确实少念了一段。
+                # 但它也会吞真内容（「到手价99（含运费）」里的「含运费」），所以要显式打开：
+                # 在 data/tts_config.json 里写 "doubao_filter_parenthesis": 30
+                try:
+                    _paren = int(_tcfg.get('doubao_filter_parenthesis') or 0)
+                except Exception:
+                    _paren = 0
+                if _paren > 0:
+                    opt.doubao_filter_parenthesis = _paren
+                    print('[config] 豆包括号过滤 = %d 字（来自 data/tts_config.json）' % _paren)
         except Exception as _e:
             print('[config] 读取 data/tts_config.json 失败（忽略）:', _e)
 

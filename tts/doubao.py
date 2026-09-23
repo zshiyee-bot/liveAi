@@ -42,6 +42,18 @@ class DoubaoTTS(BaseTTS):
         self.audio_format = getattr(opt, "doubao_audio_format", "pcm")
         self.src_sr = int(getattr(opt, "doubao_sample_rate", self.sample_rate))
 
+        # ── additions：豆包的自定义附加参数（要传 JSON 字符串）──
+        # 实测（2026-09-23 真调接口比对时长）：
+        #   · **加粗** 默认会被念成「星星加粗星星」——3.98s；开 disable_markdown_filter 后 3.80s。
+        #     LLM 偶尔会吐 markdown 记号，数字人念出「星星」很出戏，所以默认开着去语法。
+        #   · emoji 默认几乎不影响时长（本来就不太念），开了更保险。
+        #   · max_length_to_filter_parenthesis：括号里的内容**确实会被念**（5.58s → 3.79s 证明的），
+        #     但它也可能吞掉真内容（「到手价99（含运费）」里的「含运费」），所以**默认 0 = 不过滤**，
+        #     想用再在 tts_config.json 里加 "doubao_filter_parenthesis": 30。
+        self.disable_markdown_filter = bool(getattr(opt, "doubao_disable_markdown_filter", True))
+        self.disable_emoji_filter = bool(getattr(opt, "doubao_disable_emoji_filter", True))
+        self.filter_parenthesis = int(getattr(opt, "doubao_filter_parenthesis", 0) or 0)
+
         # 复用连接 (Connection: keep-alive)
         self.session = requests.Session()
 
@@ -50,7 +62,9 @@ class DoubaoTTS(BaseTTS):
 
         logger.info(
             f"DoubaoTTS init: resource_id={self.resource_id}, voice={self.voice}, "
-            f"format={self.audio_format}, sample_rate={self.src_sr}"
+            f"format={self.audio_format}, sample_rate={self.src_sr}, "
+            f"md过滤={self.disable_markdown_filter}, emoji过滤={self.disable_emoji_filter}, "
+            f"括号过滤={self.filter_parenthesis}"
         )
 
     def txt_to_audio(self, msg: tuple[str, dict]):
@@ -62,6 +76,17 @@ class DoubaoTTS(BaseTTS):
         resource_id = tts_cfg.get("resource_id", self.resource_id)
         # 语速：由 LLM 的语气标签决定（-50~100，0=正常）；没传就是豆包默认
         self._pending_rate = tts_cfg.get("speech_rate")
+        # additions 只能在这里算（_synthesize 拿不到 tts_cfg），存实例上给它用
+        additions = {
+            "disable_markdown_filter": bool(tts_cfg.get("disable_markdown_filter",
+                                                        self.disable_markdown_filter)),
+            "disable_emoji_filter": bool(tts_cfg.get("disable_emoji_filter",
+                                                     self.disable_emoji_filter)),
+        }
+        paren = tts_cfg.get("max_length_to_filter_parenthesis", self.filter_parenthesis)
+        if paren:
+            additions["max_length_to_filter_parenthesis"] = int(paren)
+        self._pending_additions = additions
 
         self.stream_tts(
             self._synthesize(text=text, speaker=speaker, resource_id=resource_id),
@@ -96,6 +121,11 @@ class DoubaoTTS(BaseTTS):
                 "audio_params": audio_params,
             }
         }
+        # additions：去 markdown / emoji 语法，可选过滤括号内容
+        # （配置在 txt_to_audio 里算好存在 _pending_additions；这里拿不到 tts_cfg）
+        additions = getattr(self, "_pending_additions", None)
+        if additions:
+            payload["req_params"]["additions"] = json.dumps(additions, ensure_ascii=False)
 
         start = time.perf_counter()
         # 原来打 text[:60]：用户连点 7 次会被合并成一条长文本 → 日志超长刷屏。只留摘要。
