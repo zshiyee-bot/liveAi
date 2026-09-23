@@ -41,6 +41,7 @@ import collections
 import hashlib
 import json
 import os
+import re
 import sys
 import threading
 import time
@@ -78,6 +79,225 @@ _DIALECTS = ("auto", "ape", "wushuai")
 _WUSHUAI_TYPE_MAP = {1: 3, 2: 4, 3: 1, 4: 2, 5: 5}      # 6/7/8/9 一律丢
 _DIALECT_NOTE = {"ape": "DouyinBarrageGrab(ape-byte)",
                  "wushuai": "BarrageGrab(wushuaihua520)"}
+
+
+# ══════════════════════════════════════════════════════════════════════
+#  平台识别：给一个直播间链接，认出是哪家、房间号是什么
+#
+#  为什么要做：用户手上就是一个链接（从手机 App 分享出来的），
+#  得先知道这是哪家、房间号多少，才知道用什么方式接。
+# ══════════════════════════════════════════════════════════════════════
+
+# (平台标识, 中文名, 正则)  —— 顺序有意义，先匹配到的算
+_PLATFORM_PATTERNS = [
+    ("kuaishou", "快手",     r"live\.kuaishou\.com/u/([A-Za-z0-9_\-]+)"),
+    ("kuaishou", "快手",     r"kuaishou\.com/(?:profile/)?([A-Za-z0-9_\-]{6,})"),
+    ("douyin",   "抖音",     r"live\.douyin\.com/(\d+)"),
+    ("douyin",   "抖音",     r"v\.douyin\.com/([A-Za-z0-9_\-]+)"),
+    ("taobao",   "淘宝直播", r"[?&]liveId=(\d+)"),
+    ("jd",       "京东直播", r"lives\.jd\.com/[^#\s]*#/(\d+)"),
+    ("bilibili", "B站",      r"live\.bilibili\.com/(?:blanc/)?(\d+)"),
+    ("wxlive",   "微信视频号", r"channels\.weixin\.qq\.com"),
+]
+# 单独给 ID 用的（用户可能直接粘个房间号/快手号）
+_PLATFORM_BARE = [
+    ("kuaishou", "快手", r"^(ks[A-Za-z0-9_\-]{4,})$"),
+    ("douyin",   "抖音", r"^(\d{6,20})$"),
+]
+
+
+def resolve_short_link(url: str, max_hops: int = 6) -> str:
+    """跟随短链跳转，返回**最终地址（含 # 后面的片段）**。
+
+    为什么需要：京东的房间号在 `#/47897623` 里，而 `#` 后面的内容浏览器**不会发给服务器**，
+    urllib/requests 自动跟随跳转时会把它丢掉。但短链服务是在 Location 头里带上片段的，
+    所以这里手动一跳一跳跟，把 Location 原样读出来（京东实测就能拿到房间号）。
+    """
+    import urllib.error
+    import urllib.parse
+    import urllib.request
+
+    class _NoRedirect(urllib.request.HTTPRedirectHandler):
+        def redirect_request(self, req, fp, code, msg, headers, newurl):
+            return None                       # 不自动跟，让我们自己看 Location
+
+    opener = urllib.request.build_opener(_NoRedirect)
+    cur = url
+    for _ in range(max_hops):
+        req = urllib.request.Request(cur, headers={
+            "User-Agent": ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                           "(KHTML, like Gecko) Chrome/124.0 Safari/537.36"),
+        })
+        try:
+            with opener.open(req, timeout=15) as r:
+                return r.geturl() or cur       # 200 了，就到这
+        except urllib.error.HTTPError as e:
+            loc = e.headers.get("Location") if e.headers else None
+            if not loc:
+                return cur
+            nxt = urllib.parse.urljoin(cur, loc)
+            if "#" in loc:                     # 见到片段就别再跟了（房间号在里面）
+                return nxt
+            cur = nxt
+        except Exception:
+            return cur
+    return cur
+
+
+# 短链域名 → 跟一跳才知道是哪家
+_SHORT_LINK_HOSTS = ("3.cn", "u.jd.com", "v.douyin.com", "xhslink.com", "tb.cn")
+
+
+def identify_platform(target: str):
+    """从链接或 ID 里认出平台。返回 (平台标识, 中文名, 房间号, 备注)。认不出就 (None,None,'',原因)。"""
+    t = (target or "").strip().strip('"').strip("'")
+    if not t:
+        return None, None, "", "空链接"
+    for key, label, pat in _PLATFORM_PATTERNS:
+        m = re.search(pat, t, re.I)
+        if m:
+            return key, label, (m.group(1) if m.groups() else ""), ""
+    # 短链：跟一跳再看（京东的 3.cn / u.jd.com 就是这种）
+    if re.search(r"^https?://([^/]+)/", t, re.I) and any(h in t for h in _SHORT_LINK_HOSTS):
+        real = resolve_short_link(t)
+        if real and real != t:
+            for key, label, pat in _PLATFORM_PATTERNS:
+                m = re.search(pat, real, re.I)
+                if m:
+                    return key, label, (m.group(1) if m.groups() else ""), f"（短链展开为 {real[:70]}）"
+    for key, label, pat in _PLATFORM_BARE:
+        m = re.match(pat, t, re.I)
+        if m:
+            return key, label, m.group(1), "（按纯 ID 认的）"
+    return None, None, "", "认不出是哪家平台"
+
+
+def _http_get_json(url: str, timeout: float = 15.0):
+    """用标准库拿 JSON（不想为这个探测功能引入额外依赖）。返回 (dict|None, 错误说明)。"""
+    import urllib.error
+    import urllib.request
+    req = urllib.request.Request(url, headers={
+        "User-Agent": ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                       "(KHTML, like Gecko) Chrome/124.0 Safari/537.36"),
+        "Referer": "https://live.kuaishou.com/",
+        "Accept": "application/json, text/plain, */*",
+    })
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            return json.loads(r.read().decode("utf-8", "replace")), ""
+    except Exception as e:
+        return None, f"{type(e).__name__}: {e}"
+
+
+def probe_kuaishou(room_id: str) -> dict:
+    """免登录查快手直播间状态（实测 2026-09 可用，不需要 cookie）。
+
+    只查**状态**，不碰弹幕通道 —— 弹幕那条 `/live_api/liveroom/websocketinfo`
+    要带 `__NS_hxfalcon`（267 字符风控签名 + Chrome TLS 指纹 + 登录态），
+    那个不做（做了也会随快手更新失效，而且有风控风险）。
+    """
+    url = f"https://live.kuaishou.com/live_api/liveroom/livedetail?principalId={room_id}"
+    data, err = _http_get_json(url)
+    if data is None:
+        return {"ok": False, "err": err}
+    d = (data or {}).get("data") or {}
+    author = d.get("author") or {}
+    ls = d.get("liveStream") or {}
+    return {
+        "ok": True,
+        "living": bool(author.get("living")),
+        "nick": author.get("name") or author.get("userName") or "",
+        "live_stream_id": ls.get("id") or "",
+        "has_ws": bool(d.get("websocketInfo")),
+        "result": d.get("result"),
+    }
+
+
+def print_probe(target: str) -> int:
+    """给一个链接/ID，告诉用户这是哪家、房间号、现在能不能接。"""
+    key, label, rid, note = identify_platform(target)
+    print("=" * 64)
+    print("  直播间链接探测")
+    print("=" * 64)
+    print(f"  输入    : {target}")
+    if not key:
+        print(f"  结果    : {note}")
+        print("  支持的链接形态：")
+        print("    快手     https://live.kuaishou.com/u/ks13811109178")
+        print("    抖音     https://live.douyin.com/123456789")
+        print("    淘宝     ...liveId=2318604422529278")
+        print("    京东     https://lives.jd.com/#/47897623")
+        print("    B站      https://live.bilibili.com/123456")
+        return 1
+    print(f"  平台    : {label}  ({key}){note}")
+    print(f"  房间号  : {rid or '（链接里没有，需要另外提供）'}")
+
+    if key == "kuaishou" and rid:
+        print()
+        print("  ── 查开播状态（免登录接口，实测可用）──")
+        st = probe_kuaishou(rid)
+        if not st.get("ok"):
+            print(f"    查询失败：{st.get('err')}")
+        elif st["living"]:
+            print(f"    ✅ 正在直播   主播：{st['nick'] or '?'}")
+            print(f"       liveStreamId : {st['live_stream_id'] or '(没拿到)'}")
+            print(f"       弹幕通道票据 : {'有' if st['has_ws'] else '无'}")
+        else:
+            print(f"    ⬜ 当前**未开播**（该主播没在直播）")
+            if st.get("nick"):
+                print(f"       主播：{st['nick']}")
+
+    print()
+    print("  ── 这家怎么接弹幕 ──")
+    if key == "taobao":
+        print("    ✅ 直连：转发器 --source taobao --live-id <直播间ID>，不需要抓包工具")
+    elif key == "bilibili":
+        print("    ✅ 直连：运营后台选 B站 + 填房间号")
+    elif key == "douyin":
+        print("    ✅ 抓包工具（已打包「抖音抓包工具」）→ 双击「启动弹幕转发.bat」跟着向导走")
+    elif key == "kuaishou":
+        print("    ⚠ 我们不做直连：快手的弹幕通道 /live_api/liveroom/websocketinfo")
+        print("       必须带 __NS_hxfalcon（267 字符风控签名）+ Chrome TLS 指纹 + 登录态，")
+        print("       那是专门的反风控逆向，做了也会随快手更新失效，还有账号风险。")
+        print("    ✅ 可行做法：用**支持快手的抓包工具**（本机跑一个），")
+        print("       它把弹幕转发到 ws://127.0.0.1:8888，我们的转发器 --dialect auto 就能收。")
+        print("       先跑：danmaku_forward.py --source relay --dump")
+        print("       把 dump 出来的原始报文发我，我按它的字段适配一次就能用。")
+    elif key == "jd":
+        print("    ⚠ 京东直播是纯前端渲染的 SPA，弹幕协议没有公开资料，")
+        print("       我们没做（不做没验证过的东西）。")
+        print("    ✅ 可行做法：同快手 —— 用支持京东的抓包工具 + --dump 适配一次。")
+    elif key == "wxlive":
+        print("    ✅ 视频号：本机抓包（转发器已支持），或用支持视频号的抓包工具")
+    print("=" * 64)
+    return 0
+
+
+# ── 原始报文 dump（适配新的抓包工具/平台时用）─────────────────────────
+_dump_fh = None
+
+
+def dump_raw(obj: dict, path: str = ""):
+    """把收到的**原始报文**原样打出来（可选落盘）。
+
+    用途：换了一家用没见过的抓包工具时，先 --dump 看它到底发什么，
+    再决定怎么适配 —— 比猜字段名靠谱。
+    """
+    global _dump_fh
+    try:
+        line = json.dumps(obj, ensure_ascii=False)
+    except Exception:
+        line = str(obj)
+    print("[原始] " + (line[:400] + ("…" if len(line) > 400 else "")))
+    if not path:
+        return
+    try:
+        if _dump_fh is None:
+            _dump_fh = open(path, "a", encoding="utf-8")
+        _dump_fh.write(line + "\n")
+        _dump_fh.flush()
+    except Exception as e:
+        print(f"[警告] 写 dump 文件失败（{path}）：{e}")
 
 _FLUSH_MAX = 30              # 攒够这么多条就发一包
 _FLUSH_IDLE = 0.5            # 或者空闲这么久就发一包（秒）
@@ -339,6 +559,9 @@ def relay_source(args, fwd: Forwarder, stop: threading.Event):
                     continue                     # 不是 JSON 就丢，别打断管道
                 if not isinstance(obj, dict):
                     continue
+                # 原始报文 dump（换新抓包工具/新平台时，先看它到底发什么）
+                if args.dump:
+                    dump_raw(obj, args.dump_file)
                 # 方言归一：让 ape / wushuai 两家的报文都能直接喂给服务器
                 dialect = args.dialect
                 if dialect == "auto":
@@ -533,7 +756,17 @@ def main() -> int:
                     help="淘宝轮询间隔秒数（默认 3，别低于 2，太频会触发风控）")
     ap.add_argument("--replay-backlog", default=os.getenv("LS_TAOBAO_REPLAY", "0"),
                     help="淘宝：启动时补发最近 N 条老弹幕（默认 0 = 只发启动后的新弹幕，测试时可填 3）")
+    ap.add_argument("--probe", default="", metavar="链接或ID",
+                    help="探测一个直播间链接：认出是哪个平台、房间号多少、快手还能查开播状态。"
+                         "例：--probe https://live.kuaishou.com/u/ks13811109178")
+    ap.add_argument("--dump", action="store_true",
+                    help="把中继收到的**原始报文**原样打印（换新抓包工具/新平台时先看它发什么）")
+    ap.add_argument("--dump-file", default="", metavar="路径",
+                    help="配合 --dump：把原始报文按行写进文件（JSONL），方便直接发给我适配字段")
     args = ap.parse_args()
+
+    if args.probe:
+        return print_probe(args.probe)
 
     if args.source in ("taobao", "both") and not str(args.live_id).strip():
         print("[错误] source=taobao/both 时必须给 --live-id（或环境变量 LS_LIVE_ID）")
