@@ -23,7 +23,8 @@ import asyncio
 import re
 import time
 
-from server.livestream.services.tts_style import split_style
+from server.livestream.services.play_queue import QueueItem
+from server.livestream.services.tts_style import split_style, split_style_segments
 
 from utils.logger import logger
 
@@ -315,6 +316,22 @@ class LiveStreamRuntime:
     # ── 预送流水线（消除话术之间的空白）──────────────────────────
     async def _do_send(self, item, priority: bool = False):
         """把一条交给 LiveTalking。用 item.id 当 utt，便于撤回未开播的那条。"""
+        # 「一句里有快有慢」：一行里出现多次语气标签（例 [快]…[慢]…）→ 拆成多条，
+        # 每条只剩一个标签、自带语速，依次送出就能连成一整句（听感是连续的快慢变化）。
+        # 拆成多条也正好复用现有的记账：每条各自播完事件，预送/正在播放都不会错乱。
+        if item.type == "text":
+            segs = split_style_segments(item.content or "")
+            if len(segs) > 1:
+                base_id = item.id
+                for idx, seg in enumerate(segs):
+                    sub = QueueItem(
+                        id=base_id if idx == 0 else f"{base_id}-{idx + 1}",
+                        type=item.type, content=seg, source=item.source,
+                        level=item.level, metadata=dict(item.metadata or {}),
+                    )
+                    await self._do_send(sub, priority=priority)
+                return
+
         utt = item.id
         if item.metadata is None:
             item.metadata = {}

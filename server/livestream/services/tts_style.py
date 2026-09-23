@@ -58,3 +58,35 @@ def describe(text: str) -> str:
     if not style:
         return (text or "")[:40]
     return f"[语速{style['speech_rate']:+d}] {(body or '')[:36]}"
+
+
+# 行内任意位置的标签（一句话里可以出现好几次：先急后缓）
+_ANY_TAG_RE = re.compile(r"[\[【(（]\s*([^\]】)）]{1,6}?)\s*[\]】)）]")
+
+
+def split_style_segments(text: str) -> list[str]:
+    """把「一句里有多次语气转折」的文本切成多段，**每段自带它自己的标签**。
+
+    例：'[快]凭啥卖这么贵啊！[慢]咱们这款车把无极变档。'
+        → ['[快]凭啥卖这么贵啊！', '[慢]咱们这款车把无极变档。']
+
+    只有 1 个标签（或没有）时原样返回单元素列表 —— 调用方据此决定要不要拆。
+    不认识的标签不参与切分（避免把正文里的方括号当标记）。
+    """
+    text = text or ""
+    hits = [(m.start(), m.group(1).strip()) for m in _ANY_TAG_RE.finditer(text)]
+    hits = [(pos, w) for pos, w in hits if w in RATE_MAP]
+    if len(hits) <= 1:
+        return [text]
+    out: list[str] = []
+    for i, (pos, _w) in enumerate(hits):
+        end = hits[i + 1][0] if i + 1 < len(hits) else len(text)
+        seg = text[pos:end].strip()
+        if seg:
+            out.append(seg)
+    # 第一个标签之前如果还有正文（罕见），并到第一段前面
+    if out and hits[0][0] > 0:
+        head = text[:hits[0][0]].strip()
+        if head:
+            out[0] = f"{head}{out[0]}"
+    return out or [text]

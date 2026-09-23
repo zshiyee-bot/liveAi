@@ -297,14 +297,66 @@ class LLMService:
         count = max(1, min(50, int(count or 5)))
         hi = int(max_chars or 0)
         lo = int(min_chars or 0)
-        if hi:
+
+        # 用户给的"要求"里如果是一整段完整文案（很长、带句号），那是要**改写**而不是让模型另写：
+        # 必须按原文的**信息量和长度**改写，不能压缩成摘要、也不能丢卖点。
+        # 实测踩过的坑：强制 15~45 字时，用户给 300 字文案会被压成一两句摘要。
+        src = (requirements or "").strip()
+        src_len = len(re.sub(r"\s+", "", src))
+        rewrite = src_len >= 80 and ("。" in src or "！" in src or "！" in src or "?" in src
+                                     or "？" in src or "\n" in src)
+        if rewrite and not hi:
+            # 按原稿长度推区间：8 折 ~ 1.3 倍（允许更精简或更啰嗦一点）
+            lo = max(60, int(src_len * 0.8))
+            hi = max(lo + 30, int(src_len * 1.3))
+        elif hi:
             hi = max(10, min(200, hi))
             lo = max(10, min(hi, lo or max(10, int(hi * 0.55))))   # 只给上限 → 下限按 55% 推
-        else:
+        elif not rewrite:
             lo, hi = 15, 45                                        # 默认：口播自然长度区间
         target = random.randint(lo, hi)          # 每批再抽一个目标值，批次之间也不一样
 
         p = self.persona
+        if rewrite:
+            head = [
+                f"请把下面这段直播口播文案**改写**成 {count} 个版本（同一件事，换一种说法）。",
+                f"原稿 {src_len} 字，改写后的每一版长度要在 {lo}~{hi} 字之间"
+                f"（围绕 {target} 字左右）—— **这是改写，不是摘要，不许压缩成一两句**。",
+                "硬性要求：",
+                "① **原稿里的每一个信息点、卖点、优惠、数字都必须保留**（一个都不能丢、不能含糊掉），"
+                "顺序和说服结构也照原样：先讲痛点/对比 → 再讲卖点 → 最后催单；",
+                "② 只换**说法**：句式、用词、开场词、语序、举例方式都要跟原稿不一样，"
+                f"而且 {count} 个版本彼此之间也要明显不同（**不许照抄原句，也不许只换几个词**）；",
+                "③ **要像真人即兴说话，不要像广告文案、也不要像播音稿**。允许并且欢迎出现："
+                "口头禅、语气词、重复、停顿、自我打断或改口（例如"
+                "「来，宝子们，家人们，来看看啊，额，这款…」「这个这个，我先说啊」「不是，我是说…」）；"
+                "偶尔的咕噜话、多说半句、自己纠正自己，都是**加分项**（真人就是这样）；",
+                "④ 每一条都是一段**完整**的话（能单独念给观众听），不要写成提纲、不要写成要点列表；",
+                "⑤ 不要编号、不要 emoji、不要引号、不要任何解释说明（不要写「版本一」这类字样）；",
+                "⑥ **每一条的行首必须带一个语速标签**，由你自己判断这句该怎么念，"
+                "只能从这五个里选：`[很快]` `[快]` `[平]` `[慢]` `[很慢]`。**一句话里可以放 2~3 个标签**（例如前半句质问用 [快]、后半句讲参数用 [慢]），标签插在那半句前面 —— 这样念出来才会有快有慢、像真人；最多 3 个，太多了会一顿一顿。；",
+                "⑦ **一行一条**，只输出话术本身（含行首标签）。",
+                "",
+                "要改写的原稿：",
+                src,
+                "",
+                "⚠️ 再次强调：上面那段是**要改写的原稿**，不是给你参考风格的样例 —— "
+                f"请把它完整地改写成 {count} 个不同说法的版本，每个版本都要有它全部的信息量。",
+            ]
+            parts = [
+                f"你是{p.get('name', '小助手')}，一位正在直播的主播。",
+                f"性格特点：{p.get('personality', '热情友好')}",
+                f"说话风格：{p.get('style', '轻松活泼')}",
+                f"知识范围：{p.get('knowledge_scope', '日常闲聊')}",
+                "",
+                *head,
+            ]
+            messages = [
+                {"role": "system", "content": "\n".join(parts)},
+                {"role": "user", "content": f"请直接给出这 {count} 个改写版本，一行一条。"},
+            ]
+            return await self._chat_scripts(messages, count)
+
         parts = [
             f"你是{p.get('name', '小助手')}，一位正在直播的主播。",
             f"性格特点：{p.get('personality', '热情友好')}",
@@ -328,7 +380,7 @@ class LLMService:
             "也不要每条都用同一个开头）；",
             "⑤ 不要编号、不要 emoji、不要引号、不要任何解释说明；",
             "⑥ **每一条的行首必须带一个语速标签**，由你自己判断这句该怎么念，"
-            "只能从这五个里选：`[很快]` `[快]` `[平]` `[慢]` `[很慢]`。"
+            "只能从这五个里选：`[很快]` `[快]` `[平]` `[慢]` `[很慢]`。**一句话里可以放 2~3 个标签**（例如前半句质问用 [快]、后半句讲参数用 [慢]），标签插在那半句前面 —— 这样念出来才会有快有慢、像真人；最多 3 个，太多了会一顿一顿。"
             "判断依据：喊话/催单/惊喜 → [快]或[很快]；讲参数/讲道理/说细节 → [慢]；"
             "平常闲聊 → [平]。标签写在行首、方括号里，后面紧跟正文，中间不要加空格以外的字符。",
             "⑦ **一行一条**，只输出话术本身（含行首标签）。",
@@ -344,7 +396,10 @@ class LLMService:
             {"role": "system", "content": "\n".join(parts)},
             {"role": "user", "content": f"请直接给出这 {count} 条话术，一行一条。"},
         ]
+        return await self._chat_scripts(messages, count, temperature=0.95)
 
+    async def _chat_scripts(self, messages: list, count: int, temperature: float = 0.95):
+        """调模型 → 逐行清洗成话术列表（改写/新写两条路共用）。失败返回 None。"""
         # 推理模型（deepseek-flash / o1 这类）会把 token 先花在"思考"上，
         # 预算给少了会出现 finish_reason=length 且正文为空（实测 reasoning_tokens=2000 吃满）。
         # 所以：① 预算给大 ② 撞到 length 且正文为空就自动翻倍重试一次 ③ 失败时打印真实原因
@@ -357,7 +412,7 @@ class LLMService:
                     model=self.llm_model,
                     messages=messages,
                     max_tokens=budget,    # 一次多条，留足（推理型模型的 reasoning 也算这里）
-                    temperature=0.95,     # 话术要多样，温度调高一点
+                    temperature=temperature,   # 话术要多样，温度调高一点
                 )
             except Exception as e:
                 logger.error(f"LLM generate scripts failed: {e}")
@@ -388,7 +443,7 @@ class LLMService:
                 out.append(ln)
         if not out:
             return None
-        logger.info(f"[ls] AI 生成话术 {len(out)} 条（要求={requirements[:24]!r}）")
+        logger.info(f"[ls] AI 生成话术 {len(out)} 条")
         # 段数不卡死：允许比要求多几条（真人说话有碎句，可能多出一两句来）
         return out[:count + 3]
 
