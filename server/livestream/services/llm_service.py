@@ -283,7 +283,8 @@ class LLMService:
     # ── 话术生成（话术管理里的「AI 生成话术」）──────────────────────
 
     async def generate_scripts(self, requirements: str, count: int = 5,
-                               max_chars: int = 0, min_chars: int = 0):
+                               max_chars: int = 0, min_chars: int = 0,
+                               with_style: bool = False):
         """按用户要求生成一批主播口播话术。
 
         **字数不再固定**：默认每次在 15~45 字之间抽一个随机区间，并要求各条**长短不一** ——
@@ -365,7 +366,7 @@ class LLMService:
                 {"role": "system", "content": "\n".join(parts)},
                 {"role": "user", "content": f"请直接给出这 {count} 个改写版本，一行一条。"},
             ]
-            return await self._chat_scripts(messages, count)
+            return await self._chat_scripts(messages, count, with_style=with_style)
 
         parts = [
             f"你是{p.get('name', '小助手')}，一位正在直播的主播。",
@@ -416,13 +417,18 @@ class LLMService:
             {"role": "system", "content": "\n".join(parts)},
             {"role": "user", "content": f"请直接给出这 {count} 条话术，一行一条。"},
         ]
-        return await self._chat_scripts(messages, count, temperature=0.95)
+        return await self._chat_scripts(messages, count, temperature=0.95, with_style=with_style)
 
-    async def _chat_scripts(self, messages: list, count: int, temperature: float = 0.95):
+    async def _chat_scripts(self, messages: list, count: int, temperature: float = 0.95,
+                            with_style: bool = False):
         """调模型 → 逐行清洗成话术列表（改写/新写两条路共用）。失败返回 None。"""
         # 推理模型（deepseek-flash / o1 这类）会把 token 先花在"思考"上，
         # 预算给少了会出现 finish_reason=length 且正文为空（实测 reasoning_tokens=2000 吃满）。
         # 所以：① 预算给大 ② 撞到 length 且正文为空就自动翻倍重试一次 ③ 失败时打印真实原因
+        if not with_style:
+            # 用户把"语气"关掉了 → 明确告诉模型别写标签（省得白写还得剥）
+            messages = list(messages)
+            messages.append({"role": "user", "content": "本次不需要语速标签，只输出话术正文，不要出现任何 [ ] 。"})
         budgets = [4000, 8000]
         reply = ""
         last_choice = None
@@ -455,10 +461,13 @@ class LLMService:
             return None
 
         out: list[str] = []
+        _TAG_STRIP = re.compile(r"[\[【(（]\s*(?:很快|快|平|慢|很慢)\s*[\]】)）]\s*")
         for ln in reply.split("\n"):
             # 去掉模型爱加的编号（"1."、"1、"、"1)")、引号、markdown 记号
             ln = re.sub(r"^\s*(?:[-*•]|\d+\s*[.、)．])\s*", "", ln or "").strip()
             ln = ln.strip('"').strip("'").strip("“”").strip("`").strip()
+            if not with_style:
+                ln = _TAG_STRIP.sub("", ln).strip()   # 关掉语气 → 标签一律不保留
             if len(ln) >= 2:
                 out.append(ln)
         if not out:
