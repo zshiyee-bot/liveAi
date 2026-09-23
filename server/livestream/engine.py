@@ -23,6 +23,8 @@ import asyncio
 import re
 import time
 
+from server.livestream.services.tts_style import split_style
+
 from utils.logger import logger
 
 
@@ -323,7 +325,10 @@ class LiveStreamRuntime:
             # LiveTalking 侧没有 convert_custom_media / load_custom_media（上游预留未实现）
             raise RuntimeError("video 类型话术暂不支持（LiveTalking 无 convert_custom_media 接口）")
         else:
-            res = await self.adapter.send_text(item.content, utt=utt, priority=priority)
+            # 语气标签：[快]/[慢]… 由 LLM 判断并写在行首 —— 剥掉再送 TTS（不会被念出来），
+            # 语速交给豆包：这句该快该慢由内容自己决定
+            _txt, _style = split_style(item.content or '')
+            res = await self.adapter.send_text(_txt, utt=utt, priority=priority, tts=_style)
         if isinstance(res, dict) and res.get("code") not in (0, None):
             raise RuntimeError(f"发送失败: {res.get('msg')}")
         self._inflight.append(item)

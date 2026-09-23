@@ -78,7 +78,8 @@ class LocalAvatarAdapter:
         return out
 
     # ── 发送 ────────────────────────────────────────────────────
-    async def send_text(self, text: str, utt: str = "", priority: bool = False) -> dict:
+    async def send_text(self, text: str, utt: str = "", priority: bool = False,
+                        tts: dict | None = None) -> dict:
         sid, sess = self.resolve()
         if sess is None:
             return {"code": -1, "msg": "no live session"}
@@ -87,6 +88,8 @@ class LocalAvatarAdapter:
             logger.warning("[ls] 空文本话术已跳过")
             return {"code": -1, "msg": "empty text"}
         datainfo = {'utt': utt} if utt else {}
+        if tts:
+            datainfo['tts'] = tts        # 语速/情绪：由 LLM 的语气标签决定（见 tts_style.py）
         sess.put_msg_txt(text, datainfo, priority=bool(priority))
         logger.info(f"[ls] -> /human utt={utt or '-'} priority={bool(priority)} text={text[:40]!r}")
         return {"code": 0, "sessionid": sid}

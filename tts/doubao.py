@@ -60,6 +60,8 @@ class DoubaoTTS(BaseTTS):
         tts_cfg = textevent.get("tts", {})
         speaker = tts_cfg.get("ref_file", self.voice)
         resource_id = tts_cfg.get("resource_id", self.resource_id)
+        # 语速：由 LLM 的语气标签决定（-50~100，0=正常）；没传就是豆包默认
+        self._pending_rate = tts_cfg.get("speech_rate")
 
         self.stream_tts(
             self._synthesize(text=text, speaker=speaker, resource_id=resource_id),
@@ -79,14 +81,19 @@ class DoubaoTTS(BaseTTS):
             "X-Control-Require-Usage-Tokens-Return": "*",
         }
 
+        audio_params = {
+            "format": self.audio_format,
+            "sample_rate": self.src_sr,
+        }
+        # 语速：来自 LLM 的语气标签（豆包 -50~100，负数更慢、正数更快）
+        rate = getattr(self, "_pending_rate", None)
+        if rate:
+            audio_params["speech_rate"] = int(rate)
         payload = {
             "req_params": {
                 "text": text,
                 "speaker": speaker,
-                "audio_params": {
-                    "format": self.audio_format,
-                    "sample_rate": self.src_sr,
-                },
+                "audio_params": audio_params,
             }
         }
 
