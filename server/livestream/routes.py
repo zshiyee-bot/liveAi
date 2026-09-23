@@ -506,6 +506,31 @@ async def api_tts_config_put(request):
     })
 
 
+# ── 整体语速（直播控制面板）───────────────────────────────────────
+# 只改 data/tts_style.json 里的 rate 字段，不落库、不用重启：
+# engine._do_send 每次都现读，所以**下一条**朗读就用新语速（正在播的那条不变）。
+# 这个值是全局的 —— 话术、弹幕回复、礼物/关注回复全都走 _do_send 这一个出口。
+async def api_tts_rate_get(request):
+    await ensure_ready()
+    from server.livestream.services.tts_style import (
+        get_rate, is_enabled, RATE_MIN, RATE_MAX)
+    return reply({"rate": get_rate(), "enabled": is_enabled(),
+                  "min": RATE_MIN, "max": RATE_MAX})
+
+
+async def api_tts_rate_put(request):
+    await ensure_ready()
+    body = await _body(request)
+    from server.livestream.services.tts_style import (
+        get_rate, set_rate, is_enabled, set_enabled)
+    if body.get("rate") is not None:
+        set_rate(body.get("rate"))
+    if body.get("enabled") is not None:
+        set_enabled(bool(body.get("enabled")))
+    logger.info(f"[ls] 整体语速已更新：rate={get_rate()}（语气开关={is_enabled()}）")
+    return reply({"rate": get_rate(), "enabled": is_enabled()})
+
+
 # ── 话术 ─────────────────────────────────────────────────────────
 async def api_scripts_list(request):
     await ensure_ready()
@@ -1271,6 +1296,10 @@ def setup_livestream_routes(app):
     # 语音合成（豆包 TTS）：与素材页「本链音色」共用 data/tts_config.json
     app.router.add_get(f"{p}/api/tts/config", api_tts_config_get)
     app.router.add_put(f"{p}/api/tts/config", api_tts_config_put)
+
+    # 整体语速（直播控制面板的滑块）：话术 + 弹幕回复一起生效，改完立即作用于下一条
+    app.router.add_get(f"{p}/api/tts-rate", api_tts_rate_get)
+    app.router.add_put(f"{p}/api/tts-rate", api_tts_rate_put)
 
     app.router.add_get(f"{p}/api/scripts", api_scripts_list)
     app.router.add_post(f"{p}/api/scripts", api_scripts_create)

@@ -22,6 +22,46 @@ import re
 _SWITCH_PATH = os.path.join("data", "tts_style.json")
 _ENABLED = None
 
+# ── 整体语速（直播控制面板上的那个滑块）────────────────────────────────
+# 和语气标签**互相独立**：整体语速永远生效（读弹幕、念话术都算），
+# 标签语速只在语气开关打开时才叠加。
+# 豆包 speech_rate 的合法范围是 -50~100（0 = 原速，负数更慢、正数更快）。
+RATE_MIN, RATE_MAX, RATE_DEFAULT = -50, 100, 0
+
+
+def _load_raw() -> dict:
+    try:
+        with open(_SWITCH_PATH, encoding="utf-8") as f:
+            d = json.load(f)
+        return d if isinstance(d, dict) else {}
+    except Exception:
+        return {}
+
+
+def _patch_raw(patch: dict) -> None:
+    """读-改-写。
+
+    **必须保留另一个键** —— 原来写的是 json.dump({"enabled": ...})，
+    那样一开语气就会把 rate 冲掉（反过来也一样），两个设置互相打架。
+    """
+    d = _load_raw()
+    d.update(patch)
+    try:
+        os.makedirs(os.path.dirname(_SWITCH_PATH) or ".", exist_ok=True)
+        with open(_SWITCH_PATH, "w", encoding="utf-8") as f:
+            json.dump(d, f, ensure_ascii=False, indent=2)
+    except Exception:
+        pass
+
+
+def clamp_rate(v) -> int:
+    """夹到豆包允许的区间；非数字一律当 0。"""
+    try:
+        n = int(round(float(v)))
+    except Exception:
+        return RATE_DEFAULT
+    return max(RATE_MIN, min(RATE_MAX, n))
+
 
 def is_enabled() -> bool:
     """语气/语速功能总开关（默认关）。文件改了不用重启也要生效 → 每次读一次（很便宜）。"""
@@ -32,8 +72,7 @@ def is_enabled() -> bool:
     if env in ("0", "false", "no", "off"):
         return False
     try:
-        with open(_SWITCH_PATH, encoding="utf-8") as f:
-            _ENABLED = bool(json.load(f).get("enabled"))
+        _ENABLED = bool(_load_raw().get("enabled"))
     except Exception:
         if _ENABLED is None:
             _ENABLED = False
@@ -41,15 +80,38 @@ def is_enabled() -> bool:
 
 
 def set_enabled(on: bool):
-    """写开关文件（给前端/接口用）。"""
+    """写语气开关（给前端/接口用）。**只改 enabled，不碰 rate。**"""
     global _ENABLED
-    try:
-        os.makedirs(os.path.dirname(_SWITCH_PATH), exist_ok=True)
-        with open(_SWITCH_PATH, "w", encoding="utf-8") as f:
-            json.dump({"enabled": bool(on)}, f, ensure_ascii=False, indent=2)
-    except Exception:
-        pass
     _ENABLED = bool(on)
+    _patch_raw({"enabled": bool(on)})
+
+
+def get_rate() -> int:
+    """面板上设的整体语速（默认 0 = 原速）。环境变量 LS_TTS_RATE 可强制覆盖。"""
+    env = (os.getenv("LS_TTS_RATE", "") or "").strip()
+    if env:
+        return clamp_rate(env)
+    return clamp_rate(_load_raw().get("rate", RATE_DEFAULT))
+
+
+def set_rate(v):
+    """写整体语速。**只改 rate，不碰 enabled。**"""
+    _patch_raw({"rate": clamp_rate(v)})
+
+
+def effective_rate(tag_rate: int | None) -> int:
+    """最终发给豆包的 speech_rate = 面板整体语速 +（语气开时的）标签语速。
+
+    整体语速**不受语气开关影响** —— 用户要求「不管是读弹幕还是队列回答都能一起调」。
+    两个都是 0 时返回 0，调用方据此不传这个参数（保持和以前完全一样）。
+    """
+    total = get_rate()
+    if tag_rate is not None and is_enabled():
+        try:
+            total += int(tag_rate)
+        except Exception:
+            pass
+    return clamp_rate(total)
 
 # 标签 → 豆包 speech_rate（-50~100，0 = 正常，负数更慢、正数更快）
 RATE_MAP = {

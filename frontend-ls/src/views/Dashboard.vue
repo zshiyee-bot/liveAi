@@ -97,6 +97,38 @@
       </el-row>
     </el-card>
 
+    <!-- 整体语速：话术 / 弹幕回复 一起生效，改了立刻作用于下一条 -->
+    <el-card style="margin-bottom: 20px">
+      <template #header>
+        <span><el-icon><Microphone /></el-icon> 整体语速</span>
+        <el-tag size="small" type="success" style="margin-left: 8px">话术 + 弹幕回复都生效</el-tag>
+      </template>
+      <el-row :gutter="16" align="middle">
+        <el-col :xs="24" :md="14">
+          <el-slider
+            v-model="voiceRate"
+            :min="voiceMin"
+            :max="voiceMax"
+            :step="5"
+            show-input
+            :disabled="voiceSaving"
+            @change="handleSaveRate"
+          />
+        </el-col>
+        <el-col :xs="24" :md="10">
+          <el-tag :type="voiceRate === 0 ? 'info' : (voiceRate > 0 ? 'warning' : 'success')" size="small">
+            {{ rateLabel }}
+          </el-tag>
+          <el-button size="small" text style="margin-left: 6px" @click="handleResetRate">恢复原速</el-button>
+          <div style="font-size: 12px; color: #909399; line-height: 1.7; margin-top: 6px">
+            <b>0 = 豆包原速</b>；负数更慢、正数更快（范围 {{ voiceMin }} ~ {{ voiceMax }}，每次 5）。
+            <b>改完立刻生效</b>，从下一条开始念；正在播的那条不受影响，也不用重启服务。
+            读弹幕回复和念队列话术走的是同一个语速。
+          </div>
+        </el-col>
+      </el-row>
+    </el-card>
+
     <el-row :gutter="16">
       <!-- 弹幕流 -->
       <el-col :span="14">
@@ -134,11 +166,55 @@ import LiveChat from '@/components/dashboard/LiveChat.vue'
 import QueueStatus from '@/components/dashboard/QueueStatus.vue'
 import client from '@/api/client'
 import { ROOM_KEY } from '@/api/room'
+import { getVoiceRate, setVoiceRate } from '@/api/voice'
 
 const store = useLivestreamStore()
 const queueStore = useQueueStore()
 const roomId = ref('')
 const platform = ref('douyin')
+
+// ── 整体语速 ────────────────────────────────────────────────
+// 存在服务端 data/tts_style.json 的 rate 字段里，不用重启、下一条就生效。
+// 读弹幕回复和念队列话术都走 engine._do_send 这一个出口，所以一个值管全部。
+const voiceRate = ref(0)
+const voiceMin = ref(-50)
+const voiceMax = ref(100)
+const voiceSaving = ref(false)
+
+const rateLabel = computed(() => {
+  const r = voiceRate.value
+  if (!r) return '原速（0）'
+  return r > 0 ? `偏快 +${r}` : `偏慢 ${r}`
+})
+
+async function loadVoiceRate() {
+  try {
+    const v = await getVoiceRate()
+    voiceRate.value = v.rate ?? 0
+    if (typeof v.min === 'number') voiceMin.value = v.min
+    if (typeof v.max === 'number') voiceMax.value = v.max
+  } catch {
+    // 老版本服务端没有这个接口 → 保持默认，不打扰用户
+  }
+}
+
+async function handleSaveRate(val: number | number[]) {
+  const r = Array.isArray(val) ? val[0] : val
+  voiceSaving.value = true
+  try {
+    const v = await setVoiceRate({ rate: r })
+    voiceRate.value = v.rate
+    ElMessage.success(`整体语速已设为 ${v.rate === 0 ? '原速' : v.rate}（下一条生效）`)
+  } catch {
+    await loadVoiceRate()
+  } finally {
+    voiceSaving.value = false
+  }
+}
+
+async function handleResetRate() {
+  await handleSaveRate(0)
+}
 
 const mockType = ref('danmaku')
 const mockSender = ref('测试观众')
@@ -176,6 +252,7 @@ const canStart = computed(() => {
 onMounted(() => {
   store.fetchStatus()
   store.fetchSessions()
+  loadVoiceRate()
 })
 
 async function handleStart() {

@@ -23,8 +23,8 @@ import asyncio
 import re
 import time
 
-from server.livestream.services.play_queue import QueueItem
-from server.livestream.services.tts_style import strip_all_and_rate, is_enabled as tts_style_enabled
+from server.livestream.services.play_queue import QueueItem, PlayQueue
+from server.livestream.services.tts_style import strip_all_and_rate, effective_rate
 
 from utils.logger import logger
 
@@ -331,11 +331,14 @@ class LiveStreamRuntime:
             raise RuntimeError("video 类型话术暂不支持（LiveTalking 无 convert_custom_media 接口）")
         else:
             # 语气标签：[快]/[慢]… 由 LLM 判断并写在行首 —— 剥掉再送 TTS（不会被念出来），
-            # 语速交给豆包：这句该快该慢由内容自己决定
-            # 标签一律剥掉（不会被念出来）；只有开关打开时才用它调语速。
-            # 且一句只用一个语速、**不切段** —— 切段会有剥离感（上句下句不打杠）。
-            _txt, _rate = strip_all_and_rate(item.content or '')
-            _style = {"speech_rate": _rate} if (_rate is not None and tts_style_enabled()) else {}
+            # 语速交给豆包。
+            # 最终语速 = **面板上的整体语速** +（语气开关打开时的）标签语速，见 tts_style.effective_rate。
+            # 整体语速是对全站的（弹幕回复也走这个出口），标签只影响它自己那一条。
+            # 一句只用一个语速、**不切段** —— 切段会有剥离感（上句下句不打杠）。
+            _txt, _tag_rate = strip_all_and_rate(item.content or '')
+            _rate = effective_rate(_tag_rate)
+            # 0 = 原速 → 不传这个参数，和以前的行为逐字节一致
+            _style = {"speech_rate": _rate} if _rate else {}
             res = await self.adapter.send_text(_txt, utt=utt, priority=priority, tts=_style)
         if isinstance(res, dict) and res.get("code") not in (0, None):
             raise RuntimeError(f"发送失败: {res.get('msg')}")
@@ -366,6 +369,22 @@ class LiveStreamRuntime:
                         except Exception as e:
                             logger.warning(f"[ls] 话术库补位失败: {e}")
                             item = None
+                        if item is not None:
+                            # ★ 这条是**绕过队列**直接从话术库拿的，所以不会经过
+                            #   PlayQueue._expand —— 带「分割符」的话术在这里必须自己摊开：
+                            #   第一条现在发，剩下的塞回低优队列（此刻两个队列都是空的，
+                            #   所以追加到队尾 == 排在弹幕后面，顺序不会乱）。
+                            #
+                            #   不摊开的后果（用户实测反馈）：整段话术当成一条发出去，
+                            #   于是弹幕插队只能等**整段**播完，而不是等这一句说完 ——
+                            #   分割符形同虚设。队列补位那条路是好的，只有这条漏了。
+                            spread = PlayQueue._expand(item)
+                            item = spread[0]
+                            for extra in spread[1:]:
+                                await self.queue.put_low(extra)
+                            if len(spread) > 1:
+                                logger.info(f"[ls] 补位话术已摊成 {len(spread)} 句（先发第 1 句，"
+                                            f"其余 {len(spread) - 1} 句已排队 → 弹幕只需等这一句）")
                     if item is None:
                         break
                 if item.type == "video":
