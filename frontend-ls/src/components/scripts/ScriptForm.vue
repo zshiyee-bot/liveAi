@@ -20,9 +20,9 @@
     </el-form-item>
     <el-form-item v-if="form.type === 'text'" label="分割符">
       <div style="width: 100%">
-        <el-input v-model="form.splitSep" placeholder="例如：。 或 ， 或 ||（留空=只按换行分）" style="max-width: 320px" />
+        <el-input v-model="form.splitSep" placeholder="例如：。 或 ， 或 ||（留空=不分割，整条念）" style="max-width: 320px" />
         <div style="font-size: 12px; color: #909399; line-height: 1.7; margin-top: 4px">
-          用这个符号把内容切成多句，播放时<b>一句一句送进队列</b>（弹幕不用等整条念完）。
+          填了才按这个符号切成多句，播放时<b>一句一句送进队列</b>（弹幕不用等整条念完）；<b>留空 = 整条一起念，不分割</b>。
           <span v-if="splitPieces.length > 1" style="color: #e6a23c">
             当前会切成 {{ splitPieces.length }} 句：{{ previewText }}
           </span>

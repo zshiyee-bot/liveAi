@@ -34,18 +34,20 @@ _LOOP_FAIL_COOLDOWN = 60.0
 def split_script_text(text: str, sep: str = "") -> list[str]:
     """把一条话术按「分割符」切成多句（话术管理里的分割功能）。
 
-    · 先按换行切：AI 一次生成多条话术时是用换行拼起来的
-    · 再按 sep 切；**分隔符保留在句尾**（"你好。" 这样 TTS 停顿更自然）
-    · sep 为空 → 只按换行切；切不出多句就返回单元素列表
+    · **分割符留空 → 完全不分割**：整条当成一句念（换行也不切）。
+      想逐句念，用户自己填分割符（比如 "。"），或把每一句单独添加成一条话术。
+    · 填了 sep → 先按换行拆成行，再按 sep 切；**分隔符保留在句尾**
+      （"你好。" 这样 TTS 停顿更自然）
+    · 切不出多句 → 返回单元素列表
     """
     text = (text or "").strip()
     if not text:
         return []
-    chunks = [c.strip() for c in re.split(r"[\r\n]+", text) if c.strip()]
     sep = (sep or "").strip()
     if not sep:
-        return chunks or [text]
+        return [text]                     # 留空 = 不分割（用户要求：想切就自己填）
 
+    chunks = [c.strip() for c in re.split(r"[\r\n]+", text) if c.strip()]
     out: list[str] = []
     for ch in chunks:
         parts = ch.split(sep)
