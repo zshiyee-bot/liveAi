@@ -13,11 +13,42 @@
 #  engine.py 在「弹幕入口」和「送 TTS 之前」各调一次。
 ###############################################################################
 
+import json
+import os
 import random
 import re
 import unicodedata
 
-# ── 归一化 ────────────────────────────────────────────────────────────
+# ── 可选的外部规则文件 ────────────────────────────────────────────────
+# 同目录放一个「规则.json」就能追加/覆盖规则，**不用改代码**。
+# 独立工具包「弹幕拦截」用的就是它；项目里不放这个文件时，行为与以前完全一致。
+# 只认这几个键：注入正则 / 噪音_同字重复次数 / 默认兜底话术
+_RULES_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "规则.json")
+# 规则文件读失败时的原因（给命令行/界面报警用）。**不能静默**：
+# 实测用记事本或 PowerShell 保存的 json 会带 BOM，用 encoding="utf-8" 读会直接
+# JSONDecodeError → 规则被全部忽略，而用户毫不知情（还在纳闷"我改了怎么没用"）。
+_RULES_ERROR = ""
+
+
+def _load_rules() -> dict:
+    """读规则文件。容忍 BOM（utf-8-sig）；失败时把原因记进 _RULES_ERROR。"""
+    global _RULES_ERROR
+    _RULES_ERROR = ""
+    if not os.path.exists(_RULES_PATH):
+        return {}
+    try:
+        with open(_RULES_PATH, encoding="utf-8-sig") as f:
+            d = json.load(f)
+        if not isinstance(d, dict):
+            raise ValueError("顶层必须是一个对象 { ... }")
+        return d
+    except Exception as e:
+        _RULES_ERROR = f"{type(e).__name__}: {e}"
+        return {}
+
+
+_RULES: dict = _load_rules()
+
 _WS_RE = re.compile(r"\s+")
 # 匹配用（屏蔽词/注入检测）时要去掉的标点与空白
 _PUNCT_RE = re.compile(r"[^\w\u4e00-\u9fff]+", re.UNICODE)
@@ -53,8 +84,21 @@ def parse_words(raw: str) -> list[str]:
 
 
 # ── 刷屏噪音 ──────────────────────────────────────────────────────────
+def _norm_same_char(v) -> int:
+    """「同一个字重复几次算刷屏」——默认 3，规则文件可改（2~10 之间夹取）。"""
+    try:
+        n = int(v)
+    except Exception:
+        return 3
+    return max(2, min(10, n))
+
+
+# 同字重复几次算噪音（可用 规则.json 的「噪音_同字重复次数」覆盖）
+_NOISE_SAME_CHAR = _norm_same_char(_RULES.get("噪音_同字重复次数"))
+
+
 def is_noise(text: str) -> bool:
-    """纯符号 / 纯数字 / 同一个字重复 3 次以上 —— 直播间典型刷屏，不值得回。
+    """纯符号 / 纯数字 / 同一个字重复 N 次以上 —— 直播间典型刷屏，不值得回。
 
     刻意**不**把单个汉字（"好""嗯"）算噪音：那种话虽然短，但回一下很正常。
     """
@@ -63,7 +107,7 @@ def is_noise(text: str) -> bool:
         return True                       # 只有标点/表情/空白
     if k.isdigit():
         return True                       # 1 / 111 / 666 / 12345
-    if len(k) >= 3 and len(set(k)) == 1:
+    if len(k) >= _NOISE_SAME_CHAR and len(set(k)) == 1:
         return True                       # 哈哈哈 / 。。。 / 喵喵喵
     return False
 
@@ -111,7 +155,24 @@ _INJECT_PATTERNS = [
     r"(进入|开启|切换到?)\s*[^\s，。]{0,8}(开发者|调试|管理员|上帝|越狱)模式",
     r"jail\s*break|dan\s*mode|越狱模式",
 ]
+# 内置的那批留一份原样（reload_rules 时要在它基础上重新追加外部规则）
+_INJECT_BUILTIN = list(_INJECT_PATTERNS)
+# 外部「规则.json」里的「注入正则」会**追加**在这后面（不是替换）——
+# 内置的照样生效，用户加自己的话术不用懂代码。
+_INJECT_PATTERNS += [p for p in (_RULES.get("注入正则") or []) if isinstance(p, str) and p.strip()]
 _INJECT_RE = re.compile("|".join(_INJECT_PATTERNS), re.I)
+
+
+def reload_rules() -> dict:
+    """重新读一次规则文件（改完 规则.json 不用重启进程）。返回读到的规则。"""
+    global _RULES, _INJECT_RE, _NOISE_SAME_CHAR, DEFAULT_FALLBACK
+    _RULES = _load_rules()
+    extra = [p for p in (_RULES.get("注入正则") or []) if isinstance(p, str) and p.strip()]
+    _INJECT_RE = re.compile("|".join(_INJECT_BUILTIN + extra), re.I)
+    _NOISE_SAME_CHAR = _norm_same_char(_RULES.get("噪音_同字重复次数"))
+    DEFAULT_FALLBACK = ((_RULES.get("默认兜底话术") or "").strip()
+                        or "这个我就不接了啊，咱们还是聊产品。")
+    return _RULES
 
 
 def looks_like_injection(text: str) -> str | None:
@@ -213,7 +274,7 @@ _REPEAT_RE = re.compile(r"(.)\1{3,}")
 _PREFIX_RE = re.compile(r"^\s*(回复|回答|答|主播回复)\s*[:：]\s*")
 _TRIM_AT = "。！？；…!?;."
 
-DEFAULT_FALLBACK = "这个我就不接了啊，咱们还是聊产品。"
+DEFAULT_FALLBACK = (_RULES.get("默认兜底话术") or "").strip() or "这个我就不接了啊，咱们还是聊产品。"
 
 
 def _hard_trim(t: str, limit: int) -> str:
@@ -371,3 +432,38 @@ def render_reply(template: str, name: str, msg: str, reply: str) -> str:
     t = re.sub(r"^[\s，,、。:：;；]+", "", t)
     t = re.sub(r"[，,]{2,}", "，", t)
     return t.strip()
+
+
+# ── 判定入口：一条弹幕到底回不回 ──────────────────────────────────────
+#   **判定顺序的唯一出处**：项目（engine）和独立工具包都调它，避免两边各写一套走偏。
+#   限速不在这里做 —— 那需要记住每个人的历史，交给调用方（engine / CLI 各自持有状态）。
+def screen(text: str, cfg: dict | None = None) -> str | None:
+    """返回挡下的原因（中文，能直接给人看）；None = 放行。
+
+    cfg 支持的键（不传就用默认）：
+      block_words   屏蔽词列表            默认 []
+      block_mode    'exact' | 'contains'  默认 'exact'
+      block_noise   是否过滤刷屏噪音       默认 True
+      inject_filter 是否过滤注入攻击       默认 True
+      max_len       单条弹幕长度上限，0=不限 默认 0
+    """
+    c = (text or "").strip()
+    if not c:
+        return "空内容"
+    cfg = cfg or {}
+    try:
+        max_len = int(cfg.get("max_len") or 0)
+    except Exception:
+        max_len = 0
+    if max_len and len(c) > max_len:
+        return f"太长（{len(c)} > {max_len} 字）"
+    if cfg.get("inject_filter", True):
+        hit = looks_like_injection(c)
+        if hit:
+            return f"疑似注入攻击（{hit[:20]}）"
+    hit = hit_block_word(c, cfg.get("block_words") or [], cfg.get("block_mode") or "exact")
+    if hit:
+        return f"命中屏蔽词「{hit}」"
+    if cfg.get("block_noise", True) and is_noise(c):
+        return "刷屏噪音（纯数字/纯符号/重复字）"
+    return None

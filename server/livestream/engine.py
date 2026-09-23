@@ -30,7 +30,7 @@ from server.livestream.services.tts_style import strip_all_and_rate, effective_r
 from server.livestream.services.danmaku_filter import (
     DEFAULT_FALLBACK, clean_msg, clean_name, clean_paraphrase, hit_block_word, is_noise,
     looks_like_injection, parse_templates, parse_words, pick_template,
-    render_reply, sanitize_reply,
+    render_reply, sanitize_reply, screen,
 )
 
 from utils.logger import logger
@@ -136,22 +136,18 @@ class LiveStreamRuntime:
     def _screen(self, content: str, sender: str) -> str | None:
         """返回挡下的原因；None = 放行。
 
-        顺序有意为之：先看长度（攻击几乎都是长文），再看注入，最后才是屏蔽词。
+        判定顺序（长度 → 注入 → 屏蔽词 → 噪音）统一在 danmaku_filter.screen() 里，
+        独立工具包用的是同一个函数，避免两边规则走偏。这里只多管一件事：刷屏限速。
         """
-        c = (content or "").strip()
-        if not c:
-            return "空内容"
-        if self._dmax_len and len(c) > self._dmax_len:
-            return f"太长（{len(c)} > {self._dmax_len} 字）"
-        if self._inject_filter:
-            hit = looks_like_injection(c)
-            if hit:
-                return f"疑似注入攻击（{hit[:20]}）"
-        hit = hit_block_word(c, self._block_words, self._block_mode)
-        if hit:
-            return f"命中屏蔽词「{hit}」"
-        if self._block_noise and is_noise(c):
-            return "刷屏噪音（纯数字/纯符号/重复字）"
+        reason = screen(content, {
+            "block_words": self._block_words,
+            "block_mode": self._block_mode,
+            "block_noise": self._block_noise,
+            "inject_filter": self._inject_filter,
+            "max_len": self._dmax_len,
+        })
+        if reason:
+            return reason
         if self._rate_limited(sender):
             return f"刷屏太快（{self._rate_limit} 条 / 10 秒）"
         return None
