@@ -6,6 +6,9 @@ rem
 rem  It only READS state (ports / processes / proxy / files) and writes
 rem  one text file next to itself. It changes nothing.
 rem
+rem  Works both in the package root and in a subfolder one level below
+rem  it (python\ is then found at ..\python\).
+rem
 rem  Keep this file ASCII-only, CRLF and no BOM (cmd requirement).
 rem ===================================================================
 chcp 65001 >nul 2>&1
@@ -15,9 +18,25 @@ set PYTHONUTF8=1
 set PYTHONIOENCODING=utf-8
 set LOG=%~dp0_diag_log.txt
 
+rem  locate python (root, or one level down, or on PATH)
+set "PYEXE="
+if exist "%~dp0python\python.exe" set "PYEXE=%~dp0python\python.exe"
+if not defined PYEXE if exist "%~dp0..\python\python.exe" set "PYEXE=%~dp0..\python\python.exe"
+if not defined PYEXE for %%P in (python.exe) do set "PYEXE=%%~$PATH:P"
+
+rem  locate the grabber tool (root, or one level down)
+set "TOOLS=%~dp0tools\DouyinBarrageGrab"
+if not exist "%TOOLS%" set "TOOLS=%~dp0..\tools\DouyinBarrageGrab"
+
 echo ============================================================ > "%LOG%"
 echo  tzlive diagnostic  %date% %time% >> "%LOG%"
 echo ============================================================ >> "%LOG%"
+
+echo. >> "%LOG%"
+echo [0] resolved paths >> "%LOG%"
+echo   bat dir  = %~dp0 >> "%LOG%"
+echo   python   = %PYEXE% >> "%LOG%"
+echo   tools    = %TOOLS% >> "%LOG%"
 
 echo. >> "%LOG%"
 echo [1] package path / files >> "%LOG%"
@@ -26,13 +45,13 @@ dir /b >> "%LOG%" 2>&1
 
 echo. >> "%LOG%"
 echo [2] python present? >> "%LOG%"
-if exist "%~dp0python\python.exe" (
-  echo   python\python.exe = FOUND >> "%LOG%"
-  "%~dp0python\python.exe" -c "import sys,platform;print('   python',sys.version.split()[0],platform.architecture()[0])" >> "%LOG%" 2>&1
-  "%~dp0python\python.exe" -c "import requests,websocket;print('   requests/websocket OK')" >> "%LOG%" 2>&1
-  "%~dp0python\python.exe" -c "import danmaku_wizard;print('   danmaku_wizard import OK')" >> "%LOG%" 2>&1
+if defined PYEXE (
+  echo   python = FOUND >> "%LOG%"
+  "%PYEXE%" -c "import sys,platform;print('   python',sys.version.split()[0],platform.architecture()[0])" >> "%LOG%" 2>&1
+  "%PYEXE%" -c "import requests,websocket;print('   requests/websocket OK')" >> "%LOG%" 2>&1
+  "%PYEXE%" -c "import danmaku_wizard;print('   danmaku_wizard import OK')" >> "%LOG%" 2>&1
 ) else (
-  echo   python\python.exe = NOT FOUND >> "%LOG%"
+  echo   python = NOT FOUND >> "%LOG%"
 )
 
 echo. >> "%LOG%"
@@ -56,7 +75,7 @@ echo [6] saved forwarder config (if any) >> "%LOG%"
 if exist "%~dp0danmaku_config.json" (
   type "%~dp0danmaku_config.json" >> "%LOG%" 2>&1
 ) else (
-  echo   no danmaku_config.json yet >> "%LOG%"
+  echo   no danmaku_config.json next to this .bat >> "%LOG%"
 )
 
 echo. >> "%LOG%"
@@ -69,8 +88,8 @@ if exist "%~dp0_danmaku_run.log" (
 
 echo. >> "%LOG%"
 echo [8] grabber tool files >> "%LOG%"
-if exist "%~dp0tools\DouyinBarrageGrab" (
-  dir /b "%~dp0tools\DouyinBarrageGrab" >> "%LOG%" 2>&1
+if exist "%TOOLS%" (
+  dir /b "%TOOLS%" >> "%LOG%" 2>&1
 ) else (
   echo   tools\DouyinBarrageGrab NOT FOUND >> "%LOG%"
 )

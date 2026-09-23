@@ -33,12 +33,30 @@ import threading
 import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+# 兼容两种摆放：
+#   ① 放在包根目录（老样子，比如 tzlive-Windows-v1.0-final\）
+#   ② 放在根目录下的子文件夹里（服务器包里就是「Windows直播电脑-弹幕工具\」）
+# 第 ② 种情况下 danmaku_forward.py 和 tools\ 都还在上一级，所以按需把上一级
+# 也加进搜索路径 —— 只在隔壁找不到时才加，避免把无关目录塞进 sys.path。
+PARENT = os.path.dirname(HERE)
 sys.path.insert(0, HERE)
+if not os.path.exists(os.path.join(HERE, "danmaku_forward.py")):
+    sys.path.insert(0, PARENT)
 
 import danmaku_forward as F                                  # noqa: E402
 
+
+def _pick_dir(*cands: str) -> str:
+    """取第一个真实存在的目录；都不存在就返回第一个（报错时路径看着更自然）。"""
+    for c in cands:
+        if os.path.isdir(c):
+            return c
+    return cands[0]
+
+
 CFG_PATH = os.path.join(HERE, "danmaku_config.json")
-GRABBER_DIR = os.path.join(HERE, "tools", "DouyinBarrageGrab")
+GRABBER_DIR = _pick_dir(os.path.join(HERE, "tools", "DouyinBarrageGrab"),
+                        os.path.join(PARENT, "tools", "DouyinBarrageGrab"))
 GRABBER_EXE = os.path.join(GRABBER_DIR, "WssBarrageServer.exe")
 
 PLATFORM_LABEL = {"douyin": "抖音直播", "taobao": "淘宝直播", "both": "抖音 + 淘宝"}
