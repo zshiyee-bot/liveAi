@@ -190,26 +190,35 @@ def _http_get_json(url: str, timeout: float = 15.0):
 
 
 def probe_kuaishou(room_id: str) -> dict:
-    """免登录查快手直播间状态（实测 2026-09 可用，不需要 cookie）。
+    """查快手直播间状态（免登录接口）。
 
-    只查**状态**，不碰弹幕通道 —— 弹幕那条 `/live_api/liveroom/websocketinfo`
-    要带 `__NS_hxfalcon`（267 字符风控签名 + Chrome TLS 指纹 + 登录态），
-    那个不做（做了也会随快手更新失效，而且有风控风险）。
+    ⚠ 实测结论（2026-09）：这个接口对**非浏览器的请求**经常直接风控 ——
+    返回 `result: 2` 且 author/liveStream 全空，**对所有房间都一样**（正在播的也一样），
+    所以 `result: 2` **不能解读成"没开播"**，只能说"这台机器查不到"。
+    SSR 页面同样会被挡（`errorType: {title:"请求过快，请稍后重试"}`）。
+    唯一稳定可用的是 `liveroom/recommend`（房间列表）。
+
+    这里把三种情况分清楚，绝不把"被风控"说成"没开播"。
     """
     url = f"https://live.kuaishou.com/live_api/liveroom/livedetail?principalId={room_id}"
     data, err = _http_get_json(url)
     if data is None:
-        return {"ok": False, "err": err}
+        return {"ok": False, "err": err, "blocked": True}
     d = (data or {}).get("data") or {}
     author = d.get("author") or {}
     ls = d.get("liveStream") or {}
+    named = bool(author.get("name"))
+    result = d.get("result")
+    # 拿不到主播名 = 没拿到真实数据（风控），别硬解读
+    blocked = (not named) or (result == 2)
     return {
         "ok": True,
-        "living": bool(author.get("living")),
-        "nick": author.get("name") or author.get("userName") or "",
+        "blocked": blocked,
+        "result": result,
+        "living": bool(author.get("living")) if named else None,
+        "nick": author.get("name") or "",
         "live_stream_id": ls.get("id") or "",
         "has_ws": bool(d.get("websocketInfo")),
-        "result": d.get("result"),
     }
 
 
@@ -226,7 +235,7 @@ def print_probe(target: str) -> int:
         print("    快手     https://live.kuaishou.com/u/ks13811109178")
         print("    抖音     https://live.douyin.com/123456789")
         print("    淘宝     ...liveId=2318604422529278")
-        print("    京东     https://lives.jd.com/#/47897623")
+        print("    京东     https://lives.jd.com/#/47897623（3.cn/xxx 短链也能展开）")
         print("    B站      https://live.bilibili.com/123456")
         return 1
     print(f"  平台    : {label}  ({key}){note}")
@@ -234,18 +243,22 @@ def print_probe(target: str) -> int:
 
     if key == "kuaishou" and rid:
         print()
-        print("  ── 查开播状态（免登录接口，实测可用）──")
+        print("  ── 查开播状态 ──")
         st = probe_kuaishou(rid)
         if not st.get("ok"):
-            print(f"    查询失败：{st.get('err')}")
+            print(f"    ⚠ 查询失败：{st.get('err')}")
+        elif st.get("blocked"):
+            print(f"    ⚠ **查不到**（快手风控拦截，result={st.get('result')}）"
+                  f" —— 这**不代表没开播**。")
+            print("       实测说明：这个接口对非浏览器请求经常直接返回 result=2，")
+            print("       **正在直播的房间也一样**，所以别把它当成开播状态。")
+            print("       换一台机器/换个网络再试可能就能查到；浏览器里打开是完全正常的。")
         elif st["living"]:
-            print(f"    ✅ 正在直播   主播：{st['nick'] or '?'}")
+            print(f"    ✅ 正在直播   主播：{st['nick']}")
             print(f"       liveStreamId : {st['live_stream_id'] or '(没拿到)'}")
             print(f"       弹幕通道票据 : {'有' if st['has_ws'] else '无'}")
         else:
-            print(f"    ⬜ 当前**未开播**（该主播没在直播）")
-            if st.get("nick"):
-                print(f"       主播：{st['nick']}")
+            print(f"    ⬜ 未开播   主播：{st['nick']}")
 
     print()
     print("  ── 这家怎么接弹幕 ──")
