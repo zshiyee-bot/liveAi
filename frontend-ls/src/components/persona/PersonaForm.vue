@@ -143,13 +143,17 @@
               </el-form-item>
             </el-col>
             <el-col :span="12">
-              <el-form-item label="念弹幕原文" label-width="100px">
+              <el-form-item label="转述观众的话" label-width="110px">
                 <el-switch v-model="form.danmaku_read_msg" :active-value="1" :inactive-value="0" />
               </el-form-item>
             </el-col>
           </el-row>
           <div class="tip" style="margin: -8px 0 14px 0">
-            两个都关 = 只念回复正文（和以前一样）。打开后，下面带 <code>{name}</code>/<code>{msg}</code> 的模板才会参与
+            两个都关 = 只念回复正文（和以前一样）。打开后，下面带 <code>{name}</code>/<code>{msg}</code> 的模板才会参与。
+            <br>
+            <b>「转述」不是照抄弹幕</b>：真主播不会把观众的话一字不差念出来，而是概括一下再说 ——
+            观众说「主播你现在在哪里直播呀」，念出来是「<b>问我人现在在哪儿</b>」。
+            这一步由 AI 现场完成（不许照抄，偷懒照抄的会被程序丢掉、自动换成不带复述的句式）。
           </div>
           <el-row :gutter="16">
             <el-col :span="12">
@@ -158,19 +162,22 @@
               </el-form-item>
             </el-col>
             <el-col :span="12">
-              <el-form-item label="念原文上限" label-width="100px">
+              <el-form-item label="转述字数上限" label-width="110px">
                 <el-input-number v-model="form.danmaku_read_msg_max" :min="2" :max="100" />
               </el-form-item>
             </el-col>
           </el-row>
           <div class="tip" style="margin: -8px 0 14px 0">
-            纯数字、像账号 ID 的昵称<b>不念</b>（自动换成不带称呼的句式）；原文超上限也<b>不念</b>，照样回复
+            纯数字、像账号 ID 的昵称<b>不念</b>（自动换成不带称呼的句式）；转述超过字数上限也<b>不念</b>，照样回复
           </div>
 
-          <el-divider content-position="left">
-            回复模板
-            <span class="tip" style="display: inline">（权重 = 相对比例，权重 0 = 这条不用）</span>
-          </el-divider>
+          <el-divider content-position="left">回复模板</el-divider>
+          <div class="tip" style="margin-bottom: 8px">
+            占位符：<code>{reply}</code> = AI 回复正文 ｜ <code>{name}</code> = 观众昵称 ｜
+            <code>{msg}</code> = <b>AI 对观众那句话的转述</b>（不是原话）。<br>
+            <b>权重 = 相对比例</b>：权重 3 和权重 1 就是 3:1 的出现次数（不用凑总数）；
+            <b>权重 0 = 这条不用</b>；<b>只留一条</b>就固定只用这一种念法。
+          </div>
           <div class="tpl-list">
             <div v-for="(row, i) in tplRows" :key="i" class="tpl-row">
               <el-input v-model="row.text" size="small" placeholder="如：{name}宝子，{reply}" style="flex: 1" />
@@ -191,9 +198,13 @@
           <div class="preview-box">
             <div class="line">
               <span class="lbl">观众昵称</span>
-              <el-input v-model="demoName" size="small" style="width: 150px" />
-              <span class="lbl">弹幕内容</span>
-              <el-input v-model="demoMsg" size="small" style="width: 200px" />
+              <el-input v-model="demoName" size="small" style="width: 130px" />
+              <span class="lbl">观众的弹幕</span>
+              <el-input v-model="demoMsg" size="small" style="width: 180px" />
+            </div>
+            <div class="line" style="margin-top: 6px">
+              <span class="lbl">AI 转述 <span style="color: #c0c4cc">（实际由 AI 现场概括，这里只是示例）</span></span>
+              <el-input v-model="demoPara" size="small" style="width: 180px" />
             </div>
             <div style="margin-top: 10px">
               会说成：<b class="out">「{{ demoRendered }}」</b>
@@ -264,7 +275,8 @@ const form = reactive({
 })
 
 const demoName = ref('小明')
-const demoMsg = ref('主播在哪里')
+const demoMsg = ref('主播你现在在哪里直播呀')
+const demoPara = ref('问我人现在在哪儿')
 
 /** 弹幕安全里开了几项（页签上的小标签） */
 const safeOnCount = computed(() => {
@@ -340,6 +352,19 @@ function cleanMsg(s: string, max: number): string {
   return m
 }
 
+/** 转述清洗（与后端 clean_paraphrase 同规则）：照抄原话的一律不要 */
+function cleanPara(para: string, original: string, max: number): string {
+  const p = speakable(para).replace(/^[，。！？、,.!?;；:：'"“”‘’(]+/, '').replace(/[，。！？、,.!?;；:：'"“”‘’)]+$/, '').trim()
+  if (!p || p.length > max) return ''
+  const np = p.replace(/\W+/g, '')
+  const no = speakable(original).replace(/\W+/g, '')
+  if (no && np) {
+    if (np === no) return ''
+    if (np.length >= 6 && (np.includes(no) || no.includes(np)) && Math.min(np.length, no.length) >= 0.8 * Math.max(np.length, no.length)) return ''
+  }
+  return p
+}
+
 const usableTemplates = computed(() => {
   if (tplRows.value.length) {
     return tplRows.value.filter((r) => r.text.trim()).map((r) => ({ text: r.text.trim(), weight: r.weight }))
@@ -348,9 +373,17 @@ const usableTemplates = computed(() => {
 })
 
 function renderTpl(tpl: string, name: string, msg: string, reply: string): string {
+  let m = msg
+  // 与后端 render_reply 同规则：模板里 {msg} 前面已经有「问」时，去掉转述开头的「问」，
+  // 否则会念成「小明问问我人在哪儿」
+  const idx = tpl.indexOf('{msg}')
+  if (m && idx > 0 && tpl.slice(0, idx).trimEnd().endsWith('问')) {
+    const stripped = m.replace(/^\s*问(一下|问|了|的)?\s*/, '')
+    m = stripped || m
+  }
   return tpl
     .replace(/\{name\}/g, name)
-    .replace(/\{msg\}/g, msg)
+    .replace(/\{msg\}/g, m)
     .replace(/\{reply\}/g, reply)
     .replace(/^[\s，,、。:：;；]+/, '')
     .replace(/[，,]{2,}/g, '，')
@@ -360,14 +393,14 @@ function renderTpl(tpl: string, name: string, msg: string, reply: string): strin
 /** 每条模板当前能不能用 + 实际占比（权重 / 可用权重之和） */
 const templateStatus = computed(() => {
   const name = form.danmaku_call_name ? cleanName(demoName.value, form.danmaku_name_max) : ''
-  const msg = form.danmaku_read_msg ? cleanMsg(demoMsg.value, form.danmaku_read_msg_max) : ''
+  const msg = form.danmaku_read_msg ? cleanPara(demoPara.value, demoMsg.value, form.danmaku_read_msg_max) : ''
   const judged = usableTemplates.value.map((r) => {
     const t = r.text
     if (!t.includes('{reply}')) return { text: t, weight: r.weight, ok: false, why: '缺 {reply} 占位符' }
     if (t.includes('{name}') && !form.danmaku_call_name) return { text: t, weight: r.weight, ok: false, why: '「读观众名字」关着' }
     if (t.includes('{name}') && !name) return { text: t, weight: r.weight, ok: false, why: '这个昵称念不出来' }
     if (t.includes('{msg}') && !form.danmaku_read_msg) return { text: t, weight: r.weight, ok: false, why: '「念弹幕原文」关着' }
-    if (t.includes('{msg}') && !msg) return { text: t, weight: r.weight, ok: false, why: '这条弹幕太长，不念原文' }
+    if (t.includes('{msg}') && !msg) return { text: t, weight: r.weight, ok: false, why: '转述为空/太长/照抄了原话' }
     if (r.weight <= 0) return { text: t, weight: r.weight, ok: false, why: '权重为 0（这条不用）' }
     return { text: t, weight: r.weight, ok: true, why: '' }
   })
@@ -378,7 +411,7 @@ const templateStatus = computed(() => {
 /** 预览：用权重最高的那条渲染（运行时按权重随机挑） */
 const demoRendered = computed(() => {
   const name = form.danmaku_call_name ? cleanName(demoName.value, form.danmaku_name_max) : ''
-  const msg = form.danmaku_read_msg ? cleanMsg(demoMsg.value, form.danmaku_read_msg_max) : ''
+  const msg = form.danmaku_read_msg ? cleanPara(demoPara.value, demoMsg.value, form.danmaku_read_msg_max) : ''
   const ok = templateStatus.value.filter((t) => t.ok)
   if (!ok.length) return DEMO_REPLY
   const top = ok.reduce((a, b) => (b.weight > a.weight ? b : a), ok[0])
@@ -412,7 +445,7 @@ const previewText = computed(() => {
   }
   if (safe.length) parts.push(`弹幕安全（命中不回）：${safe.join('、')}`)
   if (form.danmaku_call_name) parts.push(`回复时称呼观众昵称（最多 ${form.danmaku_name_max} 字）`)
-  if (form.danmaku_read_msg) parts.push(`回复时复述弹幕原文（最多 ${form.danmaku_read_msg_max} 字）`)
+  if (form.danmaku_read_msg) parts.push(`回复时会转述观众的话（AI 概括，最多 ${form.danmaku_read_msg_max} 字）`)
   return parts.join('\n')
 })
 

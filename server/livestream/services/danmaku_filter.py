@@ -168,6 +168,40 @@ def clean_msg(text: str, max_len: int = 24, words: list[str] | None = None) -> s
     return m
 
 
+def clean_paraphrase(para: str, original: str = "", max_len: int = 12,
+                     words: list[str] | None = None) -> str:
+    """AI 给的"转述"（用主播自己的话概括观众那句）→ 能念的样子；不行就返回 ""。
+
+    **这里的关键是"不许照抄"**：真主播从来不会把弹幕一字不差念出来，
+    而是概括一下（观众说「主播你现在在哪里直播呀」→ 念成「问我人在哪儿」）。
+    所以：
+      · 太长了不要（转述本来就该短）
+      · 命中屏蔽词 / 注入特征不要
+      · **和原话几乎一模一样就不要** —— 那说明模型偷懒照抄了，
+        这种宁可退化成不带复述的句式，也别让它念出一句生硬的复读
+    """
+    p = speakable(para, 0)
+    if not p:
+        return ""
+    p = p.strip("，。！？、,.!?;；:：\"'“”‘’(").strip()
+    if not p:
+        return ""
+    if max_len and len(p) > max_len:
+        return ""
+    if hit_block_word(p, words or [], "contains"):
+        return ""
+    if looks_like_injection(p):
+        return ""
+    # 和原话高度重合 = 照抄 → 不要
+    np, no = match_key(p), match_key(original)
+    if no and np:
+        if np == no:
+            return ""
+        if len(np) >= 6 and (np in no or no in np) and min(len(np), len(no)) >= 0.8 * max(len(np), len(no)):
+            return ""
+    return p
+
+
 # ── 回复输出校验（最后一道闸，确定性）─────────────────────────────────
 # 模型被绕过后可能吐出这些元词汇 / 系统提示泄漏 —— 整条丢弃
 _META_RE = re.compile(
@@ -322,9 +356,18 @@ def pick_template(templates: list[tuple[str, float]], *, allow_name: bool, allow
 
 
 def render_reply(template: str, name: str, msg: str, reply: str) -> str:
-    """套模板 + 清理替换后留下的孤零零标点。"""
+    """套模板 + 清理替换后留下的孤零零标点。
+
+    小坑：转述通常长这样「问我人在哪儿」，而模板里可能已经带了「问」
+    （`{name}问{msg}`）—— 直接拼会念成「小明**问问**我人在哪儿」。
+    所以当 `{msg}` 前面紧跟「问」时，把转述开头那个「问」去掉。
+    """
     t = (template or "{reply}")
-    t = t.replace("{name}", name or "").replace("{msg}", msg or "").replace("{reply}", reply or "")
+    m = msg or ""
+    idx = t.find("{msg}")
+    if m and idx > 0 and t[:idx].rstrip().endswith("问"):
+        m = re.sub(r"^\s*问(一下|问|了|的)?\s*", "", m) or m
+    t = t.replace("{name}", name or "").replace("{msg}", m).replace("{reply}", reply or "")
     t = re.sub(r"^[\s，,、。:：;；]+", "", t)
     t = re.sub(r"[，,]{2,}", "，", t)
     return t.strip()

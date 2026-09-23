@@ -68,6 +68,56 @@ def too_similar(a: str, b: str) -> bool:
     return len(ba & bb) / min(len(ba), len(bb)) >= 0.8
 
 
+# ── 「转述 + 回复」两行输出格式的解析 ─────────────────────────────────
+# 真主播不会把弹幕一字不差念出来，而是概括一下再回答。需要的时候让模型多输出
+# 一行「转述」，这里负责拆开；模型不老实按格式来时也不能把内容弄丢。
+_PARA_RE = re.compile(
+    r"^\s*(?:\*\*|__)?\s*(?:"
+    r"[【\[]\s*(?:转述|复述|概括|总结)\s*[】\]]\s*(?:\*\*|__)?\s*[:：]?"   # 【转述】内容
+    r"|(?:转述|复述|概括|总结)\s*(?:\*\*|__)?\s*[:：]"                     # 转述：内容
+    r")\s*(.*)$")
+_REPLY_RE = re.compile(
+    r"^\s*(?:\*\*|__)?\s*(?:"
+    r"[【\[]\s*(?:回复|回答|答|回应)\s*[】\]]\s*(?:\*\*|__)?\s*[:：]?"
+    r"|(?:回复|回答|答|回应)\s*(?:\*\*|__)?\s*[:：]"
+    r")\s*(.*)$")
+
+
+def _split_para_reply(raw: str) -> tuple[str, str]:
+    """把「转述：… / 回复：…」拆成 (回复, 转述)。解析不出来就整段当回复、转述为空。
+
+    转述为空时调用方会自动换成不带复述的句式 —— 宁可少念一句，
+    也不能把模型的格式标记原样念出去。
+    """
+    para, reply, extra = "", "", []
+    for line in (raw or "").replace("\r", "\n").split("\n"):
+        s = line.strip()
+        if not s:
+            continue
+        if not para:
+            m = _PARA_RE.match(s)
+            if m:
+                para = m.group(1).strip()
+                continue
+        if not reply:
+            m2 = _REPLY_RE.match(s)
+            if m2:
+                reply = m2.group(1).strip()
+                continue
+        extra.append(s)
+    rest = " ".join(extra).strip()
+    if reply:
+        if rest:
+            reply = f"{reply} {rest}"
+    elif para:
+        reply = rest                      # 有转述没回复 → 剩下的当回复
+    else:
+        reply = (raw or "").strip()       # 完全没标记 → 整段就是回复
+    if not reply:
+        return (raw or "").strip(), ""
+    return reply, para
+
+
 class LLMService:
     """LLM 服务：人设驱动 + 短期记忆 + 知识库增强"""
 
@@ -114,10 +164,11 @@ class LLMService:
             mem.pop(0)
 
     def _build_messages(
-        self, message: str, sender: str, kb_context: str = "", playing: str = ""
+        self, message: str, sender: str, kb_context: str = "", playing: str = "",
+        want_paraphrase: bool = False,
     ) -> list[dict]:
         """构建发给 LLM 的完整消息列表"""
-        system_prompt = self._build_system_prompt(kb_context, playing)
+        system_prompt = self._build_system_prompt(kb_context, playing, want_paraphrase)
         messages = [{"role": "system", "content": system_prompt}]
         # 添加该用户的对话历史
         messages.extend(self._get_memory(sender))
@@ -132,7 +183,8 @@ class LLMService:
         )})
         return messages
 
-    def _build_system_prompt(self, kb_context: str = "", playing: str = "") -> str:
+    def _build_system_prompt(self, kb_context: str = "", playing: str = "",
+                             want_paraphrase: bool = False) -> str:
         """根据人设构建 system prompt
 
         playing = 此刻正在播的那句口播（engine 传进来的）。给模型一个"上文"，
@@ -180,17 +232,45 @@ class LLMService:
         if kb_context:
             parts.append(f"\n参考知识：\n{kb_context}")
 
+        if want_paraphrase:
+            parts.append(
+                "\n【输出格式 · 必须严格遵守】只能输出下面两行，不要任何别的内容：\n"
+                "转述：<用**你自己的话**把观众这句概括一下>\n"
+                "回复：<你对观众的正常回复>\n"
+                "「转述」的硬性要求：\n"
+                "· **绝对不要照抄观众的原话**（一个标点都不许原样搬），要改写成主播的口语说法；\n"
+                "· 一句话说清他问的是什么就行，尽量短（不超过 12 个字）；\n"
+                "· 尽量用「问…」这种说法开头（例如「问我人在哪儿」「问能不能便宜点」），"
+                "听着最像主播在转述；\n"
+                "· 不要加引号、不要写「观众说」、不要带「转述」这种词；\n"
+                "· 例：观众说「主播你现在在哪里直播呀」→ 转述写成「问我人在哪儿开播」；\n"
+                "  观众说「这个能不能便宜一点啊老板」→ 转述写成「问我能不能再便宜点」。\n"
+                "「回复」照常写 1~2 句，不要重复转述的内容。"
+            )
+
         return "\n".join(parts)
 
     # ── 弹幕回复生成 ──────────────────────────────────────────────
 
     async def generate_reply(self, message: str, sender: str, playing: str = "") -> str:
-        """为弹幕生成回复（非流式，直接返回完整结果）
+        """为弹幕生成回复（只返回回复正文）—— 兼容老调用方。"""
+        reply, _para = await self.generate_reply_ex(message, sender, playing)
+        return reply
+
+    async def generate_reply_ex(self, message: str, sender: str, playing: str = "",
+                                want_paraphrase: bool = False) -> tuple[str, str]:
+        """为弹幕生成回复，返回 (回复正文, 转述文本)。
+
+        playing        = 此刻正在播的那句（承上启下用）
+        want_paraphrase= 需要「转述」时，让模型在同一次调用里多输出一行 ——
+                         真主播不会把弹幕一字不差念出来，而是**用自己的话概括**
+                         （观众说「主播你现在在哪里直播呀」→ 念成「问我人在哪儿」）。
+                         解析失败时转述返回 ""，调用方会自动换成不带复述的句式。
 
         playing = 此刻正在播的那句（来自 engine），用来让回复承上启下。
         """
         if self.client is None:
-            return ""
+            return "", ""
 
         # 检索知识库
         kb_context = ""
@@ -202,7 +282,7 @@ class LLMService:
             except Exception as e:
                 logger.warning(f"Knowledge base search failed: {e}")
 
-        messages = self._build_messages(message, sender, kb_context, playing)
+        messages = self._build_messages(message, sender, kb_context, playing, want_paraphrase)
 
         try:
             response = await self.client.chat.completions.create(
@@ -212,8 +292,8 @@ class LLMService:
                 temperature=0.8,
             )
             choice = response.choices[0]
-            reply = (choice.message.content or "").strip()
-            if not reply:
+            raw = (choice.message.content or "").strip()
+            if not raw:
                 # 空回复 = 这条弹幕被静默丢掉，必须留痕。
                 # 推理型模型（deepseek-flash、*-reasoner 之类）先输出 reasoning_content，
                 # 那些 token 同样算进 max_tokens；预算被推理吃光时 content 就是空串。
@@ -223,16 +303,19 @@ class LLMService:
                     "LLM 返回空内容（model=%s finish_reason=%s）—— 这条弹幕不回；"
                     "若频繁出现，请换非推理模型（如 deepseek-chat）",
                     self.llm_model, getattr(choice, 'finish_reason', None))
-                return ""
+                return "", ""
 
-            # 记录到记忆
+            # 需要转述时，模型会按「转述：… / 回复：…」两行输出，这里拆开
+            reply, para = _split_para_reply(raw) if want_paraphrase else (raw, "")
+
+            # 记录到记忆（只记正文，别把格式标记记进去）
             self.add_to_memory(sender, "user", message)
             self.add_to_memory(sender, "assistant", reply)
 
-            return reply
+            return reply, para
         except Exception as e:
             logger.error(f"LLM generate failed: {e}")
-            return ""
+            return "", ""
 
     # ── 弹幕聚合回复：一批弹幕 → 一句话术（不是逐条回）─────────────
 

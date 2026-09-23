@@ -28,7 +28,7 @@ import time
 from server.livestream.services.play_queue import QueueItem, PlayQueue
 from server.livestream.services.tts_style import strip_all_and_rate, effective_rate
 from server.livestream.services.danmaku_filter import (
-    DEFAULT_FALLBACK, clean_msg, clean_name, hit_block_word, is_noise,
+    DEFAULT_FALLBACK, clean_msg, clean_name, clean_paraphrase, hit_block_word, is_noise,
     looks_like_injection, parse_templates, parse_words, pick_template,
     render_reply, sanitize_reply,
 )
@@ -174,14 +174,16 @@ class LiveStreamRuntime:
         q.append(now)
         return False
 
-    def _wrap_reply(self, reply: str, sender: str, msg: str, allow_name: bool = True) -> str:
-        """套模板：称呼（读名字）+ 复述（读弹幕原文）都在这一层加。
+    def _wrap_reply(self, reply: str, sender: str, msg: str, para: str = "",
+                    allow_name: bool = True) -> str:
+        """套模板：称呼（读名字）+ 转述（念弹幕）都在这一层加。
 
-        **LLM 只给正文**；念成什么样完全由这里决定 —— 昵称要清洗、原文要清洗，
-        清洗不出来的就自动换一个不带那个占位符的模板。
+        **`para` 是 AI 对观众那句话的"转述"，不是观众原话** —— 真主播从不照抄弹幕，
+        而是概括一下再说（观众说「主播你现在在哪里直播呀」→ 念成「问我人在哪儿」）。
+        转述拿不到/不合格时，带 {msg} 的模板会自动跳过，退化成不带复述的句式。
         """
         name = clean_name(sender, self._name_max, self._block_words) if (self._call_name and allow_name) else ""
-        m = clean_msg(msg, self._msg_max, self._block_words) if self._read_msg else ""
+        m = clean_paraphrase(para, msg, self._msg_max, self._block_words) if self._read_msg else ""
         tpl = pick_template(self._templates, allow_name=self._call_name and allow_name,
                             allow_msg=self._read_msg, has_name=bool(name), has_msg=bool(m))
         out = render_reply(tpl, name, m, reply)
@@ -699,13 +701,15 @@ class LiveStreamRuntime:
             return
         if self.llm is None or not content:
             return
-        raw = await self.llm.generate_reply(content, sender, playing=self._playing_text())
+        raw, para = await self.llm.generate_reply_ex(
+            content, sender, playing=self._playing_text(),
+            want_paraphrase=self._read_msg)      # 要复述才让模型多输出一行转述
         if not raw:
             return
         # ① 输出校验（硬截断 / 重复抑制 / 元词汇丢弃 → 兜底话术）
         body = sanitize_reply(raw, self._max_chars, self._fallback)
-        # ② 套模板（称呼 + 复述原文）；名字/原文洗不出来就自动换模板
-        reply = self._wrap_reply(body, sender, content)
+        # ② 套模板（称呼 + 转述）；名字/转述洗不出来就自动换模板
+        reply = self._wrap_reply(body, sender, content, para)
         if not reply:
             return
         # 日志打全，别截断 —— 排查"这句到底提没提到我的问题"时全靠它
