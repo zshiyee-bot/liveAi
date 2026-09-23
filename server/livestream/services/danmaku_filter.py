@@ -220,12 +220,22 @@ def sanitize_reply(text: str, max_chars: int = 0, fallback: str = "") -> str:
 # ── 回复模板（称呼 / 念原文 那层壳）────────────────────────────────────
 # {reply} LLM 生成的正文   {name} 观众昵称（已清洗）   {msg} 弹幕原文（已清洗）
 DEFAULT_TEMPLATES = [
+    # ① 不带称呼 —— 「读观众名字」关着时用这几条（单独开「念原文」也有句式可用）
     "{reply}",
-    "{name}，{reply}",
-    "{name}宝子，{reply}",
-    "{name}问{msg}，{reply}",
-    # 不带 {name} 的一条：这样「读名字」关着、「念原文」开着时也有句式可用
+    "说到这个，{reply}",
+    "来，我统一回一下，{reply}",
     "有人问{msg}，{reply}",
+    "{msg}，{reply}",
+    # ② 带称呼 —— 「读观众名字」开着时才用；后缀换着来，避免每次都「小明宝子」
+    "{name}，{reply}",
+    "来，{name}，{reply}",
+    "{name}宝子，{reply}",
+    "{name}家人，{reply}",
+    "{name}宝宝，{reply}",
+    "{name}这个问题问得好，{reply}",
+    # ③ 带称呼 + 复述原文 —— 两个开关都开时才用
+    "{name}问{msg}，{reply}",
+    "刚才{name}问{msg}，{reply}",
 ]
 
 

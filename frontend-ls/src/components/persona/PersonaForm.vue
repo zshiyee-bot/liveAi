@@ -200,12 +200,31 @@ const saving = ref(false)
 
 const DEMO_REPLY = '主播就在直播间'
 const PRESET_TEMPLATES = [
+  // ① 不带称呼
   '{reply}',
-  '{name}，{reply}',
-  '{name}宝子，{reply}',
-  '{name}问{msg}，{reply}',
+  '说到这个，{reply}',
+  '来，我统一回一下，{reply}',
   '有人问{msg}，{reply}',
+  '{msg}，{reply}',
+  // ② 带称呼（几种后缀混用）
+  '{name}，{reply}',
+  '来，{name}，{reply}',
+  '{name}宝子，{reply}',
+  '{name}家人，{reply}',
+  '{name}宝宝，{reply}',
+  '{name}这个问题问得好，{reply}',
+  // ③ 带称呼 + 复述原文
+  '{name}问{msg}，{reply}',
+  '刚才{name}问{msg}，{reply}',
 ].join('\n')
+
+const DEFAULT_TEMPLATE_LINES = [
+  '{reply}', '说到这个，{reply}', '来，我统一回一下，{reply}',
+  '有人问{msg}，{reply}', '{msg}，{reply}',
+  '{name}，{reply}', '来，{name}，{reply}', '{name}宝子，{reply}',
+  '{name}家人，{reply}', '{name}宝宝，{reply}', '{name}这个问题问得好，{reply}',
+  '{name}问{msg}，{reply}', '刚才{name}问{msg}，{reply}',
+]
 
 const form = reactive({
   name: '',
@@ -259,7 +278,7 @@ const usableTemplates = computed(() => {
     .split(/\r?\n/)
     .map((l) => l.trim())
     .filter(Boolean)
-  return lines.length ? lines : ['{reply}', '{name}，{reply}', '{name}宝子，{reply}', '{name}问{msg}，{reply}', '有人问{msg}，{reply}']
+  return lines.length ? lines : [...DEFAULT_TEMPLATE_LINES]
 })
 
 function renderTpl(tpl: string, name: string, msg: string, reply: string): string {
