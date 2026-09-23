@@ -10,7 +10,46 @@
 #  标签是中文、看得懂，用户在话术列表里也能直接手改。
 ###############################################################################
 
+import json
+import os
 import re
+
+# ── 总开关 ────────────────────────────────────────────────────────────
+# 实测（2026-09-23）：把一句按标签切成多段、各自语速分别合成，会有"剥离感" ——
+# 每段是独立请求，TTS 不知道前文，语调/气息重置，听起来上句下句不打杠。
+# 所以默认**关掉**（= 还原成之前的样子：标签只被剥掉、不调语速、也不切段）。
+# 想开启：把 data/tts_style.json 里的 enabled 改成 true（或设环境变量 LS_TTS_STYLE=1）。
+_SWITCH_PATH = os.path.join("data", "tts_style.json")
+_ENABLED = None
+
+
+def is_enabled() -> bool:
+    """语气/语速功能总开关（默认关）。文件改了不用重启也要生效 → 每次读一次（很便宜）。"""
+    global _ENABLED
+    env = (os.getenv("LS_TTS_STYLE", "") or "").strip().lower()
+    if env in ("1", "true", "yes", "on"):
+        return True
+    if env in ("0", "false", "no", "off"):
+        return False
+    try:
+        with open(_SWITCH_PATH, encoding="utf-8") as f:
+            _ENABLED = bool(json.load(f).get("enabled"))
+    except Exception:
+        if _ENABLED is None:
+            _ENABLED = False
+    return bool(_ENABLED)
+
+
+def set_enabled(on: bool):
+    """写开关文件（给前端/接口用）。"""
+    global _ENABLED
+    try:
+        os.makedirs(os.path.dirname(_SWITCH_PATH), exist_ok=True)
+        with open(_SWITCH_PATH, "w", encoding="utf-8") as f:
+            json.dump({"enabled": bool(on)}, f, ensure_ascii=False, indent=2)
+    except Exception:
+        pass
+    _ENABLED = bool(on)
 
 # 标签 → 豆包 speech_rate（-50~100，0 = 正常，负数更慢、正数更快）
 RATE_MAP = {

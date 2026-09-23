@@ -24,7 +24,7 @@ import re
 import time
 
 from server.livestream.services.play_queue import QueueItem
-from server.livestream.services.tts_style import split_style, split_style_segments
+from server.livestream.services.tts_style import split_style, split_style_segments, is_enabled as tts_style_enabled
 
 from utils.logger import logger
 
@@ -319,7 +319,7 @@ class LiveStreamRuntime:
         # 「一句里有快有慢」：一行里出现多次语气标签（例 [快]…[慢]…）→ 拆成多条，
         # 每条只剩一个标签、自带语速，依次送出就能连成一整句（听感是连续的快慢变化）。
         # 拆成多条也正好复用现有的记账：每条各自播完事件，预送/正在播放都不会错乱。
-        if item.type == "text":
+        if item.type == "text" and tts_style_enabled():
             segs = split_style_segments(item.content or "")
             if len(segs) > 1:
                 base_id = item.id
@@ -345,6 +345,8 @@ class LiveStreamRuntime:
             # 语气标签：[快]/[慢]… 由 LLM 判断并写在行首 —— 剥掉再送 TTS（不会被念出来），
             # 语速交给豆包：这句该快该慢由内容自己决定
             _txt, _style = split_style(item.content or '')
+            if not tts_style_enabled():
+                _style = {}          # 开关关掉 = 只剥标签、不调语速（还原成默认语速）
             res = await self.adapter.send_text(_txt, utt=utt, priority=priority, tts=_style)
         if isinstance(res, dict) and res.get("code") not in (0, None):
             raise RuntimeError(f"发送失败: {res.get('msg')}")
