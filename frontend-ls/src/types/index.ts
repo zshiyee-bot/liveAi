@@ -11,6 +11,20 @@ export interface PersonaConfig {
   danmaku_batch_trigger: number
   danmaku_batch_wait: number
   danmaku_max_chars: number
+  // ── 弹幕安全（确定性执行，不依赖模型）──
+  danmaku_block_words: string        // 屏蔽词，换行/逗号分隔
+  danmaku_block_mode: string         // 'exact' 整条相同 | 'contains' 只要包含
+  danmaku_block_noise: number        // 1 = 纯数字/纯符号/重复字不回
+  danmaku_inject_filter: number      // 1 = 注入攻击过滤
+  danmaku_max_len: number            // 单条弹幕长度上限，超出不回
+  danmaku_rate_limit: number         // 每人每 10 秒最多回几条
+  danmaku_fallback: string           // 判定异常时的兜底话术
+  // ── 弹幕口播方式（称呼 / 复述原文）──
+  danmaku_call_name: number
+  danmaku_read_msg: number
+  danmaku_name_max: number
+  danmaku_read_msg_max: number
+  danmaku_reply_templates: string    // 模板，一行一个
   updated_at: string | null
 }
 

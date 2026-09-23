@@ -20,11 +20,18 @@
 ###############################################################################
 
 import asyncio
+import collections
+import random
 import re
 import time
 
 from server.livestream.services.play_queue import QueueItem, PlayQueue
 from server.livestream.services.tts_style import strip_all_and_rate, effective_rate
+from server.livestream.services.danmaku_filter import (
+    DEFAULT_FALLBACK, clean_msg, clean_name, hit_block_word, is_noise,
+    looks_like_injection, parse_templates, parse_words, pick_templates,
+    render_reply, sanitize_reply,
+)
 
 from utils.logger import logger
 
@@ -57,6 +64,23 @@ class LiveStreamRuntime:
         self._max_chars = 60
         self._policy = ""
 
+        # ── 弹幕安全 / 口播方式（同样来自人设，见 apply_persona）──
+        #  这些全部是**确定性**的：命中就挡、超长就截，不依赖模型自觉。
+        #  实现都在 services/danmaku_filter.py，这里只存配置 + 调用。
+        self._block_words: list = []         # 屏蔽词
+        self._block_mode = "exact"           # exact = 整条相同（"1" 不误杀「扣1」）
+        self._block_noise = True             # 纯数字/纯符号/重复字 → 不回
+        self._inject_filter = True           # 注入攻击过滤
+        self._dmax_len = 60                  # 单条弹幕长度上限，超出不回
+        self._rate_limit = 3                 # 每人每 10 秒最多回几条
+        self._rate_win: dict = {}            # sender -> deque[时间戳]
+        self._fallback = "这个我就不接了啊，咱们还是聊产品。"
+        self._call_name = False              # 用不用带 {name} 的模板
+        self._read_msg = False               # 用不用带 {msg} 的模板
+        self._name_max = 6
+        self._msg_max = 24
+        self._templates: list = []           # 回复模板（空 = 用内置默认）
+
         self._status_cbs: list = []
 
     @property
@@ -86,6 +110,84 @@ class LiveStreamRuntime:
             self._max_chars = max(10, min(200, int(persona.get("danmaku_max_chars") or 60)))
         except Exception:
             self._max_chars = 60
+
+        # ── 弹幕安全 / 口播方式 ──
+        self._block_words = parse_words(persona.get("danmaku_block_words") or "")
+        self._block_mode = "contains" if persona.get("danmaku_block_mode") == "contains" else "exact"
+        self._block_noise = bool(persona.get("danmaku_block_noise", 1))
+        self._inject_filter = bool(persona.get("danmaku_inject_filter", 1))
+        self._fallback = (persona.get("danmaku_fallback") or "").strip() or DEFAULT_FALLBACK
+        self._call_name = bool(persona.get("danmaku_call_name", 0))
+        self._read_msg = bool(persona.get("danmaku_read_msg", 0))
+        self._templates = parse_templates(persona.get("danmaku_reply_templates") or "")
+        for key, attr, lo, hi, dflt in (
+            ("danmaku_max_len", "_dmax_len", 10, 500, 60),
+            ("danmaku_rate_limit", "_rate_limit", 0, 50, 3),
+            ("danmaku_name_max", "_name_max", 1, 20, 6),
+            ("danmaku_read_msg_max", "_msg_max", 2, 100, 24),
+        ):
+            try:
+                v = int(persona.get(key) if persona.get(key) is not None else dflt)
+                setattr(self, attr, max(lo, min(hi, v)))
+            except Exception:
+                setattr(self, attr, dflt)
+
+    # ── 弹幕安全：进门第一道闸（确定性）─────────────────────────────
+    def _screen(self, content: str, sender: str) -> str | None:
+        """返回挡下的原因；None = 放行。
+
+        顺序有意为之：先看长度（攻击几乎都是长文），再看注入，最后才是屏蔽词。
+        """
+        c = (content or "").strip()
+        if not c:
+            return "空内容"
+        if self._dmax_len and len(c) > self._dmax_len:
+            return f"太长（{len(c)} > {self._dmax_len} 字）"
+        if self._inject_filter:
+            hit = looks_like_injection(c)
+            if hit:
+                return f"疑似注入攻击（{hit[:20]}）"
+        hit = hit_block_word(c, self._block_words, self._block_mode)
+        if hit:
+            return f"命中屏蔽词「{hit}」"
+        if self._block_noise and is_noise(c):
+            return "刷屏噪音（纯数字/纯符号/重复字）"
+        if self._rate_limited(sender):
+            return f"刷屏太快（{self._rate_limit} 条 / 10 秒）"
+        return None
+
+    def _rate_limited(self, sender: str) -> bool:
+        """同一个人 10 秒内超过 N 条 → 后面的先不回（只是不回，不是拉黑）。"""
+        if self._rate_limit <= 0:
+            return False
+        now = time.time()
+        key = (sender or "?").strip() or "?"
+        q = self._rate_win.get(key)
+        if q is None:
+            if len(self._rate_win) > 500:          # 防止字典无限膨胀
+                self._rate_win.clear()
+            q = self._rate_win[key] = collections.deque()
+        while q and now - q[0] > 10.0:
+            q.popleft()
+        if len(q) >= self._rate_limit:
+            return True
+        q.append(now)
+        return False
+
+    def _wrap_reply(self, reply: str, sender: str, msg: str, allow_name: bool = True) -> str:
+        """套模板：称呼（读名字）+ 复述（读弹幕原文）都在这一层加。
+
+        **LLM 只给正文**；念成什么样完全由这里决定 —— 昵称要清洗、原文要清洗，
+        清洗不出来的就自动换一个不带那个占位符的模板。
+        """
+        name = clean_name(sender, self._name_max, self._block_words) if (self._call_name and allow_name) else ""
+        m = clean_msg(msg, self._msg_max, self._block_words) if self._read_msg else ""
+        tpls = pick_templates(self._templates, allow_name=self._call_name and allow_name,
+                              allow_msg=self._read_msg, has_name=bool(name), has_msg=bool(m))
+        out = render_reply(random.choice(tpls), name, m, reply)
+        # 套完再洗一次（防止模板本身拼出怪东西）；**不截断** —— 正文已经限过长了，
+        # 这里再按正文长度截会把刚加上的称呼/原文又砍掉。
+        return sanitize_reply(out, 0, self._fallback)
 
     # ── 状态广播（routes 注入：推给 /ls/ws 的客户端）─────────────
     def on_status(self, cb):
@@ -485,29 +587,41 @@ class LiveStreamRuntime:
     _REPLY_KINDS = ("danmaku", "gift", "follow")
 
     async def _on_danmaku(self, msg):
-        """收到弹幕/礼物/关注：先广播给运营页，再塞进缓冲，由聚合器决定怎么回。"""
+        """收到弹幕/礼物/关注：先过安全闸，再广播，再塞进缓冲由聚合器决定怎么回。
+
+        安全闸（_screen）是**确定性**的：屏蔽词 / 注入攻击 / 超长 / 刷屏噪音 / 刷太快
+        命中就**不回复**。但**照样广播到运营页**（带 blocked 原因）——
+        运营看得见有人在刷屏、也看得见有人在攻击，不会以为消息丢了。
+        """
         kind = getattr(msg, "msg_type", "danmaku") or "danmaku"
+        sender = getattr(msg, "sender", "") or ""
+        content = getattr(msg, "content", "") or ""
+        blocked = self._screen(content, sender) if kind == "danmaku" else None
         await self._emit({
             "type": kind,
             "platform": getattr(msg, "platform", ""),
-            "sender": getattr(msg, "sender", ""),
-            "content": getattr(msg, "content", ""),
+            "sender": sender,
+            "content": content,
             "timestamp": getattr(msg, "timestamp", 0),
+            "blocked": blocked or "",
         })
         self.danmaku_count += 1
 
+        if blocked:
+            logger.info(f"[ls] 弹幕挡下（{blocked}）[{kind}] {sender}: {content[:40]!r}")
+            return
+
         if kind not in self._REPLY_KINDS:
-            logger.debug("[ls] %s 事件只广播不回复：%s", kind, getattr(msg, "sender", ""))
+            logger.debug("[ls] %s 事件只广播不回复：%s", kind, sender)
             return
 
         self._danmaku_buf.append({
             "kind": kind,
-            "sender": getattr(msg, "sender", ""),
-            "content": getattr(msg, "content", ""),
+            "sender": sender,
+            "content": content,
         })
         logger.info(f"[ls] 弹幕入缓冲（{len(self._danmaku_buf)}/{self._batch_trigger}）"
-                    f"[{kind}] {getattr(msg, 'sender', '')}: "
-                    f"{(getattr(msg, 'content', '') or '')[:40]}")
+                    f"[{kind}] {sender}: {content[:40]}")
 
     async def _danmaku_aggregator(self):
         """把缓冲里的弹幕变成播报。
@@ -585,12 +699,20 @@ class LiveStreamRuntime:
             return
         if self.llm is None or not content:
             return
-        reply = await self.llm.generate_reply(content, sender, playing=self._playing_text())
-        if reply:
-            # 日志打全，别截断 —— 排查"这句到底提没提到我的问题"时全靠它
-            logger.info(f"[ls] 弹幕回复 ← {sender}: {content[:24]!r} → {reply}（{len(reply)} 字）")
-            await self.push_priority(reply, source="danmaku",
-                                     metadata={"sender": sender, "original": content})
+        raw = await self.llm.generate_reply(content, sender, playing=self._playing_text())
+        if not raw:
+            return
+        # ① 输出校验（硬截断 / 重复抑制 / 元词汇丢弃 → 兜底话术）
+        body = sanitize_reply(raw, self._max_chars, self._fallback)
+        # ② 套模板（称呼 + 复述原文）；名字/原文洗不出来就自动换模板
+        reply = self._wrap_reply(body, sender, content)
+        if not reply:
+            return
+        # 日志打全，别截断 —— 排查"这句到底提没提到我的问题"时全靠它
+        logger.info(f"[ls] 弹幕回复 ← {sender}: {content[:24]!r} → {reply}（{len(reply)} 字）"
+                    + ("  [已套模板]" if reply != body else ""))
+        await self.push_priority(reply, source="danmaku",
+                                 metadata={"sender": sender, "original": content})
 
     async def _reply_merged(self, batch: list):
         """聚合模式：N 条 → LLM 合并成【一句】；判定全都不值得回应时返回空 → 不回。"""
@@ -617,6 +739,12 @@ class LiveStreamRuntime:
                 except Exception as e:
                     logger.error(f"[ls] 降级逐条回复失败: {e}")
             return
+
+        if merged:
+            # 输出校验 + 套模板。合并模式一批里有好几个人，所以**不加称呼**
+            # （allow_name=False → 带 {name} 的模板自动跳过），也不复述某一条原文。
+            body = sanitize_reply(merged, self._max_chars, self._fallback)
+            merged = self._wrap_reply(body, "", "", allow_name=False)
 
         await self._emit({
             "type": "danmaku_batch",

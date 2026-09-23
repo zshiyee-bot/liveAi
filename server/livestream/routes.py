@@ -413,6 +413,31 @@ async def api_persona_put(request):
                 p.danmaku_batch_wait = max(0.5, min(30.0, float(body['danmaku_batch_wait'])))
             except Exception:
                 pass
+
+        # ── 弹幕安全 / 口播方式（全部确定性执行，见 services/danmaku_filter.py）──
+        if body.get('danmaku_block_words') is not None:
+            p.danmaku_block_words = str(body['danmaku_block_words'])[:2000]
+        if body.get('danmaku_block_mode') in ('exact', 'contains'):
+            p.danmaku_block_mode = body['danmaku_block_mode']
+        if body.get('danmaku_fallback') is not None:
+            p.danmaku_fallback = str(body['danmaku_fallback'])[:200]
+        if body.get('danmaku_reply_templates') is not None:
+            p.danmaku_reply_templates = str(body['danmaku_reply_templates'])[:2000]
+        for k, lo, hi in (
+            ('danmaku_block_noise', 0, 1),
+            ('danmaku_inject_filter', 0, 1),
+            ('danmaku_call_name', 0, 1),
+            ('danmaku_read_msg', 0, 1),
+            ('danmaku_max_len', 10, 500),
+            ('danmaku_rate_limit', 0, 50),
+            ('danmaku_name_max', 1, 20),
+            ('danmaku_read_msg_max', 2, 100),
+        ):
+            if body.get(k) is not None:
+                try:
+                    setattr(p, k, max(lo, min(hi, int(body[k]))))
+                except Exception:
+                    pass
         await s.commit()
         await s.refresh(p)
         d = _persona_norm(p)

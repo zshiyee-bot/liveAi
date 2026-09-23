@@ -40,13 +40,29 @@ def _migrate_add_columns(conn):
     """幂等补列：先 PRAGMA table_info 看缺哪列，再 ALTER TABLE ADD COLUMN。"""
     from sqlalchemy import text
 
-    # 合并版给 persona 加的 4 个「弹幕回复方式」字段（老库补列；新库由 create_all 建好）
+    # 合并版给 persona 加的「弹幕回复方式 / 弹幕安全 / 口播方式」字段
+    # （老库补列；新库由 create_all 建好）
     wanted = {
         "persona": [
             ("danmaku_policy", "TEXT DEFAULT ''"),
             ("danmaku_batch_trigger", "INTEGER DEFAULT 3"),
             ("danmaku_batch_wait", "FLOAT DEFAULT 3.0"),
             ("danmaku_max_chars", "INTEGER DEFAULT 60"),
+            # ── 弹幕安全（确定性执行，见 services/danmaku_filter.py）──
+            # 屏蔽词默认填 "1"、按「整条相同」匹配 → "1" 不会误杀「扣1」
+            ("danmaku_block_words", "TEXT DEFAULT '1'"),
+            ("danmaku_block_mode", "VARCHAR(16) DEFAULT 'exact'"),
+            ("danmaku_block_noise", "INTEGER DEFAULT 1"),
+            ("danmaku_inject_filter", "INTEGER DEFAULT 1"),
+            ("danmaku_max_len", "INTEGER DEFAULT 60"),
+            ("danmaku_rate_limit", "INTEGER DEFAULT 3"),
+            ("danmaku_fallback", "TEXT DEFAULT '这个我就不接了啊，咱们还是聊产品。'"),
+            # ── 弹幕口播方式（称呼 / 复述原文）──
+            ("danmaku_call_name", "INTEGER DEFAULT 0"),
+            ("danmaku_read_msg", "INTEGER DEFAULT 0"),
+            ("danmaku_name_max", "INTEGER DEFAULT 6"),
+            ("danmaku_read_msg_max", "INTEGER DEFAULT 24"),
+            ("danmaku_reply_templates", "TEXT DEFAULT ''"),
         ],
         # 话术分割符：填了就把一条长话术切成多句、逐句播
         # ai_loop：AI 循环话术的配置 JSON（要求/每段条数/剩余句子缓冲…）

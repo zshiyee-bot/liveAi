@@ -19,6 +19,20 @@ class PersonaUpdate(BaseModel):
     danmaku_batch_trigger: int | None = Field(default=None, ge=1, le=50)
     danmaku_batch_wait: float | None = Field(default=None, ge=0.5, le=30.0)
     danmaku_max_chars: int | None = Field(default=None, ge=10, le=200)
+    # 弹幕安全（确定性执行，见 services/danmaku_filter.py）
+    danmaku_block_words: str | None = None
+    danmaku_block_mode: str | None = Field(default=None, pattern="^(exact|contains)$")
+    danmaku_block_noise: int | None = Field(default=None, ge=0, le=1)
+    danmaku_inject_filter: int | None = Field(default=None, ge=0, le=1)
+    danmaku_max_len: int | None = Field(default=None, ge=10, le=500)
+    danmaku_rate_limit: int | None = Field(default=None, ge=0, le=50)
+    danmaku_fallback: str | None = None
+    # 弹幕口播方式（称呼 / 复述原文）
+    danmaku_call_name: int | None = Field(default=None, ge=0, le=1)
+    danmaku_read_msg: int | None = Field(default=None, ge=0, le=1)
+    danmaku_name_max: int | None = Field(default=None, ge=1, le=20)
+    danmaku_read_msg_max: int | None = Field(default=None, ge=2, le=100)
+    danmaku_reply_templates: str | None = None
 
 
 class PersonaResponse(BaseModel):
@@ -32,6 +46,18 @@ class PersonaResponse(BaseModel):
     danmaku_batch_trigger: int = 3
     danmaku_batch_wait: float = 3.0
     danmaku_max_chars: int = 60
+    danmaku_block_words: str = "1"
+    danmaku_block_mode: str = "exact"
+    danmaku_block_noise: int = 1
+    danmaku_inject_filter: int = 1
+    danmaku_max_len: int = 60
+    danmaku_rate_limit: int = 3
+    danmaku_fallback: str = ""
+    danmaku_call_name: int = 0
+    danmaku_read_msg: int = 0
+    danmaku_name_max: int = 6
+    danmaku_read_msg_max: int = 24
+    danmaku_reply_templates: str = ""
     updated_at: str | None = None
 
 

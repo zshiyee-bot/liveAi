@@ -27,6 +27,24 @@ class Persona(Base):
     danmaku_batch_trigger: Mapped[int] = mapped_column(Integer, default=3)  # 触发条数（1 = 逐条回）
     danmaku_batch_wait: Mapped[float] = mapped_column(Float, default=3.0)   # 不足 N 条时的兜底等待（秒）
     danmaku_max_chars: Mapped[int] = mapped_column(Integer, default=60)     # 合并后一句话长度上限（字）
+
+    # ── 弹幕安全（全部**确定性**执行，见 services/danmaku_filter.py）──
+    danmaku_block_words: Mapped[str] = mapped_column(Text, default="1")     # 屏蔽词，换行/逗号分隔
+    danmaku_block_mode: Mapped[str] = mapped_column(String(16), default="exact")  # exact | contains
+    danmaku_block_noise: Mapped[int] = mapped_column(Integer, default=1)    # 纯数字/纯符号/重复字 不回
+    danmaku_inject_filter: Mapped[int] = mapped_column(Integer, default=1)  # 注入攻击过滤
+    danmaku_max_len: Mapped[int] = mapped_column(Integer, default=60)       # 单条弹幕长度上限，超出不回
+    danmaku_rate_limit: Mapped[int] = mapped_column(Integer, default=3)     # 每人每 10 秒最多回几条
+    danmaku_fallback: Mapped[str] = mapped_column(
+        Text, default="这个我就不接了啊，咱们还是聊产品。")                  # 判定异常时的兜底话术
+
+    # ── 弹幕口播方式（称呼 / 念原文）──
+    danmaku_call_name: Mapped[int] = mapped_column(Integer, default=0)      # 是否用带 {name} 的模板
+    danmaku_read_msg: Mapped[int] = mapped_column(Integer, default=0)       # 是否用带 {msg} 的模板
+    danmaku_name_max: Mapped[int] = mapped_column(Integer, default=6)       # 昵称最多几个字
+    danmaku_read_msg_max: Mapped[int] = mapped_column(Integer, default=24)  # 念弹幕原文最多几个字
+    danmaku_reply_templates: Mapped[str] = mapped_column(Text, default="")  # 模板，一行一个
+
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, server_default=func.now(), onupdate=func.now()
     )
@@ -51,6 +69,21 @@ class Persona(Base):
             "danmaku_batch_trigger": self.danmaku_batch_trigger or 3,
             "danmaku_batch_wait": self.danmaku_batch_wait or 3.0,
             "danmaku_max_chars": self.danmaku_max_chars or 60,
+            # 弹幕安全
+            "danmaku_block_words": self.danmaku_block_words
+            if self.danmaku_block_words is not None else "1",
+            "danmaku_block_mode": self.danmaku_block_mode or "exact",
+            "danmaku_block_noise": 1 if self.danmaku_block_noise is None else int(self.danmaku_block_noise),
+            "danmaku_inject_filter": 1 if self.danmaku_inject_filter is None else int(self.danmaku_inject_filter),
+            "danmaku_max_len": self.danmaku_max_len or 60,
+            "danmaku_rate_limit": 3 if self.danmaku_rate_limit is None else int(self.danmaku_rate_limit),
+            "danmaku_fallback": self.danmaku_fallback or "这个我就不接了啊，咱们还是聊产品。",
+            # 弹幕口播方式
+            "danmaku_call_name": int(self.danmaku_call_name or 0),
+            "danmaku_read_msg": int(self.danmaku_read_msg or 0),
+            "danmaku_name_max": self.danmaku_name_max or 6,
+            "danmaku_read_msg_max": self.danmaku_read_msg_max or 24,
+            "danmaku_reply_templates": self.danmaku_reply_templates or "",
             "updated_at": self.updated_at.isoformat() if self.updated_at else None,
         }
 
@@ -70,6 +103,20 @@ class Persona(Base):
             "danmaku_batch_trigger": 3,   # 1 = 逐条回复；≥2 = 攒够 N 条合并成一句
             "danmaku_batch_wait": 3.0,
             "danmaku_max_chars": 60,
+            # 弹幕安全：默认就开着（用户要求"屏蔽词填 1，默认直接过滤弹幕中的 1"）
+            "danmaku_block_words": "1",
+            "danmaku_block_mode": "exact",     # 整条相同才算 → "1" 不会误杀「扣1」
+            "danmaku_block_noise": 1,
+            "danmaku_inject_filter": 1,
+            "danmaku_max_len": 60,
+            "danmaku_rate_limit": 3,
+            "danmaku_fallback": "这个我就不接了啊，咱们还是聊产品。",
+            # 口播方式：默认和以前一样（不带称呼、不复述原文）
+            "danmaku_call_name": 0,
+            "danmaku_read_msg": 0,
+            "danmaku_name_max": 6,
+            "danmaku_read_msg_max": 24,
+            "danmaku_reply_templates": "",
         }
 
 
