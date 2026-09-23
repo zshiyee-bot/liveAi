@@ -17,13 +17,29 @@ import json
 import os
 import random
 import re
+import sys
 import unicodedata
+
+
+def app_dir() -> str:
+    """「规则.json」应该放哪个目录。
+
+    · 普通运行 → 本模块所在目录
+    · 打包成免安装 exe（PyInstaller）后 → **exe 所在目录**
+      （冻结后 __file__ 指向解包出来的临时目录，用户根本看不到、改不了，
+        所以必须用 sys.executable 所在的目录，用户才能把 规则.json 放旁边改）
+    """
+    if getattr(sys, "frozen", False):
+        return os.path.dirname(os.path.abspath(sys.executable))
+    return os.path.dirname(os.path.abspath(__file__))
+
+
+_RULES_PATH = os.path.join(app_dir(), "规则.json")
 
 # ── 可选的外部规则文件 ────────────────────────────────────────────────
 # 同目录放一个「规则.json」就能追加/覆盖规则，**不用改代码**。
 # 独立工具包「弹幕拦截」用的就是它；项目里不放这个文件时，行为与以前完全一致。
 # 只认这几个键：注入正则 / 噪音_同字重复次数 / 默认兜底话术
-_RULES_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "规则.json")
 # 规则文件读失败时的原因（给命令行/界面报警用）。**不能静默**：
 # 实测用记事本或 PowerShell 保存的 json 会带 BOM，用 encoding="utf-8" 读会直接
 # JSONDecodeError → 规则被全部忽略，而用户毫不知情（还在纳闷"我改了怎么没用"）。
