@@ -546,7 +546,8 @@ async def api_scripts_ai_generate(request):
     try:
         per_round = max(1, min(50, int(body.get('count') or body.get('per_round') or 5)))
         rounds = max(1, min(10, int(body.get('rounds') or 1)))
-        max_chars = max(10, min(200, int(body.get('max_chars') or 40)))
+        # 不传 max_chars 就用服务层的随机区间（15~45 字、长短不一，防模板检测）
+        max_chars = max(0, min(200, int(body.get('max_chars') or 0)))
     except Exception:
         return fail("参数不对：count/rounds/max_chars 都要是数字")
 

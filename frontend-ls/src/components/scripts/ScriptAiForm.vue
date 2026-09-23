@@ -62,7 +62,7 @@
           </div>
           <div style="font-size: 12px; color: #909399; line-height: 1.7; margin-top: 4px">
             保存后就是话术库里的普通话术：<b>一行 = 一条</b><span v-if="ai.splitSep.trim()">，每条再按「{{ ai.splitSep }}」切成多句播放</span>。
-            多轮生成会多调几次模型，尽量不重复。
+            每条字数由程序在 <b>15~45 字之间随机、长短不一</b>（真人口播本来就有长有短，长度太整齐容易被判模板）。多轮生成会多调几次模型，尽量不重复。
           </div>
         </div>
       </el-form-item>
@@ -148,7 +148,7 @@ async function handleGenerate() {
       requirements: ai.requirements.trim(),
       count: ai.count,
       rounds: ai.rounds,
-      max_chars: ai.maxChars,
+      // 不传 max_chars：交给后端在 15~45 字之间随机（每条长短不一，更像真人、防模板检测）
     })
     if (!items.length) {
       ElMessage.warning('AI 没有生成内容，换个描述再试')
