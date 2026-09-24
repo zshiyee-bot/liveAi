@@ -59,12 +59,12 @@ except ImportError:
     sys.exit(1)
 
 
-# 不在源头就砍掉的类型（按 ape 方言的编号，normalize() 之后才判断）：
-#   2 = 点赞：量最大（点赞风暴一秒几十条），服务器侧本来也会丢
-#   3 = 进场（"xxx 进入了直播间"）：量也很大而且没有任何互动价值，
-#       转发过来只会把运营页的弹幕流刷乱，所以默认丢掉。
-#   想保留进场：加 --keep-enter（或设置 LS_KEEP_ENTER=1）
-_SKIP_TYPES = {2, 3}
+# ⚠ 转发器**不在源头砍任何类型**（用户要求 2026-09-24）：
+# 点赞(2) / 进场(3) / 关注(4) / 礼物(5) / 统计…**全部原样转发给 LiveAI**，
+# 由服务器那侧决定要不要回、要不要显示（engine._REPLY_KINDS、douyin collector 解析）。
+# 这样只有一个地方有"屏蔽"标准，不会两边打架。
+# 唯一还会丢的是**重复报文**（同一房间开了两份时同一条会到两次）。
+# 旧的 --keep-enter 参数保留但已无意义（现在什么都转发）。
 
 # ── 报文方言 ──────────────────────────────────────────────────────────
 # 抓抖音的工具有两家主流，**Type 编号和字段名不一样**，接错了会"弹幕被当进场回、
@@ -458,6 +458,7 @@ class Forwarder:
         self._lock = threading.Lock()
         self._pending: list = []
         self.sent = 0
+        self.danmaku = 0        # 其中"弹幕(Type=1)"有多少条 —— 用来判断是不是只抓到进场/点赞
         self.fails = 0
         self.dropped = 0
         self.last_note = ""
@@ -466,6 +467,9 @@ class Forwarder:
     def push(self, obj: dict):
         """塞一条待转发的（必须是服务器认的 ape 格式）。"""
         with self._lock:
+            t = obj.get("Type") if obj.get("Type") is not None else obj.get("type")
+            if t == 1:
+                self.danmaku += 1
             self._pending.append(obj)
 
     def flush(self):
@@ -504,10 +508,19 @@ class Forwarder:
             print(f"[提示] 服务器：{note} —— 弹幕收到了，但还没进队列")
 
     def stats_line(self) -> str:
-        s = f"[统计] 已转发 {self.sent} 条（失败 {self.fails} 次"
+        s = f"[统计] 已转发 {self.sent} 条（弹幕 {self.danmaku} 条，失败 {self.fails} 次"
         if self.dropped:
-            s += f"，丢弃 {self.dropped} 条（统计/分享等无关类型）"
-        return s + "）"
+            s += f"，丢弃 {self.dropped} 条（重复报文）"
+        s += "）"
+        # 转发器现在不过滤，所以"有转发但一条弹幕都没有"= 抓到的全是进场/点赞/礼物：
+        # 多半是抓错了房间、或者抓包的没真正接上。光看数字用户不知道怎么办，给出方向。
+        if self.sent > 0 and self.danmaku == 0:
+            s += ("\n  ⚠ 一条弹幕都没抓到，只有进场/点赞/礼物 —— 按顺序确认：\n"
+                  "     ① 那个直播间网页**保持开着**（关掉就抓不到）\n"
+                  "     ② 是「网页/浏览器」方式抓的吗（直播伴侣方式抓不到别人的直播间）\n"
+                  "     ③ 在那个直播间里发一条弹幕试试（安静的房间本来就只有进场/点赞）\n"
+                  "     ④ 抓包工具是不是还开着别的副本：任务管理器结束 WssBarrageServer.exe 再重开")
+        return s
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -535,6 +548,22 @@ def relay_source(args, fwd: Forwarder, stop: threading.Event):
         else:
             suppressed[0] += 1
         print_win[1] += 1
+
+    # 丢弃留痕：只逐条打前 6 条，之后靠统计行 —— 免得进场/点赞把窗口刷爆，
+    # 又能一眼看出"到底是被什么类型挡掉的"（用户实测就是这么卡住的）。
+    drop_shown = [0]
+    def _trace_drop(obj, why: str):
+        if drop_shown[0] >= 6:
+            return
+        drop_shown[0] += 1
+        t = obj.get("Type") if obj.get("Type") is not None else obj.get("type")
+        try:
+            raw_txt = json.dumps(obj, ensure_ascii=False)[:200]
+        except Exception:
+            raw_txt = repr(obj)[:200]
+        print(f"[丢弃] 类型{t}（{why}）原始报文：{raw_txt}")
+        if drop_shown[0] == 6:
+            print("        └ 同类不再逐条打印，之后只看统计行；要看全部就加 --dump")
 
     while not stop.is_set():
         try:
@@ -572,6 +601,7 @@ def relay_source(args, fwd: Forwarder, stop: threading.Event):
                     continue                     # 不是 JSON 就丢，别打断管道
                 if not isinstance(obj, dict):
                     continue
+                raw_obj = obj                    # 归一前的原始报文（丢弃留痕用）
                 # 原始报文 dump（换新抓包工具/新平台时，先看它到底发什么）
                 if args.dump:
                     dump_raw(obj, args.dump_file)
@@ -586,16 +616,17 @@ def relay_source(args, fwd: Forwarder, stop: threading.Event):
                 obj = normalize(obj, dialect)
                 if obj is None:
                     fwd.dropped += 1
+                    _trace_drop(raw_obj, "报文认不出来（方言可能选错了，加 --dialect ape|wushuai 试试）")
                     continue
-                skip = _SKIP_TYPES
-                if args.keep_enter:
-                    skip = _SKIP_TYPES - {3}      # 用户要求保留进场
-                if obj.get("Type") in skip:
-                    fwd.dropped += 1
-                    continue
+                # ⚠ 转发器**不做类型过滤**（用户要求 2026-09-24）：它只当哑管道，
+                # 抓到的原始报文**全部**转给 LiveAI —— 该不该回、要不要显示，
+                # 统一由服务器那侧决定（engine._REPLY_KINDS / douyin collector 的解析），
+                # 免得两边各有一套"屏蔽"标准还互相打架。
+                # 只做两件"管道本身"必须做的事：① 方言归一（否则服务器看不懂）
+                # ② 去重（同一个直播间开了两份时同一条会到两次，那是重复不是新信息）。
                 if dedup.is_dup(obj):
-                    # 同一个直播间开了两份 → 同一条会到两次，这里只留第一次
                     fwd.dropped += 1
+                    _trace_drop(obj, "重复（同一房间是不是开了两份抓包/转发）")
                     continue
                 show(obj)
                 fwd.push(obj)
@@ -761,7 +792,8 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--keep-enter", action="store_true",
                     default=(os.getenv("LS_KEEP_ENTER", "") or "").strip().lower()
                     in ("1", "true", "yes", "on"),
-                    help="保留「进入直播间」消息（默认丢掉：量太大、把弹幕流刷乱）")
+                    help="（已无意义）以前用来保留「进入直播间」，现在转发器不过滤任何类型，"
+                         "所有报文都转发；留着只为兼容老命令")
     ap.add_argument("--dialect", default=os.getenv("LS_DIALECT", "auto"), choices=_DIALECTS,
                     help="抓包工具的报文方言：auto=自动猜（默认）/ ape=DouyinBarrageGrab / "
                          "wushuai=BarrageGrab")

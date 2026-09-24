@@ -463,6 +463,28 @@ def run(cfg: dict) -> int:
 
     print_summary(cfg)
 
+    # ⚠ 抓包工具不在旁边 = 这个 exe 不是从「解压后的整个文件夹」里跑的（典型：在压缩包里
+    #   直接双击 exe，7-Zip 会把它解到临时目录再运行，tools\ 根本不在身边）。
+    #   以前这里会**静默跳过**抓包工具、照常"开始工作"，于是窗口看着一切正常
+    #   却永远收不到弹幕（用户实测就是这么卡住的）。现在直接停在这里说清楚。
+    if cfg.get("platform") in ("douyin", "both") and cfg.get("douyin_mode") != "off" \
+            and not os.path.exists(GRABBER_EXE):
+        print()
+        print("  [错误] 找不到抓包工具，没法抓抖音弹幕：")
+        print(f"         {GRABBER_EXE}")
+        print()
+        print("  原因：这个 exe 不是从「解压后的整个文件夹」里运行的 ——")
+        print("        比如直接在压缩包里双击 exe（系统会把它解到临时目录再跑），")
+        print("        或者只把 exe 单独拷了出来。")
+        print()
+        print("  正确做法：把「弹幕转发-免安装版」这个**文件夹**整个解压/拷出来，")
+        print("            在那个文件夹里双击 弹幕转发.exe（要跟 tools\\ 文件夹在一起）。")
+        print()
+        print("  （只要抓淘宝直播，不需要抓包工具：把平台改成 2) 淘宝直播 就行）")
+        stop_grabber()          # 顺手清掉别人留下的抓包工具进程，免得下次连上它却没数据
+        pause()
+        return 1
+
     proxy_snap = None
     if need_grabber:
         if not _is_admin():
@@ -571,6 +593,7 @@ def main() -> int:
     # 高级用法：直接给参数就跳过向导（兼容老的命令行方式）
     ap.add_argument("--server")
     ap.add_argument("--source", choices=("douyin", "relay", "taobao", "both"))
+    ap.add_argument("--relay", help="抓包工具的中继地址（默认 ws://127.0.0.1:8888）")
     ap.add_argument("--live-id")
     ap.add_argument("--key")
     ap.add_argument("--token")
@@ -600,6 +623,8 @@ def main() -> int:
         cfg = {"platform": args.source, "server": args.server,
                "room_key": args.key or "", "token": args.token or "",
                "taobao_live_id": args.live_id or "", "douyin_mode": "companion"}
+        if args.relay:
+            cfg["relay"] = args.relay      # 以前这里漏了：--relay 传了也被忽略
         return run(cfg)
 
     if args.elevated or args.yes:
