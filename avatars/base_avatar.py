@@ -165,11 +165,21 @@ class BaseAvatar:
             self.tts.put_msg_txt(msg, datainfo, priority=priority)
 
     def drop_queued_talk(self, utt:str) -> dict:
-        """撤回某条「已发来、但还没开播」的话术（弹幕插队用）。
-        ① 从 TTS 待合成队列里抽掉它；
-        ② 从 asr 播放队列里抽掉它已经灌入、但还没被消费的音频帧。
-        正在播的那条不受影响 —— 它的帧早已进入推理管线，不在这两个队列里。"""
-        res = {'utt': utt, 'tts_dropped': 0, 'frames_dropped': 0}
+        """撤回某条「已发来、但**还没开始合成**」的话术（弹幕插队用）。
+
+        只从 TTS 的**待合成**队列里抽掉它。这是唯一能"干净撤回"的时机：
+        那条还没被合成成音频，抽掉就等于它从没来过 —— 一点声音都没有。
+
+        ⚠ 老版本还会去删 asr 播放队列里的音频帧，**那是错的，已经去掉**：
+        那个队列是**预缓冲**的，里面装的正是"马上要播"的音频。删它 =
+        把已经在响/即将响的声音腰斩，用户实测就是「话术刚播一瞬间被收回，
+        转而播弹幕回复」；如果推理管线已经吃掉一部分帧，删剩下的还会造成断续。
+        已经合成出来的就让它播完，弹幕排在它后面（只多等一小句）更自然。
+
+        返回 {'utt', 'tts_dropped'} —— **tts_dropped > 0 才代表真的撤回了**，
+        调用方（engine）靠这个判断该不该把这条件从"已预送"里摘掉。
+        """
+        res = {'utt': utt, 'tts_dropped': 0}
         if not utt:
             return res
         try:
@@ -177,25 +187,6 @@ class BaseAvatar:
                 res['tts_dropped'] = self.tts.drop_msg(utt)
         except Exception as e:
             logger.warning('drop_queued_talk: tts.drop_msg 失败: %s', e)
-        try:
-            q = getattr(getattr(self, 'asr', None), 'queue', None)
-            if q is not None:
-                dq = q.queue
-                keep = []
-                while True:
-                    try:
-                        fr = dq.popleft()
-                    except IndexError:
-                        break
-                    ud = getattr(fr, 'userdata', None) or {}
-                    if ud.get('utt') == utt:
-                        res['frames_dropped'] += 1
-                    else:
-                        keep.append(fr)
-                for fr in keep:
-                    dq.append(fr)
-        except Exception as e:
-            logger.warning('drop_queued_talk: asr 队列清理失败: %s', e)
         return res
     
     def put_audio_frame(self, audio_chunk:NDArray[np.float32], datainfo:dict={}): # 16khz 20ms pcm

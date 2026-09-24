@@ -500,27 +500,49 @@ class LiveStreamRuntime:
                     break
 
     async def _withdraw_scripts(self):
-        """抽回「已预送、还没开播」的**低优话术**（正在播的那条不动）。
+        """抽回「已预送、**且还没开始合成**」的低优话术，给弹幕腾出紧邻的位置。
 
         只抽话术、不动已经排上的弹幕/礼物回复，原因：
           · 目的只是别让话术挡住弹幕的位置；
           · TTS 的 priority=True 是 appendleft（后到的排最前），如果连之前的弹幕
             回复也一起抽回来重发，连发弹幕时回复顺序会颠倒。
+
+        ⚠ **只有真撤回成功（tts_dropped > 0）才把它从 _inflight 里摘掉** ——
+        这一条是用户实测踩出来的两个 bug 的根因：
+
+          · 撤不掉 = 那条**已经开始合成/马上就要响了**（音频帧已经缓冲在播放队列里）。
+            老代码不管成不成功都从 _inflight 摘掉、然后在弹幕后面**重发一遍**，于是：
+              ① 正在响的声音被腰斩 →「话术刚播一瞬间被收回，转而播弹幕回复」；
+              ② 同一条被发了两次 → 音频和队列显示对不上（错位、觉着播的不是显示的那条）。
+          · 撤得掉 = 它还在 TTS 的**待合成**队列里，抽掉就等于从没来过，完全没声音。
+
+        撤不掉的就不动它，让弹幕排在它后面 —— 只多等一小句，但听感是连续的。
         """
         async with self._lock:
-            keep, drop = [], []
-            for i, it in enumerate(self._inflight):
-                if i > 0 and it.source == "script":
-                    drop.append(it)
-                else:
-                    keep.append(it)
-            self._inflight = keep
-        for it in drop:
+            candidates = [it for i, it in enumerate(self._inflight)
+                          if i > 0 and it.source == "script"]
+        moved = []
+        for it in candidates:
+            utt = it.metadata.get("utt", "")
+            if not utt:
+                continue
+            dropped = 0
             try:
-                await self.adapter.drop_queued_talk(it.metadata.get("utt", ""))
+                res = await self.adapter.drop_queued_talk(utt)
+                data = (res or {}).get("data") or {}
+                dropped = int(data.get("tts_dropped") or 0)
             except Exception as e:
-                logger.warning(f"[ls] 撤回预送话术失败: {e}")
-        return drop
+                logger.warning(f"[ls] 撤回预送话术失败（就当没撤）: {e}")
+            if dropped <= 0:
+                # 已经开始合成/在播 → 不摘、不重发，让弹幕排在它后面
+                continue
+            async with self._lock:
+                if it in self._inflight:
+                    self._inflight.remove(it)
+            moved.append(it)
+        if candidates and not moved:
+            logger.info(f"[ls] 预送话术 {len(candidates)} 条已经开始合成，不撤回（弹幕排在它后面）")
+        return moved
 
     async def push_priority(self, text: str, source: str = "danmaku", metadata: dict = None):
         """插队播报：当前这句一定说完，这条紧跟其后（不让预送话术挡在前面）。"""
@@ -697,8 +719,10 @@ class LiveStreamRuntime:
             return
         if self.llm is None or not content:
             return
+        # 不再传 playing：实测把"正在播什么"喂给模型，它会当成"本店在卖什么"（串品类）。
+        # 弹幕回复只依据：观众这句话 + 人设 + 知识库。
         raw, para = await self.llm.generate_reply_ex(
-            content, sender, playing=self._playing_text(),
+            content, sender,
             want_paraphrase=self._read_msg)      # 要复述才让模型多输出一行转述
         if not raw:
             return
@@ -727,8 +751,7 @@ class LiveStreamRuntime:
             return
 
         merged = await self.llm.generate_merged_reply(
-            batch, policy=self._policy, max_chars=self._max_chars,
-            playing=self._playing_text())
+            batch, policy=self._policy, max_chars=self._max_chars)
 
         # merged is None = 调用失败（多半是推理模型把 token 吃光）→ 降级逐条回，别丢弹幕
         if merged is None:
