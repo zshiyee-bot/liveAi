@@ -736,13 +736,15 @@ def taobao_source(args, fwd: Forwarder, stop: threading.Event):
 
 # ══════════════════════════════════════════════════════════════════════
 
-def main() -> int:
-    # 行缓冲：即使用重定向/管道跑，输出也立刻能看到（不然卡在缓冲区里像"没反应"）
-    try:
-        sys.stdout.reconfigure(line_buffering=True)
-    except Exception:
-        pass
+def build_parser() -> argparse.ArgumentParser:
+    """命令行参数表。
 
+    ⚠ **别在别处手搓 Namespace**：转发向导（danmaku_wizard）以前自己拼了一个
+    Namespace，只填了几个字段；后来这里加了 --dump / --dump-file / --probe，
+    向导那边没跟着加，于是「双击向导 → 开始转发」一收到弹幕就崩：
+        AttributeError: 'Namespace' object has no attribute 'dump'
+    现在向导改成用这个解析器解析，字段永远不会再对不上。
+    """
     ap = argparse.ArgumentParser(
         description="把弹幕转发到 LiveTalking 服务器（抓包工具 或 淘宝直播）")
     ap.add_argument("--server", default=os.getenv("LS_SERVER", ""),
@@ -776,7 +778,17 @@ def main() -> int:
                     help="把中继收到的**原始报文**原样打印（换新抓包工具/新平台时先看它发什么）")
     ap.add_argument("--dump-file", default="", metavar="路径",
                     help="配合 --dump：把原始报文按行写进文件（JSONL），方便直接发给我适配字段")
-    args = ap.parse_args()
+    return ap
+
+
+def main() -> int:
+    # 行缓冲：即使用重定向/管道跑，输出也立刻能看到（不然卡在缓冲区里像"没反应"）
+    try:
+        sys.stdout.reconfigure(line_buffering=True)
+    except Exception:
+        pass
+
+    args = build_parser().parse_args()
 
     if args.probe:
         return print_probe(args.probe)

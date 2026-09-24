@@ -415,17 +415,37 @@ def confirm_reuse(cfg: dict) -> bool:
 # ── 主流程 ───────────────────────────────────────────────────────────
 
 def build_args(cfg: dict) -> argparse.Namespace:
-    return argparse.Namespace(
-        server=cfg.get("server") or "http://127.0.0.1:8063",
-        token=cfg.get("token", ""),
-        key=cfg.get("room_key", ""),
-        source=cfg.get("platform", "douyin"),
-        relay=cfg.get("relay", "ws://127.0.0.1:8888"),
-        dialect="auto",
-        live_id=str(cfg.get("taobao_live_id", "") or ""),
-        interval=float(cfg.get("interval", 3) or 3),
-        replay_backlog=int(cfg.get("replay_backlog", 0) or 0),
-    )
+    """把「记住的配置」变成转发器认识的参数。
+
+    ⚠ **必须用转发器自己的参数表**（F.build_parser）解析，不要手搓 Namespace：
+    以前这里是手写的 Namespace，只填了几个字段；后来转发器加了
+    --dump / --dump-file / --probe，向导这边没跟着加 ——
+    结果「双击向导 → 开始转发」一收到弹幕就崩：
+        AttributeError: 'Namespace' object has no attribute 'dump'
+    现在一律走同一个解析器，字段再也不会对不上。
+    """
+    platform = cfg.get("platform", "douyin")
+    # 向导里的 "douyin" 对转发器来说就是"抓包工具的中继"（relay）
+    src = {"douyin": "relay", "relay": "relay",
+           "taobao": "taobao", "both": "both"}.get(platform, "relay")
+    argv = [
+        "--server", str(cfg.get("server") or "http://127.0.0.1:8063"),
+        "--source", src,
+        "--relay", str(cfg.get("relay") or "ws://127.0.0.1:8888"),
+        "--dialect", "auto",
+        "--interval", str(cfg.get("interval") or 3),
+        "--replay-backlog", str(cfg.get("replay_backlog") or 0),
+    ]
+    if cfg.get("token"):
+        argv += ["--token", str(cfg["token"])]
+    if cfg.get("room_key"):
+        argv += ["--key", str(cfg["room_key"])]
+    live_id = str(cfg.get("taobao_live_id") or "").strip()
+    if live_id:
+        argv += ["--live-id", live_id]
+    args = F.build_parser().parse_args(argv)
+    args.platform = platform   # 向导内部还要靠它知道是"抖音那条"还是"淘宝那条"
+    return args
 
 
 def run(cfg: dict) -> int:
@@ -449,7 +469,10 @@ def run(cfg: dict) -> int:
             print()
             print("  抖音抓包工具需要管理员权限（要挂钩直播伴侣/浏览器）。")
             print("  马上会弹一个 UAC 窗口 —— 请点「是」。")
-            if not _elevate_self([os.path.abspath(__file__), "--elevated"]):
+            # 免安装 exe 里 __file__ 指向临时解包目录，提权时必须重启 exe 自己
+            me = ["--elevated"] if getattr(sys, "frozen", False) \
+                else [os.path.abspath(__file__), "--elevated"]
+            if not _elevate_self(me):
                 print("  ✗ 没有拿到管理员权限，抖音这条抓不了。")
                 print("    （淘宝那条不需要管理员权限，可以把平台改成「淘宝直播」再试）")
                 pause()
