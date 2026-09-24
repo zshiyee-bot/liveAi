@@ -32,16 +32,31 @@ import sys
 import threading
 import time
 
-HERE = os.path.dirname(os.path.abspath(__file__))
+def _app_dir() -> str:
+    """配置和抓包工具（tools\\）该在哪个目录找。
+
+    · 源码运行   → 本文件所在目录
+    · 免安装 exe → **exe 所在目录**。冻结后 __file__ 指向临时解包目录，用户根本看不到、
+      也改不了；而「记住的配置」和 tools\\DouyinBarrageGrab 都得放在 exe 旁边才用得上
+      （和 danmaku_filter.app_dir() 是同一个道理）。
+    """
+    if getattr(sys, "frozen", False):
+        return os.path.dirname(os.path.abspath(sys.executable or ""))
+    return os.path.dirname(os.path.abspath(__file__))
+
+
+HERE = _app_dir()
 # 兼容两种摆放：
 #   ① 放在包根目录（老样子，比如 tzlive-Windows-v1.0-final\）
 #   ② 放在根目录下的子文件夹里（服务器包里就是「Windows直播电脑-弹幕工具\」）
 # 第 ② 种情况下 danmaku_forward.py 和 tools\ 都还在上一级，所以按需把上一级
 # 也加进搜索路径 —— 只在隔壁找不到时才加，避免把无关目录塞进 sys.path。
+# （打包成 exe 后 danmaku_forward 已经在包里，不需要也不该改 sys.path。）
 PARENT = os.path.dirname(HERE)
-sys.path.insert(0, HERE)
-if not os.path.exists(os.path.join(HERE, "danmaku_forward.py")):
-    sys.path.insert(0, PARENT)
+if not getattr(sys, "frozen", False):
+    sys.path.insert(0, HERE)
+    if not os.path.exists(os.path.join(HERE, "danmaku_forward.py")):
+        sys.path.insert(0, PARENT)
 
 import danmaku_forward as F                                  # noqa: E402
 
@@ -517,10 +532,12 @@ def run(cfg: dict) -> int:
 
 def main() -> int:
     # 行缓冲：不然输出会卡在缓冲区里，看着像"没反应"
-    try:
-        sys.stdout.reconfigure(line_buffering=True)
-    except Exception:
-        pass
+    # errors=replace：免安装 exe 双击时控制台是本地代码页，偶发字符不该让程序崩掉
+    for _s in (sys.stdout, sys.stderr):
+        try:
+            _s.reconfigure(line_buffering=True, errors="replace")
+        except Exception:
+            pass
 
     ap = argparse.ArgumentParser(description="弹幕转发向导")
     ap.add_argument("--elevated", action="store_true", help="内部用：已提权，别重复提问")
