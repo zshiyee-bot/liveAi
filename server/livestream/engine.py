@@ -30,7 +30,7 @@ from server.livestream.services.tts_style import strip_all_and_rate, effective_r
 from server.livestream.services.danmaku_filter import (
     DEFAULT_FALLBACK, clean_msg, clean_name, clean_paraphrase, hit_block_word, is_noise,
     looks_like_injection, parse_templates, parse_words, pick_template,
-    render_reply, sanitize_reply, screen,
+    render_reply, sanitize_reply, screen, ungrounded_mentions,
 )
 
 from utils.logger import logger
@@ -704,6 +704,32 @@ class LiveStreamRuntime:
         except Exception:
             return ""
 
+    def _product_scope(self) -> str:
+        """我们自己提供过的商品语料：正在播 / 已预送的**话术**（剥掉语气标签）。
+
+        ⚠ 只收 `script`（商家自己写的话术），**不收弹幕回复** —— 回复是模型生成的，
+        拿它当依据等于没依据（编一次以后就永远"有据可查"了）。
+        """
+        try:
+            return "\n".join(
+                (strip_all_and_rate(it.content or "")[0] or "")
+                for it in (self._inflight or []) if it.source == "script")
+        except Exception:
+            return ""
+
+    def _reply_scope(self, msg: str = "") -> str:
+        """弹幕回复的**商品接地范围**：观众这句 + 参考知识 + 人设 + 正在播的话术。
+
+        回复里出现的商品必须在这个范围里出现过，否则就是模型自己编的
+        （实测踩过：卖狗粮、观众只说「你好」，它答「看看我家婴儿车」）。
+        """
+        try:
+            llm_scope = self.llm.last_scope() if self.llm is not None else ""
+        except Exception:
+            llm_scope = ""
+        parts = [llm_scope, msg or "", self._product_scope()]
+        return "\n".join(p for p in parts if p)
+
     async def _reply_single(self, item: dict):
         """逐条模式：一条弹幕 → 一句回复；礼物/关注用固定话术。"""
         kind = item.get("kind") or "danmaku"
@@ -726,10 +752,20 @@ class LiveStreamRuntime:
             want_paraphrase=self._read_msg)      # 要复述才让模型多输出一行转述
         if not raw:
             return
-        # ① 输出校验（硬截断 / 重复抑制 / 元词汇丢弃 → 兜底话术）
-        body = sanitize_reply(raw, self._max_chars, self._fallback)
-        # ② 套模板（称呼 + 转述）；名字/转述洗不出来就自动换模板
-        reply = self._wrap_reply(body, sender, content, para)
+        # 商品接地检查（最后一道闸，确定性）：模型编了一个我们自己资料里根本没有的商品
+        # （实测：卖狗粮、观众只发「你好」，它答「看看我家婴儿车」）→ 整条换兜底话术。
+        # 白名单 = 观众这句 + 参考知识 + 人设 + 我们自己正在播的话术。
+        allowed = self._reply_scope(content)
+        bad = ungrounded_mentions(raw, allowed)
+        if bad:
+            logger.warning(f"[ls] 这条回复里编了我们没提供过的商品 {bad} → 整条换兜底话术。"
+                           f"原文：{raw!r}")
+            body = reply = self._fallback
+        else:
+            # ① 输出校验（硬截断 / 重复抑制 / 元词汇丢弃 → 兜底话术）
+            body = sanitize_reply(raw, self._max_chars, self._fallback, allowed=allowed)
+            # ② 套模板（称呼 + 转述）；名字/转述洗不出来就自动换模板
+            reply = self._wrap_reply(body, sender, content, para)
         if not reply:
             return
         # 日志打全，别截断 —— 排查"这句到底提没提到我的问题"时全靠它
@@ -766,8 +802,17 @@ class LiveStreamRuntime:
         if merged:
             # 输出校验 + 套模板。合并模式一批里有好几个人，所以**不加称呼**
             # （allow_name=False → 带 {name} 的模板自动跳过），也不复述某一条原文。
-            body = sanitize_reply(merged, self._max_chars, self._fallback)
-            merged = self._wrap_reply(body, "", "", allow_name=False)
+            allowed = self._reply_scope(
+                " ".join((b.get("content") or "") for b in batch))
+            bad = ungrounded_mentions(merged, allowed)
+            if bad:
+                logger.warning(f"[ls] 合并回复里编了我们没提供过的商品 {bad} → 换兜底话术。"
+                               f"原文：{merged!r}")
+                merged = self._fallback
+            else:
+                body = sanitize_reply(merged, self._max_chars, self._fallback,
+                                      allowed=allowed)
+                merged = self._wrap_reply(body, "", "", allow_name=False)
 
         await self._emit({
             "type": "danmaku_batch",

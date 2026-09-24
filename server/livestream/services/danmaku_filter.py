@@ -20,6 +20,12 @@ import re
 import sys
 import unicodedata
 
+try:                                    # 项目内跑 → 用统一的日志（跟其它模块一致）
+    from utils.logger import logger
+except Exception:                       # 独立包/免安装版里没有它 → 保持零依赖
+    import logging
+    logger = logging.getLogger(__name__)
+
 
 def app_dir() -> str:
     """「规则.json」应该放哪个目录。
@@ -303,10 +309,111 @@ def _hard_trim(t: str, limit: int) -> str:
     return head
 
 
-def sanitize_reply(text: str, max_chars: int = 0, fallback: str = "") -> str:
+# ── 商品接地检查：不许提"我们自己从没提供过"的商品 ─────────────────────
+# 实测踩过（用户报的）：观众只发一句「你好」，回复里凭空冒出「看看我家婴儿车」——
+# 参考知识里是狗粮、人设里也没提车，那句就是模型自己编的。光在提示词里写"不要编"
+# 挡不住（模型觉得自己在帮主播卖货），所以这里加一道**确定性**的闸。
+#
+# 做法是**通用**的、不写死任何类目：
+#   白名单 = 我们自己提供过的文字（参考知识 + 人设 + 观众这句 + 正在播的话术）
+#   命中白名单以外的"商品提法" → 判定为编造 → 整条换兜底话术
+# 两道网：
+#   ① 常见品类词表 —— 「婴儿车才几十块」这种裸提法
+#   ② 「我家/咱家/我们家 + X」占有式提法 —— X 不在词表里也能抓（配合后缀判断）
+COMMON_CATEGORY_WORDS = frozenset("""
+婴儿车 童车 伞车 遛娃车 学步车 平衡车 滑板车 自行车 电动车 三轮车 玩具车 扭扭车
+安全座椅 婴儿床 爬行垫 餐椅 背带 腰凳 奶瓶 奶嘴 奶粉 米粉 辅食 磨牙棒 纸尿裤 拉拉裤 尿不湿
+湿巾 棉柔巾 洗澡盆 浴盆 隔尿垫 防走失带 童装 童鞋 爬服 抱被 睡袋 玩具 积木 拼图 绘本
+图书 文具 笔袋 水彩笔 课桌 书包 手办 模型 盲盒 玩偶 公仔 抱枕
+狗粮 猫粮 猫砂 狗窝 猫爬架 牵引绳 猫条 冻干 罐头 化毛膏 驱虫药 益生菌 宠物 狗绳 猫抓板
+零食 坚果 果干 蜜饯 辣条 薯片 饼干 蛋糕 面包 巧克力 糖果 冰淇淋 方便面 螺蛳粉 火锅底料
+牛肉干 火腿肠 鸡蛋 大米 面粉 食用油 酱油 食醋 食盐 白糖 蜂蜜 牛奶 酸奶 咖啡 茶叶 茶包
+饮料 果汁 矿泉水 啤酒 白酒 红酒 保健品 维生素 钙片 蛋白粉 鱼油 胶原蛋白 代餐 燕窝 阿胶
+手机 电脑 平板 笔记本 耳机 音箱 手表 手环 相机 摄像机 投影仪 充电宝 数据线 充电器 插排
+键盘 鼠标 显示器 电视 冰箱 洗衣机 空调 风扇 加湿器 净化器 扫地机器人 电饭煲 空气炸锅
+电水壶 榨汁机 破壁机 微波炉 烤箱 电磁炉 锅具 不粘锅 刀具 砧板 保鲜盒 水杯 保温杯 餐具
+洗碗机 消毒柜 热水器 浴霸 马桶 花洒 台灯 灯泡 插座 开关 收纳箱 收纳柜 置物架 晾衣架
+垃圾桶 拖把 扫把 抹布 纸巾 抽纸 卷纸 垃圾袋 洗衣液 洗洁精 消毒液 除螨仪 吸尘器
+牙膏 牙刷 洗发水 护发素 沐浴露 洗面奶 面膜 精华 面霜 眼霜 防晒霜 护手霜 身体乳 口红
+唇膏 粉底 气垫 遮瑕 眼影 眼线 睫毛膏 腮红 卸妆水 香水 美甲 化妆刷 美容仪 吹风机 卷发棒
+剃须刀 电动牙刷 冲牙器 卫生巾 口罩 创可贴 体温计 血压计 血糖仪 按摩仪 颈椎枕 护腰
+护膝 泡脚桶 瑜伽垫 哑铃 跳绳 跑步机 帐篷 登山鞋 钓鱼竿 羽毛球拍
+衣服 外套 夹克 羽绒服 卫衣 毛衣 衬衫 打底衫 裤子 牛仔裤 裙子 连衣裙 睡衣 内衣 内裤 袜子
+拖鞋 运动鞋 皮鞋 靴子 帽子 围巾 手套 腰带 眼镜 太阳镜 墨镜 首饰 项链 耳环 手链 戒指
+包包 背包 双肩包 行李箱 钱包 手机壳 贴膜
+床垫 枕头 被子 被套 四件套 床单 毛毯 地毯 沙发 茶几 餐桌 书桌 椅子 板凳 衣柜 鞋柜
+酒柜 书架 床架 床头柜 窗帘 门帘
+""".split())
+
+# 「我家/咱家/我们家 + X」：X 会被单独拎出来看是不是商品
+_PRODUCT_POSSESS_RE = re.compile(
+    r"(?:我家|咱家|我们家|咱们家|本店|小店|店里|咱这店)(?:的)?"
+    r"([\u4e00-\u9fa5A-Za-z0-9]{1,6})")
+# 占有式提法里明确**不是商品**的（人/关系/泛指）—— 免得「我家孩子」被误判
+_NOT_PRODUCT = frozenset("""
+孩子 娃 娃儿 儿子 女儿 宝宝 老人 父母 爸妈 老爸 老妈 老婆 老公 家人 家里人 家里 兄弟 姐妹
+哥哥 姐姐 弟弟 妹妹 爷爷 奶奶 姥姥 姥爷 闺女 孙子 孙女 宠物 狗 猫 猫咪 狗狗 东西 货 宝贝
+产品 生意 直播间 直播 团队 客服 仓库 工厂 店 档口 供应商 货源 伙伴 客人 客户 粉丝 观众
+""".split())
+# 词表里没有、但一看就是商品的后缀（「我家蒸汽眼罩」这种也能兜住）
+_PRODUCT_SUFFIX = (
+    "车", "机", "器", "包", "袋", "盒", "杯", "锅", "刀", "鞋", "衣", "裤", "袜", "帽",
+    "表", "镜", "灯", "椅", "桌", "床", "柜", "架", "垫", "毯", "帘", "纸", "笔", "书",
+    "盘", "线", "套", "碗", "勺", "壶", "罐", "瓶", "伞", "球", "板", "网", "绳", "刷",
+    "巾", "膜", "贴", "箱", "桶", "盆", "扇", "钟", "秤", "仪", "棒", "粉", "膏", "霜",
+    "液", "乳", "油", "片", "丸", "剂", "糖", "茶", "酒", "米", "奶", "粮", "药", "窝",
+    "笼", "罩", "枕", "席", "环", "链", "珠", "铃", "筒", "管", "圈", "袍", "裙", "夹",
+    "神器", "好物", "款式", "型号", "套装", "组合",
+)
+
+
+def _looks_like_product(x: str) -> bool:
+    """X 像不像一个商品：整体/前 2~4 字命中词表，或者以商品后缀结尾。"""
+    if len(x) >= 2:
+        for n in (len(x), 4, 3, 2):
+            if x[:n] in COMMON_CATEGORY_WORDS:
+                return True
+    return len(x) >= 2 and x.endswith(_PRODUCT_SUFFIX)
+
+
+def product_mentions(text: str) -> list[str]:
+    """从回复里挑出所有"商品提法"（去重、保序）——不判断接不接地。"""
+    t = speakable(text, 0) or (text or "")
+    out: list[str] = []
+    for w in sorted(COMMON_CATEGORY_WORDS, key=len, reverse=True):
+        if w in t and w not in out:
+            out.append(w)
+    for m in _PRODUCT_POSSESS_RE.finditer(t):
+        x = m.group(1)
+        if len(x) < 2 or x in _NOT_PRODUCT:
+            continue
+        if any(w in x for w in out):        # 「奶粉」已经抓到了，「奶粉啊」不用再报一次
+            continue
+        if _looks_like_product(x) and x not in out:
+            out.append(x)
+    return out
+
+
+def ungrounded_mentions(reply: str, allowed: str = "") -> list[str]:
+    """回复里**凭空出现**的商品提法（allowed 里没有的）。
+
+    allowed 必须是"我们自己提供过的文字"：参考知识 + 人设 + 观众这句 + 正在播的话术。
+    allowed 为空时不做检查（返回 []）——宁可漏判，也不能把正常回复全兜底了。
+    """
+    if not (allowed or "").strip():
+        return []
+    a = allowed or ""
+    return [w for w in product_mentions(reply) if w not in a]
+
+
+def sanitize_reply(text: str, max_chars: int = 0, fallback: str = "",
+                   allowed: str = "") -> str:
     """把回复洗成"能直接送 TTS"的样子；判定为异常就返回兜底话术。
 
     max_chars = 0 表示不截断（套完模板后已经有确定性上限了）。
+    allowed  = 我们自己提供过的文字（参考知识+人设+弹幕+正在播的话术）。
+               传了它就会做"商品接地检查"：回复里出现了我们没提供过的商品 → 整条换兜底，
+               宁可少说一句，也不能让数字人凭空报出一个店里根本没有的货。
     """
     fb = (fallback or DEFAULT_FALLBACK).strip()
     t = _PREFIX_RE.sub("", (text or "").strip())
@@ -322,6 +429,11 @@ def sanitize_reply(text: str, max_chars: int = 0, fallback: str = "") -> str:
     if before >= 6 and len(collapsed) <= before * 0.4:
         return fb
     t = collapsed
+    # 商品接地检查：回复里蹦出我们资料中根本没有的货 → 整条不要（走兜底）
+    bad = ungrounded_mentions(t, allowed)
+    if bad:
+        logger.warning("回复里出现我们没提供过的商品 %s → 整条换成兜底话术", bad)
+        return fb
     if max_chars > 0 and len(t) > max_chars:
         t = _hard_trim(t, max_chars)
     t = t.strip()

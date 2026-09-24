@@ -9,6 +9,7 @@ from typing import AsyncIterator
 
 from openai import AsyncOpenAI
 from server.livestream.config import load_settings
+from server.livestream.services.danmaku_filter import ungrounded_mentions
 from utils.logger import logger
 
 # 标点符号列表 — 用于流式分句
@@ -146,6 +147,26 @@ class LLMService:
         self._memory_window = _cfg.memory_window_size
         # 知识库（延迟初始化）
         self._knowledge_base = None
+        # 上一条回复"允许提到的内容"（观众这句 + 参考知识 + 人设）—— 商品接地检查用
+        self._last_scope = ""
+
+    # ── 接地范围（商品接地检查）────────────────────────────────────
+
+    def last_scope(self) -> str:
+        """上一条回复"允许提到的内容"：观众这句 + 参考知识 + 人设。
+
+        engine 拿它做**商品接地检查**（见 danmaku_filter.ungrounded_mentions）：
+        回复里出现的商品，必须在这个范围里出现过，否则就是模型自己编的。
+        实测踩过：卖狗粮、观众只发「你好」，它答「看看我家婴儿车」。
+        """
+        return self._last_scope
+
+    def _scope_text(self, message: str = "", kb_context: str = "") -> str:
+        """把"我们自己提供过的文字"拼成一段，供接地检查当白名单。"""
+        p = self.persona or {}
+        bits = [message or "", kb_context or ""]
+        bits += [p.get(k) or "" for k in ("name", "personality", "style", "knowledge_scope")]
+        return "\n".join(str(b) for b in bits if str(b).strip())
 
     # ── 记忆管理 ──────────────────────────────────────────────────
 
@@ -233,6 +254,12 @@ class LLMService:
             "靠猜商品名会答出完全不相干的东西（实测踩过：卖狗粮却被答成婴儿车）。"
             "参考知识里没有的事实（价格/参数/库存），就用「我看看啊」「这个得问客服确认」"
             "这类真实主播的说法带过，**不要编**。",
+            "13. **绝对不许凭空提商品**：你回复里出现的商品、品类、型号，"
+            "必须来自上面「参考知识」或观众这句弹幕。参考知识里没有、观众也没提商品时"
+            "（比如观众只说「你好」「在吗」），就**纯寒暄**，"
+            "**绝不许说「我家/咱家/我们家的XX」「这款XX」这种带商品的句子**"
+            "（实测踩过：观众只发了句「你好」，回复里凭空冒出「看看我家婴儿车」）。"
+            "拿不准就不说 —— 宁可少说一句，也不能编出一个店里根本没有的货。",
         ])
 
         # ⚠ 「主播此刻正在讲什么」**故意不再注入**。
@@ -294,18 +321,26 @@ class LLMService:
             except Exception as e:
                 logger.warning(f"Knowledge base search failed: {e}")
 
-        messages = self._build_messages(message, sender, kb_context, playing, want_paraphrase)
+        # 这条回复"允许提到什么"（观众这句 + 参考知识 + 人设）→ engine 做商品接地检查用
+        scope = self._scope_text(message, kb_context)
+        self._last_scope = scope
 
-        try:
-            response = await self.client.chat.completions.create(
+        async def _ask(extra_rule: str = ""):
+            """发一次请求；extra_rule 会追加到 system prompt 末尾。"""
+            msgs = self._build_messages(message, sender, kb_context, playing,
+                                        want_paraphrase)
+            if extra_rule:
+                msgs[0] = {"role": "system",
+                           "content": msgs[0]["content"] + "\n" + extra_rule}
+            resp = await self.client.chat.completions.create(
                 model=self.llm_model,
-                messages=messages,
+                messages=msgs,
                 max_tokens=800,
                 temperature=0.8,
             )
-            choice = response.choices[0]
-            raw = (choice.message.content or "").strip()
-            if not raw:
+            ch = resp.choices[0]
+            txt = (ch.message.content or "").strip()
+            if not txt:
                 # 空回复 = 这条弹幕被静默丢掉，必须留痕。
                 # 推理型模型（deepseek-flash、*-reasoner 之类）先输出 reasoning_content，
                 # 那些 token 同样算进 max_tokens；预算被推理吃光时 content 就是空串。
@@ -314,11 +349,39 @@ class LLMService:
                 logger.warning(
                     "LLM 返回空内容（model=%s finish_reason=%s）—— 这条弹幕不回；"
                     "若频繁出现，请换非推理模型（如 deepseek-chat）",
-                    self.llm_model, getattr(choice, 'finish_reason', None))
+                    self.llm_model, getattr(ch, 'finish_reason', None))
+            return txt
+
+        try:
+            raw = await _ask()
+            if not raw:
                 return "", ""
 
-            # 需要转述时，模型会按「转述：… / 回复：…」两行输出，这里拆开
+            # 拆「转述 / 回复」两行
             reply, para = _split_para_reply(raw) if want_paraphrase else (raw, "")
+
+            # 商品接地检查：模型编了一个我们自己都没提供过的商品（实测：观众只说「你好」，
+            # 它答「看看我家婴儿车」）→ 给它一次机会，明确点名不许提商品，重写一条。
+            # 还编就交给 engine 的兜底（sanitize_reply 那一层），绝不把编的货念出去。
+            bad = ungrounded_mentions(reply, scope)
+            if bad:
+                logger.warning("LLM 回复里编出了我们没提供过的商品 %s → 重写一次", bad)
+                raw2 = await _ask(
+                    "【本条硬性补充】刚才那版里出现了我们根本没有的商品 —— "
+                    "**这一条回复里绝对不许出现任何商品名、品类名、型号、"
+                    "也不许说「我家/咱家的XX」**：参考知识里没有的就当没有，"
+                    "只回观众问的那件事本身（寒暄就纯寒暄）。现在重新输出一次，"
+                    + ("并且仍然要严格遵守「转述：… / 回复：…」两行格式。" if want_paraphrase
+                       else "只输出回复正文。"))
+                if raw2:
+                    r2, p2 = _split_para_reply(raw2) if want_paraphrase else (raw2, "")
+                    if not ungrounded_mentions(r2, scope):
+                        reply, para = r2, (p2 or para)
+                    else:
+                        # 重写还是编 → 留着原样返回，由 engine 那层换成兜底话术
+                        # （那里有"观众这句 + 人设 + 正在播的话术"的完整白名单，判断更准）
+                        logger.warning("重写后仍然编商品 %s → 交给 engine 兜底",
+                                       ungrounded_mentions(r2, scope))
 
             # 记录到记忆（只记正文，别把格式标记记进去）
             self.add_to_memory(sender, "user", message)
@@ -385,6 +448,10 @@ class LLMService:
 
         # 合并后总量上限 6 段（避免 prompt 太长、也避免不同问题的知识互相干扰）
         kb_context = "\n".join((d.page_content or "").strip() for d in kb_docs[:6])
+
+        # 这批回复"允许提到什么"（观众这批内容 + 参考知识 + 人设）→ engine 做接地检查用
+        self._last_scope = self._scope_text(
+            "\n".join((it.get("content") or "") for it in batch), kb_context)
 
         parts = [
             f"你是{p.get('name', '小助手')}，一位正在直播的主播。",
@@ -468,6 +535,35 @@ class LLMService:
         limit = max(20, int(max_chars)) + 20
         if len(reply) > limit:
             reply = reply[:limit]
+
+        # 商品接地检查：合并回复里编出了我们自己没提供过的商品 → 明确点名，重写一次
+        bad = ungrounded_mentions(reply, self._last_scope)
+        if bad:
+            logger.warning("[ls] 合并回复里编出了我们没提供过的商品 %s → 重写一次", bad)
+            try:
+                resp2 = await self.client.chat.completions.create(
+                    model=self.llm_model,
+                    messages=[
+                        {"role": "system", "content": "\n".join(parts) + (
+                            "\n【本条硬性补充】刚才那版里出现了我们根本没有的商品 —— "
+                            "**这一句里绝对不许出现任何商品名、品类名、型号，"
+                            "也不许说「我家/咱家的XX」**：参考知识里没有的就当没有，"
+                            "只回应观众问的那件事本身。现在重新输出一次，只输出这一句话。")},
+                        {"role": "user", "content": "请直接给出这一句话。"},
+                    ],
+                    max_tokens=2000,
+                    temperature=0.8,
+                )
+                r2 = " ".join((resp2.choices[0].message.content or "").split())
+                r2 = r2.strip().strip('"').strip("'").strip("“”").strip()
+                if r2 and not r2.upper().startswith("SKIP") and not ungrounded_mentions(
+                        r2, self._last_scope):
+                    reply = r2[:limit]
+                else:
+                    logger.warning("[ls] 合并回复重写后仍然编商品 %s → 交给兜底",
+                                   ungrounded_mentions(r2, self._last_scope))
+            except Exception as e:
+                logger.error(f"LLM merged reply retry failed: {e}")
         return reply
 
     # ── 话术生成（话术管理里的「AI 生成话术」）──────────────────────
