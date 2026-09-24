@@ -27,7 +27,8 @@ class LocalAvatarAdapter:
     def __init__(self):
         self._session_id = ""
         self._running = False
-        self._playback_callbacks = []       # 播完一条 -> 回调
+        self._playback_callbacks = []       # 播完一条 -> 回调 cb(utt)
+        self._start_callbacks = []          # 某条真的开始播了 -> 回调 cb(utt)
         self._msgqueues = {}                # sessionid -> queue.Queue
         self._tasks = {}                    # sessionid -> asyncio.Task
         self._connected = False
@@ -136,9 +137,18 @@ class LocalAvatarAdapter:
         except Exception:
             return False
 
-    # ── 播放结束事件（替代 GET /sse）─────────────────────────────
+    # ── 播放状态事件（替代 GET /sse）─────────────────────────────
     def on_playback_ended(self, cb):
+        """播完一条 → cb(utt)。utt 是那条的编号，可能为空串（老 TTS 不带）。"""
         self._playback_callbacks.append(cb)
+
+    def on_playback_started(self, cb):
+        """某条**真的开始播**了 → cb(utt)。
+
+        事件是跟着音频帧走的（TTS 的第一帧被送到客户端时才发），所以它代表"此刻
+        观众耳朵里响的是这条"，比"上一条播完了"更准 —— 引擎用它把「正在播放」对齐。
+        """
+        self._start_callbacks.append(cb)
 
     async def connect(self):
         """订阅当前会话的播放状态事件。"""
@@ -162,7 +172,11 @@ class LocalAvatarAdapter:
         logger.info(f"[ls] 已订阅会话 {sid[:8]} 的播放事件")
 
     async def _reader(self, sid: str, q: queue.Queue, sess):
-        """轮询 msgqueue（与 /sse 同一数据源），status=='end' 时派发回调。"""
+        """轮询 msgqueue（与 /sse 同一数据源），派发 start / end 事件。
+
+        事件里**带 utt**（TTS 的 eventpoint 会 update datainfo，里面有 utt）——
+        所以回调都带 utt 参数，让引擎能"对号入座"，而不是盲着 pop 队首。
+        """
         while self._running:
             try:
                 while True:
@@ -171,21 +185,29 @@ class LocalAvatarAdapter:
                     except queue.Empty:
                         break
                     status = None
+                    utt = ""
                     try:
                         data = json.loads(msg)
                         status = data.get('status')
+                        utt = data.get('utt') or ""
                     except Exception:
                         continue
-                    if status == 'end':
-                        logger.info("[ls] 播放结束（事件）")
-                        for cb in list(self._playback_callbacks):
-                            try:
-                                if asyncio.iscoroutinefunction(cb):
-                                    await cb()
-                                else:
-                                    cb()
-                            except Exception as exc:
-                                logger.warning(f"[ls] 播放结束回调异常: {exc}")
+                    if status == 'start':
+                        logger.info("[ls] 开始播放（事件）utt=%s", utt or '-')
+                        cbs = list(self._start_callbacks)
+                    elif status == 'end':
+                        logger.info("[ls] 播放结束（事件）utt=%s", utt or '-')
+                        cbs = list(self._playback_callbacks)
+                    else:
+                        continue
+                    for cb in cbs:
+                        try:
+                            if asyncio.iscoroutinefunction(cb):
+                                await cb(utt)
+                            else:
+                                cb(utt)
+                        except Exception as exc:
+                            logger.warning(f"[ls] 播放事件回调异常: {exc}")
             except Exception as e:
                 logger.warning(f"[ls] 事件读取异常: {e}")
             await asyncio.sleep(0.01)
@@ -205,6 +227,7 @@ class LocalAvatarAdapter:
                 pass
         self._msgqueues.clear()
         self._playback_callbacks.clear()
+        self._start_callbacks.clear()
         logger.info("[ls] 适配器已断开")
 
 

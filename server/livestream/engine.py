@@ -328,6 +328,7 @@ class LiveStreamRuntime:
                                f"，请先在 index.html 点「开始连接」建立会话")
         await self.adapter.connect()
         self.adapter.on_playback_ended(self.on_playback_end)
+        self.adapter.on_playback_started(self.on_playback_start)
 
         # 3. 队列自动补位
         await queue.start_auto_fill(min_size=min_size, interval=interval)
@@ -561,11 +562,58 @@ class LiveStreamRuntime:
             except Exception as e:
                 logger.error(f"[ls] 补发撤回项失败: {e}")
 
-    async def on_playback_end(self):
-        """收到播放结束事件：腾出窗口并立刻补位（保证下一条早已在队列里）。"""
+    async def on_playback_start(self, utt: str = ""):
+        """收到「某条**真的开始播**」事件 → 把「正在播放」对齐到实际在响的那条。
+
+        事件跟着音频第一帧走，所以这就是"观众耳朵里此刻响的是这条"。
+        它比"上一条播完了"更可靠：中间那些**没播就被跳过**的（合成失败、被撤回、
+        end 事件丢了）会在这里一并清掉，队列显示不会错位一格。
+        没有 utt（老 TTS）时什么都不做 —— 保持原来的行为。
+        """
+        if not utt or not self._inflight:
+            return
+        skipped = []
+        async with self._lock:
+            idx = None
+            for i, it in enumerate(self._inflight):
+                if ((it.metadata or {}).get("utt") or "") == utt:
+                    idx = i
+                    break
+            if idx is None:
+                return                       # 不在窗口里 → 不认识的 utt，别乱动
+            if idx == 0:
+                return                       # 已经在最前面了，不用动
+            skipped = self._inflight[:idx]
+            del self._inflight[:idx]
+        for s in skipped:
+            logger.warning("[ls] 这条没播就被跳过（按开始事件对齐）：[%s] utt=%s text=%r",
+                           s.source, (s.metadata or {}).get("utt"),
+                           (s.content or "")[:40])
+        await self._emit_playing()
+        await self._notify_queue()
+
+    async def on_playback_end(self, utt: str = ""):
+        """收到播放结束事件：腾出窗口并立刻补位（保证下一条早已在队列里）。
+
+        `utt` 带了就**对号入座**：只认窗口里编号相符的那条，找不到就当成过期/重复
+        事件忽略掉 —— 这样即使偶尔丢一条或多来一条事件，队列也不会整体错位。
+        `utt` 为空（老 TTS 不带编号）时退回原来的"pop 队首"行为。
+        """
         done = None
         async with self._lock:
-            if self._inflight:
+            if utt:
+                idx = None
+                for i, it in enumerate(self._inflight):
+                    if ((it.metadata or {}).get("utt") or "") == utt:
+                        idx = i
+                        break
+                if idx is None:
+                    logger.info("[ls] 忽略过期的播放结束事件 utt=%s", utt)
+                    return
+                done = self._inflight[idx]
+                # 它前面的那些也都是已经播完的（顺序播放），一起收掉
+                del self._inflight[:idx + 1]
+            elif self._inflight:
                 done = self._inflight.pop(0)
         if done is not None:
             logger.info(f"[ls] 播完 [{done.source}] utt={done.metadata.get('utt')}")
